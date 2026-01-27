@@ -19,26 +19,34 @@
 
 ## 快速开始
 
-### 1. 克隆项目
+### Windows 用户 (推荐)
+
+1. 双击运行 `setup.bat` 自动创建虚拟环境并安装依赖
+2. 双击运行 `run.bat` 启动程序
+
+### 手动安装
+
+#### 1. 克隆项目
 
 ```bash
 git clone https://github.com/your-username/AI-RVC.git
 cd AI-RVC
 ```
 
-### 2. 创建虚拟环境
+#### 2. 创建虚拟环境 (必需)
 
 ```bash
+# 创建虚拟环境
 python -m venv venv
 
-# Windows
+# Windows 激活
 venv\Scripts\activate
 
-# Linux/Mac
+# Linux/Mac 激活
 source venv/bin/activate
 ```
 
-### 3. 安装依赖
+#### 3. 安装依赖
 
 ```bash
 # 安装 PyTorch (根据 CUDA 版本选择)
@@ -55,19 +63,19 @@ pip install torch torchaudio
 pip install -r requirements.txt
 ```
 
-### 4. 下载模型
+#### 4. 下载模型
 
 ```bash
 python tools/download_models.py
 ```
 
-### 5. 启动应用
+#### 5. 启动应用
 
 ```bash
-# Windows
+# Windows (会自动激活虚拟环境)
 run.bat
 
-# 或直接运行
+# 或手动运行 (需先激活虚拟环境)
 python run.py
 ```
 
@@ -96,6 +104,7 @@ python run.py
 
 ```
 AI-RVC/
+├── venv/                # 虚拟环境 (运行 setup.bat 后生成)
 ├── assets/              # 模型文件
 │   ├── hubert/          # HuBERT 模型
 │   ├── rmvpe/           # RMVPE 模型
@@ -110,7 +119,8 @@ AI-RVC/
 ├── tools/               # 工具脚本
 ├── ui/                  # Gradio 界面
 ├── run.py               # 主入口
-└── run.bat              # Windows 启动脚本
+├── run.bat              # Windows 启动脚本
+└── setup.bat            # Windows 安装脚本
 ```
 
 ## MCP 服务器

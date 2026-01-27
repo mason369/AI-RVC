@@ -15,13 +15,18 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM 检查虚拟环境
-if exist "venv\Scripts\activate.bat" (
-    echo 激活虚拟环境...
-    call venv\Scripts\activate.bat
-) else (
-    echo 提示: 未找到虚拟环境，使用系统 Python
+REM 检查虚拟环境是否存在
+if not exist "venv\Scripts\activate.bat" (
+    echo 错误: 未找到虚拟环境
+    echo 请先运行 setup.bat 创建虚拟环境
+    echo.
+    pause
+    exit /b 1
 )
+
+REM 激活虚拟环境
+echo 激活虚拟环境...
+call venv\Scripts\activate.bat
 
 REM 启动程序
 echo 启动 RVC 语音转换...
