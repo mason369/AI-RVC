@@ -1,0 +1,66 @@
+{
+  "app_title": "RVC v2 语音转换",
+  "app_description": "基于 RVC v2 + RMVPE 的高质量语音转换系统",
+
+  "tabs": {
+    "conversion": "语音转换",
+    "models": "模型管理",
+    "settings": "设置"
+  },
+
+  "conversion": {
+    "model_settings": "模型设置",
+    "select_model": "选择模型",
+    "refresh": "刷新",
+    "load_model": "加载模型",
+    "status": "状态",
+    "audio_input": "音频输入",
+    "upload_audio": "上传音频",
+    "conversion_params": "转换参数",
+    "pitch_shift": "音调偏移 (半音)",
+    "pitch_shift_info": "正数升调，负数降调。男转女建议 +12，女转男建议 -12",
+    "f0_method": "F0 提取方法",
+    "f0_method_info": "rmvpe 质量最高 (推荐)",
+    "index_rate": "索引比率",
+    "index_rate_info": "越高越像训练音色，但可能有口齿不清",
+    "filter_radius": "中值滤波半径",
+    "filter_radius_info": "用于减少气息噪声",
+    "rms_mix_rate": "响度包络混合",
+    "rms_mix_rate_info": "越接近 1 越使用输出响度包络",
+    "protect": "清辅音保护",
+    "protect_info": "保护清辅音和呼吸声，0.5 为不保护",
+    "start_conversion": "开始转换",
+    "conversion_result": "转换结果",
+    "conversion_status": "转换状态"
+  },
+
+  "models": {
+    "base_models": "基础模型",
+    "base_models_desc": "这些模型是运行 RVC 所必需的，首次使用前需要下载。",
+    "check_status": "检查模型状态",
+    "download_required": "下载必需模型",
+    "model_status": "模型状态",
+    "voice_models": "语音模型",
+    "voice_models_desc": "将 .pth 模型文件放入 assets/weights/ 目录，然后刷新模型列表。"
+  },
+
+  "settings": {
+    "device_info": "设备信息",
+    "current_device": "当前设备",
+    "refresh_device": "刷新设备信息",
+    "about": "关于"
+  },
+
+  "messages": {
+    "model_loaded": "模型已加载",
+    "model_not_found": "找不到模型",
+    "load_failed": "加载失败",
+    "please_select_model": "请选择一个模型",
+    "please_load_model": "请先加载模型",
+    "please_upload_audio": "请上传音频文件",
+    "conversion_complete": "转换完成",
+    "conversion_failed": "转换失败",
+    "download_complete": "下载完成",
+    "download_failed": "下载失败"
+  }
+}
