@@ -1,0 +1,10 @@
+{
+    "mcpServers": {
+        "rvc-voice-conversion": {
+            "command": "python",
+            "args": ["mcp/server.py"],
+            "cwd": "C:\\AI-RVC",
+            "env": {}
+        }
+    }
+}

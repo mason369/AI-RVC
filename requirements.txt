@@ -1,0 +1,28 @@
+# RVC v2 语音转换依赖
+
+# PyTorch (根据 CUDA 版本选择)
+torch>=2.0.0
+torchaudio>=2.0.0
+
+# Gradio 界面
+gradio==3.50.2
+
+# 音频处理
+librosa>=0.9.0
+soundfile>=0.12.0
+scipy>=1.10.0
+numpy>=1.23.0
+praat-parselmouth>=0.4.3
+pyworld>=0.3.4
+torchcrepe>=0.0.20
+
+# 向量检索
+faiss-cpu>=1.7.4
+
+# 工具库
+tqdm>=4.65.0
+requests>=2.28.0
+python-dotenv>=1.0.0
+
+# MCP 服务器
+mcp>=1.0.0

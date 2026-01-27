@@ -1,0 +1,20 @@
+{
+  "device": "cuda",
+  "sample_rate": 48000,
+  "hop_length": 160,
+  "f0_method": "rmvpe",
+  "index_rate": 0.5,
+  "filter_radius": 3,
+  "rms_mix_rate": 0.25,
+  "protect": 0.33,
+  "server": {
+    "host": "127.0.0.1",
+    "port": 7860
+  },
+  "paths": {
+    "hubert": "assets/hubert/hubert_base.pt",
+    "rmvpe": "assets/rmvpe/rmvpe.pt",
+    "weights": "assets/weights",
+    "outputs": "outputs"
+  }
+}
