@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-RVC 语音转换 - 主入口
+RVC AI 翻唱 - 主入口
 """
 import os
 import sys
@@ -11,33 +11,46 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).parent
 sys.path.insert(0, str(ROOT_DIR))
 
+from lib.logger import log
+
 
 def check_environment():
     """检查运行环境"""
-    print("=" * 50)
-    print("RVC 语音转换系统")
-    print("=" * 50)
+    log.header("RVC AI 翻唱系统")
 
     # 检查 Python 版本
     py_version = sys.version_info
-    print(f"Python 版本: {py_version.major}.{py_version.minor}.{py_version.micro}")
+    log.info(f"Python 版本: {py_version.major}.{py_version.minor}.{py_version.micro}")
 
     if py_version.major < 3 or (py_version.major == 3 and py_version.minor < 8):
-        print("警告: 建议使用 Python 3.8 或更高版本")
+        log.warning("建议使用 Python 3.8 或更高版本")
 
     # 检查 PyTorch
     try:
         import torch
-        print(f"PyTorch 版本: {torch.__version__}")
-        print(f"CUDA 可用: {torch.cuda.is_available()}")
+        log.info(f"PyTorch 版本: {torch.__version__}")
+
+        from lib.device import get_device_info, _is_rocm, _has_xpu, _has_directml, _has_mps
+        info = get_device_info()
+        log.info(f"可用加速后端: {', '.join(info['backends'])}")
+
         if torch.cuda.is_available():
-            print(f"CUDA 版本: {torch.version.cuda}")
-            print(f"GPU: {torch.cuda.get_device_name(0)}")
+            backend = "ROCm" if _is_rocm() else "CUDA"
+            log.info(f"{backend} 版本: {torch.version.hip if _is_rocm() else torch.version.cuda}")
+            log.info(f"GPU: {torch.cuda.get_device_name(0)}")
+        elif _has_xpu():
+            log.info(f"Intel GPU: {torch.xpu.get_device_name(0)}")
+        elif _has_directml():
+            import torch_directml
+            log.info(f"DirectML 设备: {torch_directml.device_name(0)}")
+        elif _has_mps():
+            log.info("Apple MPS 加速可用")
+        else:
+            log.warning("未检测到 GPU 加速，将使用 CPU")
     except ImportError:
-        print("错误: 未安装 PyTorch")
+        log.error("未安装 PyTorch")
         return False
 
-    print("=" * 50)
     return True
 
 
@@ -51,11 +64,11 @@ def check_models():
             missing.append(name)
 
     if missing:
-        print(f"缺少必需模型: {', '.join(missing)}")
-        print("正在下载...")
+        log.warning(f"缺少必需模型: {', '.join(missing)}")
+        log.info("正在下载...")
         from tools.download_models import download_required_models
         if not download_required_models():
-            print("模型下载失败，请检查网络连接")
+            log.error("模型下载失败，请检查网络连接")
             return False
 
     return True
@@ -63,7 +76,7 @@ def check_models():
 
 def main():
     """主函数"""
-    parser = argparse.ArgumentParser(description="RVC 语音转换系统")
+    parser = argparse.ArgumentParser(description="RVC AI 翻唱系统")
     parser.add_argument(
         "--host",
         type=str,
@@ -107,11 +120,11 @@ def main():
 
     # 模型检查
     if not check_models():
-        print("提示: 可以使用 --skip-check 跳过检查")
+        log.info("提示: 可以使用 --skip-check 跳过检查")
         sys.exit(1)
 
     # 启动界面
-    print(f"启动 Gradio 界面: http://{args.host}:{args.port}")
+    log.info(f"启动 Gradio 界面: http://{args.host}:{args.port}")
     from ui.app import launch
     launch(host=args.host, port=args.port, share=args.share)
 

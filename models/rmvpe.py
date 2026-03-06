@@ -29,7 +29,8 @@ class BiGRU(nn.Module):
 class ConvBlockRes(nn.Module):
     """残差卷积块"""
 
-    def __init__(self, in_channels: int, out_channels: int, momentum: float = 0.01):
+    def __init__(self, in_channels: int, out_channels: int, momentum: float = 0.01,
+                 force_shortcut: bool = False):
         super().__init__()
         self.conv = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, 3, 1, 1, bias=False),
@@ -40,13 +41,37 @@ class ConvBlockRes(nn.Module):
             nn.ReLU()
         )
 
-        if in_channels != out_channels:
-            self.shortcut = nn.Conv2d(in_channels, out_channels, 1, bias=False)
+        # 当通道数不同或强制使用时才创建 shortcut
+        if in_channels != out_channels or force_shortcut:
+            self.shortcut = nn.Conv2d(in_channels, out_channels, 1)
+            self.has_shortcut = True
         else:
-            self.shortcut = nn.Identity()
+            self.has_shortcut = False
 
     def forward(self, x):
-        return self.conv(x) + self.shortcut(x)
+        if self.has_shortcut:
+            return self.conv(x) + self.shortcut(x)
+        else:
+            return self.conv(x) + x
+
+
+class EncoderBlock(nn.Module):
+    """编码器块 - 包含多个 ConvBlockRes 和一个池化层"""
+
+    def __init__(self, in_channels: int, out_channels: int, kernel_size: int,
+                 n_blocks: int, momentum: float = 0.01):
+        super().__init__()
+        self.conv = nn.ModuleList()
+        self.conv.append(ConvBlockRes(in_channels, out_channels, momentum))
+        for _ in range(n_blocks - 1):
+            self.conv.append(ConvBlockRes(out_channels, out_channels, momentum))
+        self.pool = nn.AvgPool2d(kernel_size)
+
+    def forward(self, x):
+        for block in self.conv:
+            x = block(x)
+        # 返回池化前的张量用于 skip connection
+        return self.pool(x), x
 
 
 class Encoder(nn.Module):
@@ -64,7 +89,7 @@ class Encoder(nn.Module):
 
         for i in range(n_encoders):
             self.layers.append(
-                self._make_encoder_block(
+                EncoderBlock(
                     in_channels if i == 0 else out_channels * (2 ** (i - 1)),
                     out_channels * (2 ** i),
                     kernel_size,
@@ -74,20 +99,12 @@ class Encoder(nn.Module):
             )
             self.latent_channels.append(out_channels * (2 ** i))
 
-    def _make_encoder_block(self, in_channels, out_channels, kernel_size,
-                            n_blocks, momentum):
-        layers = [ConvBlockRes(in_channels, out_channels, momentum)]
-        for _ in range(n_blocks - 1):
-            layers.append(ConvBlockRes(out_channels, out_channels, momentum))
-        layers.append(nn.AvgPool2d(kernel_size))
-        return nn.Sequential(*layers)
-
     def forward(self, x):
         x = self.bn(x)
         concat_tensors = []
         for layer in self.layers:
-            x = layer(x)
-            concat_tensors.append(x)
+            x, skip = layer(x)
+            concat_tensors.append(skip)
         return x, concat_tensors
 
 
@@ -99,13 +116,72 @@ class Intermediate(nn.Module):
         super().__init__()
 
         self.layers = nn.ModuleList()
-        self.layers.append(ConvBlockRes(in_channels, out_channels, momentum))
-        for _ in range(n_inters - 1):
-            self.layers.append(ConvBlockRes(out_channels, out_channels, momentum))
+        for i in range(n_inters):
+            if i == 0:
+                # 第一层: in_channels -> out_channels (256 -> 512)
+                self.layers.append(
+                    IntermediateBlock(in_channels, out_channels, n_blocks, momentum, first_block_shortcut=True)
+                )
+            else:
+                # 后续层: out_channels -> out_channels (512 -> 512)
+                self.layers.append(
+                    IntermediateBlock(out_channels, out_channels, n_blocks, momentum, first_block_shortcut=False)
+                )
 
     def forward(self, x):
         for layer in self.layers:
             x = layer(x)
+        return x
+
+
+class IntermediateBlock(nn.Module):
+    """中间层块"""
+
+    def __init__(self, in_channels: int, out_channels: int, n_blocks: int,
+                 momentum: float = 0.01, first_block_shortcut: bool = False):
+        super().__init__()
+        self.conv = nn.ModuleList()
+        # 第一个块可能需要强制使用 shortcut
+        self.conv.append(ConvBlockRes(in_channels, out_channels, momentum, force_shortcut=first_block_shortcut))
+        for _ in range(n_blocks - 1):
+            self.conv.append(ConvBlockRes(out_channels, out_channels, momentum))
+
+    def forward(self, x):
+        for block in self.conv:
+            x = block(x)
+        return x
+
+
+class DecoderBlock(nn.Module):
+    """解码器块"""
+
+    def __init__(self, in_channels: int, out_channels: int, stride: int,
+                 n_blocks: int, momentum: float = 0.01):
+        super().__init__()
+        # conv1: 转置卷积 + BatchNorm (kernel_size=3, stride=stride, padding=1, output_padding=1)
+        self.conv1 = nn.Sequential(
+            nn.ConvTranspose2d(in_channels, out_channels, 3, stride, padding=1, output_padding=1, bias=False),
+            nn.BatchNorm2d(out_channels, momentum=momentum)
+        )
+        # conv2: ConvBlockRes 列表
+        # 第一个块: in_channels = out_channels * 2 (concat 后), out_channels = out_channels
+        # 后续块: in_channels = out_channels, out_channels = out_channels
+        self.conv2 = nn.ModuleList()
+        self.conv2.append(ConvBlockRes(out_channels * 2, out_channels, momentum))
+        for _ in range(n_blocks - 1):
+            self.conv2.append(ConvBlockRes(out_channels, out_channels, momentum))
+
+    def forward(self, x, concat_tensor):
+        x = self.conv1(x)
+        # 处理尺寸不匹配：填充较小的张量使其匹配较大的
+        diff_h = concat_tensor.size(2) - x.size(2)
+        diff_w = concat_tensor.size(3) - x.size(3)
+        if diff_h != 0 or diff_w != 0:
+            # 填充 x 使其与 concat_tensor 尺寸匹配
+            x = F.pad(x, [0, diff_w, 0, diff_h])
+        x = torch.cat([x, concat_tensor], dim=1)
+        for block in self.conv2:
+            x = block(x)
         return x
 
 
@@ -121,23 +197,12 @@ class Decoder(nn.Module):
             out_ch = out_channels * (2 ** (n_decoders - 1 - i))
             in_ch = in_channels if i == 0 else out_channels * (2 ** (n_decoders - i))
             self.layers.append(
-                self._make_decoder_block(
-                    in_ch, out_ch, stride, n_blocks, momentum
-                )
+                DecoderBlock(in_ch, out_ch, stride, n_blocks, momentum)
             )
-
-    def _make_decoder_block(self, in_channels, out_channels, stride, n_blocks, momentum):
-        layers = [nn.ConvTranspose2d(in_channels, out_channels, stride, stride)]
-        for _ in range(n_blocks):
-            layers.append(ConvBlockRes(out_channels * 2, out_channels, momentum))
-        return nn.ModuleList(layers)
 
     def forward(self, x, concat_tensors):
         for i, layer in enumerate(self.layers):
-            x = layer[0](x)
-            x = torch.cat([x, concat_tensors[-1 - i]], dim=1)
-            for block in layer[1:]:
-                x = block(x)
+            x = layer(x, concat_tensors[-1 - i])
         return x
 
 
@@ -148,16 +213,21 @@ class DeepUnet(nn.Module):
                  inter_layers: int = 4, in_channels: int = 1, en_out_channels: int = 16):
         super().__init__()
 
+        # Encoder 输出通道: en_out_channels * 2^(en_de_layers-1) = 16 * 16 = 256
+        encoder_out_channels = en_out_channels * (2 ** (en_de_layers - 1))
+        # Intermediate 输出通道: encoder_out_channels * 2 = 512
+        intermediate_out_channels = encoder_out_channels * 2
+
         self.encoder = Encoder(
             in_channels, 128, en_de_layers, kernel_size, n_blocks, en_out_channels
         )
         self.intermediate = Intermediate(
-            en_out_channels * (2 ** (en_de_layers - 1)),
-            en_out_channels * (2 ** (en_de_layers - 1)),
+            encoder_out_channels,
+            intermediate_out_channels,
             inter_layers, n_blocks
         )
         self.decoder = Decoder(
-            en_out_channels * (2 ** (en_de_layers - 1)),
+            intermediate_out_channels,
             en_de_layers, kernel_size, n_blocks, en_out_channels
         )
 
@@ -196,10 +266,21 @@ class E2E(nn.Module):
                 nn.Sigmoid()
             )
 
-    def forward(self, x):
-        x = self.unet(x)
+    def forward(self, mel):
+        # 输入 mel: [B, 128, T] 或 [B, 1, 128, T]
+        # 官方实现期望 [B, 1, T, 128]，即 time 在 height，mel bins 在 width
+        if mel.dim() == 3:
+            # [B, 128, T] -> [B, T, 128] -> [B, 1, T, 128]
+            mel = mel.transpose(-1, -2).unsqueeze(1)
+        elif mel.dim() == 4 and mel.shape[1] == 1:
+            # [B, 1, 128, T] -> [B, 1, T, 128]
+            mel = mel.transpose(-1, -2)
+
+        x = self.unet(mel)
         x = self.cnn(x)
-        x = x.transpose(1, 2).flatten(2)
+        # x shape: (batch, 3, T, 128)
+        # 转换为 (batch, T, 384) 其中 384 = 3 * 128
+        x = x.transpose(1, 2).flatten(-2)  # (batch, T, 384)
         x = self.fc(x)
         return x
 
@@ -226,7 +307,8 @@ class MelSpectrogram(nn.Module):
     def _mel_filterbank(self, sr, n_fft, n_mels, fmin, fmax):
         """创建 Mel 滤波器组"""
         import librosa
-        mel = librosa.filters.mel(sr=sr, n_fft=n_fft, n_mels=n_mels, fmin=fmin, fmax=fmax)
+        # 必须使用 htk=True，与官方 RVC RMVPE 保持一致
+        mel = librosa.filters.mel(sr=sr, n_fft=n_fft, n_mels=n_mels, fmin=fmin, fmax=fmax, htk=True)
         return torch.from_numpy(mel).float()
 
     def forward(self, audio):
@@ -243,7 +325,8 @@ class MelSpectrogram(nn.Module):
             onesided=True,
             return_complex=True
         )
-        spec = torch.abs(spec)
+        # 使用功率谱（幅度的平方），与官方 RMVPE 一致
+        spec = torch.abs(spec) ** 2
 
         # Mel 变换
         mel = torch.matmul(self.mel_basis, spec)
@@ -259,8 +342,8 @@ class RMVPE:
         self.device = device
 
         # 加载模型
-        self.model = E2E(n_blocks=4, n_gru=2, kernel_size=2)
-        ckpt = torch.load(model_path, map_location="cpu")
+        self.model = E2E(n_blocks=4, n_gru=1, kernel_size=2)
+        ckpt = torch.load(model_path, map_location="cpu", weights_only=False)
         self.model.load_state_dict(ckpt)
         self.model = self.model.to(device).eval()
 
@@ -288,12 +371,22 @@ class RMVPE:
         if audio.dim() == 1:
             audio = audio.unsqueeze(0)
 
-        # 提取 Mel 频谱
+        # 提取 Mel 频谱: [B, 128, T]
         mel = self.mel_extractor(audio)
-        mel = mel.unsqueeze(1)
 
-        # 模型推理
+        # 记录原始帧数
+        n_frames = mel.shape[-1]
+
+        # 填充时间维度使其可被 32 整除（5 层池化，每层 /2）
+        n_pad = 32 * ((n_frames - 1) // 32 + 1) - n_frames
+        if n_pad > 0:
+            mel = F.pad(mel, (0, n_pad), mode='constant', value=0)
+
+        # 模型推理 - E2E.forward 会处理 transpose
         hidden = self.model(mel)
+
+        # 移除填充部分，只保留原始帧数
+        hidden = hidden[:, :n_frames, :]
         hidden = hidden.squeeze(0).cpu().numpy()
 
         # 解码 F0
@@ -302,24 +395,45 @@ class RMVPE:
         return f0
 
     def _decode(self, hidden: np.ndarray, thred: float) -> np.ndarray:
-        """解码隐藏状态为 F0"""
-        # 找到最大值位置
-        center = np.argmax(hidden, axis=1)
-        hidden = np.pad(hidden, ((0, 0), (4, 4)), mode="constant")
+        """解码隐藏状态为 F0 - 使用官方 RVC 算法"""
+        # 使用官方的 to_local_average_cents 算法
+        cents = self._to_local_average_cents(hidden, thred)
 
-        # 加权平均
-        f0 = []
-        for i, c in enumerate(center):
-            c += 4
-            weights = hidden[i, c - 4:c + 5]
-            if weights.sum() < thred:
-                f0.append(0)
-            else:
-                cents = self.cents_mapping[c - 4:c + 5]
-                f0.append(np.sum(weights * cents) / weights.sum())
-
-        f0 = np.array(f0)
-        f0 = 10 * (2 ** (f0 / 1200))
-        f0[f0 < 10] = 0
+        # 转换 cents 到 Hz
+        f0 = 10 * (2 ** (cents / 1200))
+        f0[f0 == 10] = 0  # cents=0 时 f0=10，需要置零
 
         return f0
+
+    def _to_local_average_cents(self, salience: np.ndarray, thred: float) -> np.ndarray:
+        """官方 RVC 的 to_local_average_cents 算法"""
+        # Step 1: 找到每帧的峰值 bin
+        center = np.argmax(salience, axis=1)  # [T]
+
+        # Step 2: 对 salience 进行 padding
+        salience = np.pad(salience, ((0, 0), (4, 4)))  # [T, 368]
+        center += 4  # 调整 center 索引
+
+        # Step 3: 提取峰值附近 9 个 bin 的窗口并计算加权平均
+        todo_salience = []
+        todo_cents_mapping = []
+        starts = center - 4
+        ends = center + 5
+
+        for idx in range(salience.shape[0]):
+            todo_salience.append(salience[idx, starts[idx]:ends[idx]])
+            todo_cents_mapping.append(self.cents_mapping[starts[idx]:ends[idx]])
+
+        todo_salience = np.array(todo_salience)  # [T, 9]
+        todo_cents_mapping = np.array(todo_cents_mapping)  # [T, 9]
+
+        # Step 4: 加权平均
+        product_sum = np.sum(todo_salience * todo_cents_mapping, axis=1)
+        weight_sum = np.sum(todo_salience, axis=1) + 1e-9
+        cents = product_sum / weight_sum
+
+        # Step 5: 阈值过滤 - 使用原始 salience 的最大值
+        maxx = np.max(salience, axis=1)
+        cents[maxx <= thred] = 0
+
+        return cents
