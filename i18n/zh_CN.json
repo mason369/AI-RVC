@@ -1,10 +1,10 @@
 {
-  "app_title": "RVC v2 语音转换",
-  "app_description": "基于 RVC v2 + RMVPE 的高质量语音转换系统",
+  "app_title": "RVC AI 翻唱",
+  "app_description": "基于 RVC v2 的 AI 翻唱系统",
 
   "tabs": {
-    "conversion": "语音转换",
     "models": "模型管理",
+    "cover": "歌曲翻唱",
     "settings": "设置"
   },
 
@@ -34,6 +34,36 @@
     "conversion_status": "转换状态"
   },
 
+  "cover": {
+    "song_cover": "AI 歌曲翻唱",
+    "cover_description": "上传歌曲，选择角色，一键生成 AI 翻唱。系统会自动分离人声、转换音色、混合伴奏。",
+    "upload_song": "上传歌曲",
+    "input_song": "输入歌曲 (支持 MP3/WAV/FLAC)",
+    "select_character": "选择角色",
+    "character": "角色",
+    "conversion_settings": "转换设置",
+    "pitch_shift": "音调偏移 (半音)",
+    "mix_settings": "混音设置",
+    "mix_preset": "混音预设",
+    "mix_preset_info": "一键应用适合大多数歌曲的混音组合",
+    "mix_preset_universal": "通用 (推荐)",
+    "mix_preset_vocal": "人声突出",
+    "mix_preset_accompaniment": "伴奏突出",
+    "mix_preset_live": "现场感 (混响更强)",
+    "vocals_volume": "人声音量 (%)",
+    "accompaniment_volume": "伴奏音量 (%)",
+    "vocals_reverb": "人声混响 (%)",
+    "start_cover": "开始翻唱",
+    "progress": "处理进度",
+    "results": "翻唱结果",
+    "final_cover": "最终翻唱",
+    "converted_vocals": "转换后人声",
+    "accompaniment": "伴奏",
+    "download_character": "下载角色模型",
+    "select_to_download": "选择要下载的角色",
+    "download": "下载"
+  },
+
   "models": {
     "base_models": "基础模型",
     "base_models_desc": "这些模型是运行 RVC 所必需的，首次使用前需要下载。",
@@ -61,6 +91,11 @@
     "conversion_complete": "转换完成",
     "conversion_failed": "转换失败",
     "download_complete": "下载完成",
-    "download_failed": "下载失败"
+    "download_failed": "下载失败",
+    "cover_complete": "翻唱完成",
+    "cover_failed": "翻唱失败",
+    "separating_vocals": "正在分离人声...",
+    "converting_vocals": "正在转换人声...",
+    "mixing_audio": "正在混音..."
   }
 }

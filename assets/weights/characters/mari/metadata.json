@@ -1,0 +1,177 @@
+{
+  "title": "Mari Ohara (Love Live! Sunshine!!)  - RVC V2 (400 Epoch)",
+  "author": {
+    "name": "natehitsvtec",
+    "discordUserId": "641787156863385610"
+  },
+  "md5": "ff4bd8e126ab82a8145793f02db0cfee",
+  "uploadedAt": "2023-06-11T01:22:26.820Z",
+  "weightsLink": "https://www.weights.gg/models/clm72zu941aj1cctco2oj26p1",
+  "id": "clm72zu941aj1cctco2oj26p1",
+  "type": "v2",
+  "tags": [
+    "Anime Character",
+    "Fictional Character",
+    "Artist",
+    "RVC v2"
+  ],
+  "description": "400 Epoch\nhttps://drive.google.com/file/d/1DUEN3draGpyKlM3Z0moUQwi6p-2Oq3Vk/view?usp=sharing\n\nTested languages: Japanese, Korean, English\n\nNew version trained up to 400 epoch, revised the dataset to 25 songs down from 33, but made it much clearer and removed excessive silence and other parts with echo or reverb. I did not use SIFAS audio for my dataset because it ended up being too high pitched, I believe she speaks with a lot of exaggeration in the game. Unsure if I will train it more but I probably will eventually.\n\nPrevious 200 Epoch (old dataset)\nhttps://drive.google.com/file/d/1uBmoKluknMOWKivjfHcbu7YkOMtjoclH/view?usp=sharing",
+  "samples": [],
+  "files": [
+    {
+      "name": "model.index",
+      "size": 812116059,
+      "md5": "be135619c9fc2e04d0d9bf384f9eef11"
+    },
+    {
+      "name": "model.pth",
+      "size": 55227869,
+      "md5": "ff4bd8e126ab82a8145793f02db0cfee"
+    }
+  ],
+  "torchMetadata": {
+    "config": {
+      "spec_channels": 1025,
+      "segment_size": 32,
+      "inter_channels": 192,
+      "hidden_channels": 192,
+      "filter_channels": 768,
+      "n_heads": 2,
+      "n_layers": 6,
+      "kernel_size": 3,
+      "p_dropout": 0,
+      "resblock": "1",
+      "resblock_kernel_sizes": [
+        3,
+        7,
+        11
+      ],
+      "resblock_dilation_sizes": [
+        [
+          1,
+          3,
+          5
+        ],
+        [
+          1,
+          3,
+          5
+        ],
+        [
+          1,
+          3,
+          5
+        ]
+      ],
+      "upsample_rates": [
+        10,
+        10,
+        2,
+        2
+      ],
+      "upsample_initial_channel": 512,
+      "upsample_kernel_sizes": [
+        16,
+        16,
+        4,
+        4
+      ],
+      "emb_channels": null,
+      "spk_embed_dim": 109,
+      "gin_channels": 256,
+      "sr": 40000
+    },
+    "f0": 1,
+    "version": "v2",
+    "extra_info": {
+      "config": [
+        1025,
+        32,
+        192,
+        192,
+        768,
+        2,
+        6,
+        3,
+        0,
+        "1",
+        [
+          3,
+          7,
+          11
+        ],
+        [
+          [
+            1,
+            3,
+            5
+          ],
+          [
+            1,
+            3,
+            5
+          ],
+          [
+            1,
+            3,
+            5
+          ]
+        ],
+        [
+          10,
+          10,
+          2,
+          2
+        ],
+        512,
+        [
+          16,
+          16,
+          4,
+          4
+        ],
+        109,
+        256,
+        40000
+      ],
+      "info": "400epoch",
+      "sr": "40k",
+      "f0": 1,
+      "version": "v2"
+    }
+  },
+  "url": "https://drive.google.com/file/d/1DUEN3draGpyKlM3Z0moUQwi6p-2Oq3Vk/view",
+  "urls": [
+    "https://huggingface.co/realmongx2/m0delz/resolve/main/mariohara_e400.zip?download=true",
+    "https://drive.google.com/file/d/1x5aZjlYea_HfaHNHnZCpqaKmU4N5J-1X/view?usp=sharing",
+    "https://drive.google.com/file/d/1DUEN3draGpyKlM3Z0moUQwi6p-2Oq3Vk/view?usp=sharing",
+    "https://drive.google.com/file/d/1DUEN3draGpyKlM3Z0moUQwi6p-2Oq3Vk/view?usp=drive_link",
+    "https://drive.google.com/file/d/1rJ3a4NJ-3MQ8Vv240-hhaP2bO1irbA9h/view?usp=sharing",
+    "https://drive.google.com/file/d/1rJ3a4NJ-3MQ8Vv240-hhaP2bO1irbA9h/view?usp=drive_link",
+    "https://drive.google.com/file/d/1DUEN3draGpyKlM3Z0moUQwi6p-2Oq3Vk/view?usp=drivesdk",
+    "https://drive.google.com/file/d/1Pklo3gYLRM8_wG0XZvwf_lJJnsDgZhry/view?usp=drive_link",
+    "https://drive.google.com/file/d/1tKgz422yovSPvuKHDuSETNYRQNq2wIoT/view?usp=sharing",
+    "https://drive.google.com/file/d/1AVYkFKf3SLkUhQqiJYWiqluc7KAnR2cC/view?usp=sharing",
+    "https://drive.google.com/file/d/1AVYkFKf3SLkUhQqiJYWiqluc7KAnR2cC/view?usp=drive_link",
+    "https://drive.google.com/file/d/1YLJ2GXYvbGQ2mCyE5KjF2z_6EAI8gE2E/view?usp=sharing",
+    "https://drive.google.com/file/d/1uBmoKluknMOWKivjfHcbu7YkOMtjoclH/view?usp=sharing",
+    "https://drive.google.com/file/d/1YLJ2GXYvbGQ2mCyE5KjF2z_6EAI8gE2E/view?usp=drive_link",
+    "https://drive.google.com/file/d/1hRcWKrDz1gEbEbmSjyVzthsJG0dIbJi8/view?usp=sharing",
+    "https://drive.google.com/file/d/1hRcWKrDz1gEbEbmSjyVzthsJG0dIbJi8/view?usp=drive_link",
+    "https://drive.google.com/file/d/1ou8SVFKN0ifqljKgufOAqZdjq7qvSk2e/view?usp=drive_link",
+    "https://drive.google.com/file/d/1DUEN3draGpyKlM3Z0moUQwi6p-2Oq3Vk/view",
+    "https://drive.google.com/file/d/1uBmoKluknMOWKivjfHcbu7YkOMtjoclH/view",
+    "https://drive.google.com/file/d/1YLJ2GXYvbGQ2mCyE5KjF2z_6EAI8gE2E/view",
+    "https://drive.google.com/file/d/1hRcWKrDz1gEbEbmSjyVzthsJG0dIbJi8/view",
+    "https://drive.google.com/file/d/1ou8SVFKN0ifqljKgufOAqZdjq7qvSk2e/view",
+    "https://drive.google.com/uc?id=1DUEN3draGpyKlM3Z0moUQwi6p-2Oq3Vk",
+    "https://drive.google.com/file/d/1rJ3a4NJ-3MQ8Vv240-hhaP2bO1irbA9h/view",
+    "https://drive.google.com/file/d/1Pklo3gYLRM8_wG0XZvwf_lJJnsDgZhry/view",
+    "https://drive.google.com/file/d/1tKgz422yovSPvuKHDuSETNYRQNq2wIoT/view",
+    "https://drive.google.com/file/d/1AVYkFKf3SLkUhQqiJYWiqluc7KAnR2cC/view"
+  ],
+  "originalFileList": [
+    "mariohara_e400/added_IVF6591_Flat_nprobe_1_v2.index",
+    "mariohara_e400/mariohara_v3_e400.pth"
+  ]
+}

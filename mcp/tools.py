@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MCP 工具函数 - 提供语音转换功能的工具接口
+MCP 工具函数 - 提供 AI 翻唱功能的工具接口
 """
 import os
 import json
@@ -16,8 +16,29 @@ def get_config() -> dict:
     config_path = ROOT_DIR / "configs" / "config.json"
     if config_path.exists():
         with open(config_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            config = json.load(f)
+            return _normalize_config(config)
     return {}
+
+
+def _normalize_config(config: dict) -> dict:
+    """Normalize legacy path keys to top-level entries."""
+    if not config:
+        return {}
+
+    paths = config.get("paths", {})
+    if "hubert_path" not in config and "hubert" in paths:
+        config["hubert_path"] = paths["hubert"]
+    if "rmvpe_path" not in config and "rmvpe" in paths:
+        config["rmvpe_path"] = paths["rmvpe"]
+    if "weights_dir" not in config and "weights" in paths:
+        config["weights_dir"] = paths["weights"]
+    if "output_dir" not in config and "outputs" in paths:
+        config["output_dir"] = paths["outputs"]
+    if "temp_dir" not in config and "temp" in paths:
+        config["temp_dir"] = paths["temp"]
+
+    return config
 
 
 def list_models() -> List[Dict[str, Any]]:
@@ -46,7 +67,7 @@ def convert_voice(
     protect: float = 0.33
 ) -> Dict[str, Any]:
     """
-    执行语音转换
+    执行 AI 翻唱
 
     Args:
         input_path: 输入音频文件路径
@@ -65,6 +86,7 @@ def convert_voice(
         from infer.pipeline import VoiceConversionPipeline, list_voice_models
 
         config = get_config()
+        use_official_vc = config.get("use_official_vc", True)
 
         # 查找模型
         weights_dir = ROOT_DIR / config.get("weights_dir", "assets/weights")
@@ -83,9 +105,31 @@ def convert_voice(
                 "error": f"模型不存在: {model_name}"
             }
 
+        if use_official_vc:
+            from infer.official_adapter import convert_vocals_official
+
+            result_path = convert_vocals_official(
+                vocals_path=input_path,
+                output_path=output_path,
+                model_path=model_info["model_path"],
+                index_path=model_info.get("index_path"),
+                f0_method=config.get("f0_method", "rmvpe"),
+                pitch_shift=int(pitch_shift),
+                index_rate=index_ratio,
+                filter_radius=filter_radius,
+                rms_mix_rate=rms_mix_rate,
+                protect=protect,
+            )
+            return {
+                "success": True,
+                "output_path": result_path,
+                "error": None,
+            }
+
         # 初始化管道
         device = config.get("device", "cuda")
         pipeline = VoiceConversionPipeline(device=device)
+        pipeline.hubert_layer = config.get("hubert_layer", 12)
 
         # 加载 HuBERT
         hubert_path = ROOT_DIR / config.get("hubert_path", "assets/hubert/hubert_base.pt")

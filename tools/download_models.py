@@ -11,6 +11,48 @@ from typing import Optional, Dict, List
 
 # 模型下载配置
 MODELS = {
+    "HP2_all_vocals.pth": {
+        "url": "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/uvr5_weights/HP2_all_vocals.pth",
+        "path": "assets/uvr5_weights/HP2_all_vocals.pth",
+        "size_mb": 140,
+        "description": "UVR5 HP2 vocal model"
+    },
+    "HP3_all_vocals.pth": {
+        "url": "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/uvr5_weights/HP3_all_vocals.pth",
+        "path": "assets/uvr5_weights/HP3_all_vocals.pth",
+        "size_mb": 140,
+        "description": "UVR5 HP3 vocal model"
+    },
+    "HP5_only_main_vocal.pth": {
+        "url": "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/uvr5_weights/HP5_only_main_vocal.pth",
+        "path": "assets/uvr5_weights/HP5_only_main_vocal.pth",
+        "size_mb": 140,
+        "description": "UVR5 HP5 main vocal model"
+    },
+    "VR-DeEchoAggressive.pth": {
+        "url": "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/uvr5_weights/VR-DeEchoAggressive.pth",
+        "path": "assets/uvr5_weights/VR-DeEchoAggressive.pth",
+        "size_mb": 130,
+        "description": "UVR5 de-echo aggressive"
+    },
+    "VR-DeEchoDeReverb.pth": {
+        "url": "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/uvr5_weights/VR-DeEchoDeReverb.pth",
+        "path": "assets/uvr5_weights/VR-DeEchoDeReverb.pth",
+        "size_mb": 130,
+        "description": "UVR5 de-echo + de-reverb"
+    },
+    "VR-DeEchoNormal.pth": {
+        "url": "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/uvr5_weights/VR-DeEchoNormal.pth",
+        "path": "assets/uvr5_weights/VR-DeEchoNormal.pth",
+        "size_mb": 130,
+        "description": "UVR5 de-echo normal"
+    },
+    "onnx_dereverb_By_FoxJoy/vocals.onnx": {
+        "url": "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/uvr5_weights/onnx_dereverb_By_FoxJoy/vocals.onnx",
+        "path": "assets/uvr5_weights/onnx_dereverb_By_FoxJoy/vocals.onnx",
+        "size_mb": 50,
+        "description": "UVR5 ONNX dereverb"
+    },
     "hubert_base.pt": {
         "url": "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base.pt",
         "path": "assets/hubert/hubert_base.pt",
@@ -50,7 +92,7 @@ MODELS = {
 }
 
 # 必需模型列表
-REQUIRED_MODELS = ["hubert_base.pt", "rmvpe.pt"]
+REQUIRED_MODELS = ["hubert_base.pt", "rmvpe.pt", "HP2_all_vocals.pth"]
 
 
 def get_project_root() -> Path:
@@ -80,6 +122,14 @@ def download_file(url: str, dest_path: Path, desc: str = None) -> bool:
     headers = {}
     if resume_pos > 0:
         headers["Range"] = f"bytes={resume_pos}-"
+    if "huggingface.co" in url:
+        hf_token = (
+            os.environ.get("HF_TOKEN")
+            or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+            or os.environ.get("HUGGINGFACE_TOKEN")
+        )
+        if hf_token:
+            headers["Authorization"] = f"Bearer {hf_token}"
 
     try:
         response = requests.get(url, headers=headers, stream=True, timeout=30)
@@ -180,7 +230,7 @@ def download_required_models() -> bool:
             if not download_model(name):
                 success = False
         else:
-            print(f"✓ {name} 已存在")
+            print(f"[OK] {name} 已存在")
 
     return success
 
@@ -202,7 +252,7 @@ def download_all_models() -> bool:
             if not download_model(name):
                 success = False
         else:
-            print(f"✓ {name} 已存在")
+            print(f"[OK] {name} 已存在")
 
     return success
 
@@ -226,7 +276,7 @@ def print_model_status():
     status = check_all_models()
     for name, exists in status.items():
         info = MODELS[name]
-        mark = "✓" if exists else "✗"
+        mark = "OK" if exists else "MISSING"
         print(f"  {mark} {name}")
         print(f"      {info['description']}")
         print(f"      大小: {info['size_mb']}MB")

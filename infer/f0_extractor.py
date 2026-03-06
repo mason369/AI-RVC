@@ -118,7 +118,7 @@ class RMVPEExtractor(F0Extractor):
         self.load_model()
 
         # RMVPE 需要 16kHz 输入
-        f0 = self.model.infer_from_audio(audio, thred=0.03)
+        f0 = self.model.infer_from_audio(audio, thred=0.01)
 
         return f0
 

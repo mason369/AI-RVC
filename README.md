@@ -1,168 +1,453 @@
-# RVC v2 语音转换
+# RVC v2 语音转换 & AI 翻唱
 
-基于 RVC v2 + RMVPE 的高质量语音转换系统，提供简洁的 Gradio 图形界面。
+基于 RVC v2 + RMVPE 的高质量语音转换系统，支持一键 AI 翻唱功能。
 
-## 功能特性
+**平台支持：Windows / Linux / WSL2**
 
-- **高质量转换**: 使用 RVC v2 架构，48kHz 采样率输出
-- **RMVPE 音高提取**: 目前质量最高的 F0 提取方法
-- **简洁界面**: 基于 Gradio 的中文图形界面
-- **自动下载**: 首次运行自动下载所需模型
-- **MCP 支持**: 可作为 Claude Code 的 MCP 服务器使用
+## 功能特点
 
-## 系统要求
+- **AI 歌曲翻唱**：上传歌曲自动分离人声、转换音色、混合伴奏，一键生成翻唱
+- **人声分离**：默认 Mel-Band Roformer (KimberleyJensen)，在 MVSEP 公开 Multisong 指标中为 Vocals SDR 11.01 / Instrum SDR 17.32；可选 UVR5、Demucs
+- **语音转换**：RVC v2 架构 + 官方 VC 管道，适配角色模型 + FAISS 检索增强流程
+- **RMVPE 音高提取**：按 RMVPE 论文报告，在公开基准上优于 CREPE / pYIN / SWIPE 等基线并具备更好噪声鲁棒性
+- **角色模型**：内置可下载角色清单 117 项（以 `tools/character_models.py` 为准）
+- **混音效果**：支持人声混响、音量调节、原声混合
+- **GPU 加速**：自动检测并使用 CUDA / CPU
+- **简洁界面**：基于 Gradio 的中文图形界面
 
-- Python 3.8+
-- CUDA 11.7+ (推荐，CPU 也可运行但较慢)
-- 4GB+ 显存 (GPU 模式)
-- 8GB+ 内存
+## 平台支持
+
+| 平台 | 状态 | 说明 |
+|------|------|------|
+| Windows 10/11 (x64) | ✅ 已支持 | PowerShell 激活虚拟环境后 `python run.py` |
+| Linux (Ubuntu/Debian) | ✅ 已支持 | 推荐 Ubuntu 22.04+，Python 3.10+ |
+| WSL2 (Windows 11) | ✅ 已支持 | 可直接通过浏览器访问 `http://127.0.0.1:7860` |
+| macOS | ⚠️ 未充分验证 | 可尝试 CPU 模式；MPS 路径尚未在本仓库适配 |
 
 ## 快速开始
 
-### Windows 用户 (推荐)
+### Windows
 
-1. 双击运行 `setup.bat` 自动创建虚拟环境并安装依赖
-2. 双击运行 `run.bat` 启动程序
-
-### 手动安装
-
-#### 1. 克隆项目
-
-```bash
-git clone https://github.com/your-username/AI-RVC.git
+```powershell
+# 1. 克隆仓库
+git clone https://github.com/mason369/AI-RVC.git
 cd AI-RVC
-```
 
-#### 2. 创建虚拟环境 (必需)
+# 2. 创建虚拟环境
+python -m venv venv310
+.\venv310\Scripts\Activate.ps1
 
-```bash
-# 创建虚拟环境
-python -m venv venv
+# 3. 安装 PyTorch（先在官方页面生成与你环境匹配的命令）
+# https://pytorch.org/get-started/locally/
+# 示例（CUDA 12.6，2026-03-06）
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu126
+# CPU 示例
+# pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 
-# Windows 激活
-venv\Scripts\activate
-
-# Linux/Mac 激活
-source venv/bin/activate
-```
-
-#### 3. 安装依赖
-
-```bash
-# 安装 PyTorch (根据 CUDA 版本选择)
-# CUDA 11.8
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
-
-# CUDA 12.1
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
-
-# CPU 版本
-pip install torch torchaudio
-
-# 安装其他依赖
+# 4. 安装项目依赖
 pip install -r requirements.txt
-```
 
-#### 4. 下载模型
-
-```bash
+# 5. 下载基础模型（HuBERT、RMVPE）
 python tools/download_models.py
-```
 
-#### 5. 启动应用
-
-```bash
-# Windows (会自动激活虚拟环境)
-run.bat
-
-# 或手动运行 (需先激活虚拟环境)
+# 6. 启动
 python run.py
 ```
 
 访问 http://127.0.0.1:7860 打开界面。
 
-## 使用说明
+首次运行翻唱时，audio-separator 会自动下载分离模型并缓存在 `assets/separator_models/`（体积随上游模型版本变化，通常为数百 MB）。
 
-### 添加语音模型
+### Linux / WSL2
 
-1. 将 `.pth` 模型文件放入 `assets/weights/` 目录
-2. 如果有对应的 `.index` 文件，使用相同的文件名放入同一目录
-3. 在界面中点击「刷新」按钮
+```bash
+# 1. 克隆仓库
+git clone https://github.com/mason369/AI-RVC.git
+cd AI-RVC
 
-### 转换参数说明
+# 2. 创建虚拟环境
+python3.10 -m venv venv310
+source venv310/bin/activate
+
+# 3. 安装 PyTorch + 依赖
+# 先在 https://pytorch.org/get-started/locally/ 生成命令
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu126
+pip install -r requirements.txt
+
+# 4. 下载基础模型 + 启动
+python tools/download_models.py
+python run.py
+```
+
+## 依赖版本说明
+
+| 依赖 | 版本要求 | 说明 |
+|------|----------|------|
+| Python | 3.10+ | 推荐 3.10 |
+| PyTorch | >= 2.0.0 | 语音转换 + 人声分离 |
+| torchaudio | >= 2.0.0 | 与 PyTorch 版本对应 |
+| CUDA | 与 torch wheel 匹配 | 常见 11.8 / 12.1 / 12.4 / 12.6（可选） |
+| fairseq | 0.12.2 | HuBERT 特征提取 |
+| audio-separator | latest | Mel-Band Roformer 人声分离 |
+| demucs | >= 4.0.0 | Demucs 人声分离（可选） |
+
+## 使用方法
+
+### 歌曲翻唱（推荐）
+
+1. 进入「歌曲翻唱」标签页
+2. 展开「下载角色模型」，选择并下载一个角色
+3. 上传歌曲文件（支持 MP3/WAV/FLAC）
+4. 选择已下载的角色
+5. 调整参数（音调、音量、混响）
+6. 点击「开始翻唱」
+
+### 语音转换
+
+1. 将 RVC 模型（`.pth`）放入 `assets/weights/` 目录
+2. 点击「刷新」加载模型
+3. 上传纯人声音频
+4. 选择模型，调整参数，点击「开始转换」
+
+## 支持的格式
+
+**输入**：MP3, WAV, FLAC（UI 明确支持；其他格式取决于后端解码器）
+
+**输出**：WAV（翻唱成品 + 分离人声 + 伴奏）
+
+## 技术架构
+
+```
+音频输入 → CoverPipeline
+              ↓
+          ┌─ 步骤 1：人声分离 ─────────────────────────────┐
+          │  Mel-Band Roformer (默认) / UVR5 / Demucs      │
+          │      ↓                                         │
+          │  人声 (vocals.wav) + 伴奏 (accompaniment.wav)  │
+          └────────────────────────────────────────────────┘
+              ↓
+          ┌─ 步骤 2：RVC 语音转换 ─────────────────────────┐
+          │  HuBERT 特征提取 → RMVPE F0 提取               │
+          │      ↓                                         │
+          │  RVC v2 推理（角色模型 + FAISS 索引检索）       │
+          │      ↓                                         │
+          │  转换后人声 (converted_vocals.wav)              │
+          └────────────────────────────────────────────────┘
+              ↓
+          ┌─ 步骤 3：混音 ─────────────────────────────────┐
+          │  转换人声 + 伴奏 → 音量调节 + 混响             │
+          │      ↓                                         │
+          │  AI 翻唱成品 (cover.wav)                       │
+          └────────────────────────────────────────────────┘
+```
+
+### 使用的 AI 模型
+
+本项目翻唱流水线由四个核心模型组成：
+
+| 环节 | 模型 | 用途 |
+|------|------|------|
+| 人声分离 | Mel-Band Roformer (KimberleyJensen) | 从混音中分离人声与伴奏 |
+| 特征提取 | HuBERT Base | 提取语音内容特征供 RVC 使用 |
+| 音高提取 | RMVPE | 从人声中提取 F0 基频曲线 |
+| 语音转换 | RVC v2 | 将人声音色转换为目标角色 |
+
+---
+
+### 人声分离模型：Mel-Band Roformer (KimberleyJensen)
+
+默认使用 **Mel-Band Roformer** 进行人声/伴奏分离，通过 [audio-separator](https://github.com/nomadkaraoke/python-audio-separator) 库调用。
+
+| 项目 | 详情 |
+|------|------|
+| 模型全称 | Mel-Band RoFormer |
+| 论文 | [Mel-Band RoFormer for Music Source Separation](https://arxiv.org/abs/2310.01809) (ByteDance) |
+| 检查点 | `mel_band_roformer_vocals_model_KimberleyJensen.ckpt` |
+| 训练者 | [KimberleyJensen](https://huggingface.co/KimberleyJSN/melbandroformer) |
+| 公开对比（Multisong） | Vocals SDR **11.01** / Instrum SDR **17.32**（[MVSEP](https://mvsep.com/algorithms/49)） |
+| 模型文件体积 | 由上游发布决定（会变化）；首次运行自动下载到 `assets/separator_models/` |
+| 调用方式 | 通过 [audio-separator](https://github.com/nomadkaraoke/python-audio-separator) 库封装 |
+| 首次使用 | 自动下载并缓存到 `assets/separator_models/` |
+
+核心思想：将频谱按 mel-scale 频段划分后独立建模，用 RoPE 增强时序建模，相比 BS-RoFormer 的线性频段划分更符合人耳感知特性。
+
+#### MVSEP 公开 Multisong 指标摘录（2026-03-06）
+
+> 统一记法：`Vocals SDR / Instrum SDR`（dB）。
+
+| 模型 | Vocals SDR | Instrum SDR | 备注 |
+|------|------------|-------------|------|
+| `htdemucs` | 8.38 | 16.31 | Demucs 基线 |
+| `htdemucs_ft` | 9.40 | 16.86 | Demucs 微调版 |
+| `bs_roformer_viperx_1053` | 10.87 | 17.17 | BS-Roformer |
+| `mel_band_roformer_vocals_kimberleyjensen` | 11.01 | 17.32 | 本仓库当前默认 |
+| `bs_roformer_ep_368_sdr_12.9628` | 11.89 | 17.84 | 可作为可选替代 |
+
+> 说明：不同数据集/协议不可直接横比；本仓库默认保持 KimberleyJensen 配置，优先稳定可复现。
+
+---
+
+### 语音转换模型：RVC v2
+
+使用 **RVC v2**（Retrieval-based Voice Conversion v2）进行人声音色转换。
+
+| 项目 | 详情 |
+|------|------|
+| 模型全称 | Retrieval-based Voice Conversion v2 |
+| 来源 | [RVC-Project](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) |
+| 架构 | HuBERT 特征提取 → F0 条件 → 生成器 + FAISS 索引检索 |
+| 特征提取器 | HuBERT Base（`hubert_base.pt`，~190 MB） |
+| 训练数据 | 各角色模型独立训练（规模依模型作者而异） |
+| 模型生态（第三方聚合站） | [voice-models.com](https://voice-models.com/) 列表页显示 **201,964**（2026-03-06 访问，含重复与质量差异） |
+| 许可证 | MIT |
+
+#### 同领域语音转换框架对比
+
+| 框架 | 来源 | 架构 | 说明 |
+|------|------|------|------|
+| [RVC v2](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI)（当前） | RVC-Project | HuBERT + 检索增强生成 | 本项目当前采用 |
+| [so-vits-svc](https://github.com/PlayVoice/whisper-vits-svc) | PlayVoice | VITS 系列 | 常见开源 SVC 路线 |
+| [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) | RVC-Boss | GPT + VITS few-shot | 更偏 TTS/语音克隆 |
+| [DDSP-SVC](https://github.com/yxlllc/DDSP-SVC) | yxlllc | DDSP | 轻量实时方向 |
+| [Seed-VC](https://arxiv.org/html/2407.07728v3) | 研究论文 | 零样本 VC | 研究方向 |
+
+> **结论**：在“角色模型翻唱”工作流里，RVC v2 目前仍是工程上最易落地的选项之一（模型与工具链成熟）。
+
+---
+
+### F0 提取模型：RMVPE
+
+使用 **RMVPE** 从人声中提取基频（F0）曲线，用于保持转换后的音高/旋律。
+
+| 项目 | 详情 |
+|------|------|
+| 模型全称 | Robust Model for Vocal Pitch Estimation in Polyphonic Music |
+| 论文 | [arXiv:2306.15412](https://arxiv.org/abs/2306.15412) |
+| 检查点 | `rmvpe.pt`（`assets/rmvpe/`） |
+| 核心优势 | 直接从多声道混音中提取人声音高，噪声鲁棒性强 |
+| 指标 | 论文报告在 RPA/RCA 等指标上优于 CREPE、pYIN、SWIPE、Harvest 等基线 |
+
+#### 同领域 F0 提取模型对比
+
+| 模型 | 来源 | 说明 |
+|------|------|------|
+| [RMVPE](https://arxiv.org/abs/2306.15412)（当前） | Dream-High | 当前项目默认方案，兼顾精度与鲁棒性 |
+| [FCPE](https://arxiv.org/html/2509.15140) | 2025 论文 | 论文给出 RTF 0.0062、RPA 96.79%（VCTK），实时潜力高 |
+| [CREPE](https://github.com/marl/crepe) | NYU MARL | 经典 CNN 方案，生态成熟 |
+| [Harvest](https://github.com/mmorise/World) | WORLD | 传统信号处理方案，部署简单 |
+
+> **结论**：默认推荐 RMVPE；若场景强依赖实时性，可关注 FCPE 等新方案。
+
+---
+
+### 特征提取模型：HuBERT Base
+
+| 项目 | 详情 |
+|------|------|
+| 模型全称 | Hidden-Unit BERT |
+| 来源 | [Meta AI / fairseq](https://github.com/facebookresearch/fairseq/tree/main/examples/hubert) |
+| 检查点 | `hubert_base.pt`（`assets/hubert/`，~190 MB） |
+| 用途 | 提取语音内容特征（去除说话人信息），供 RVC 生成器使用 |
+| 说明 | RVC v2 架构绑定 HuBERT Base；WavLM/ContentVec 在其他框架中可能更优，但 RVC 模型基于 HuBERT 训练，不可替换 |
+
+## 参数说明
+
+### 转换参数
 
 | 参数 | 说明 | 建议值 |
 |------|------|--------|
 | 音调偏移 | 半音数，正数升调，负数降调 | 男转女: +12, 女转男: -12 |
-| F0 提取方法 | 音高提取算法 | rmvpe (质量最高) |
-| 索引比率 | 越高越像训练音色 | 0.5 |
-| 中值滤波 | 减少气息噪声 | 3 |
-| 响度混合 | 输出响度控制 | 0.25 |
-| 清辅音保护 | 保护清辅音和呼吸声 | 0.33 |
+| F0 提取方法 | 音高提取算法 | rmvpe（默认） |
+| 索引比率 | 越高越像训练音色 | 0.1-0.5 |
+| 滤波半径 | 中值滤波，减少气音抖动 | 3 |
+| 保护系数 | 防止撕裂伪影，越小保护越强 | 0.33 |
+
+### 混音参数（翻唱）
+
+| 参数 | 说明 | 建议值 |
+|------|------|--------|
+| 人声音量 | 转换后人声的音量 | 100% |
+| 伴奏音量 | 背景伴奏的音量 | 100% |
+| 人声混响 | 为人声添加空间感 | 10-20% |
+
+### 人声分离参数 (config.json)
+
+| 参数 | 说明 | 建议值 |
+|------|------|--------|
+| separator | 分离器类型 | roformer（推荐）、uvr5 或 demucs |
+| uvr5_model | UVR5 模型 | HP2_all_vocals |
+| uvr5_agg | UVR5 激进度 (1-10) | 6-8（高音问题可降低） |
+
+## 配置文件
+
+主要配置在 `configs/config.json`：
+
+```json
+{
+  "device": "cuda",
+  "f0_method": "rmvpe",
+  "index_rate": 0.1,
+  "filter_radius": 3,
+  "protect": 0.33,
+  "cover": {
+    "separator": "roformer",
+    "uvr5_model": "HP2_all_vocals",
+    "uvr5_agg": 8,
+    "backing_mix": 0.0
+  }
+}
+```
+
+## 可用角色模型（100+，当前清单 117）
+
+| 系列 | 角色示例 |
+|------|----------|
+| Love Live! | 星空凛、园田海未、东条希、小泉花阳、南小鸟 |
+| Love Live! Sunshine!! | 高海千歌、樱内梨子、黑泽黛雅、黑泽露比、国木田花丸、津岛善子、小原鞠莉、渡边曜、松浦果南 |
+| Love Live! 虹咲学园 | 上原步梦、中须霞、天王寺璃奈、近江彼方、优木雪菜、三船栞子、米雅·泰勒 |
+| Love Live! Superstar!! | 唐可可、平安名堇 |
+| 偶像大师 | 神崎兰子、梦见莉亚梦、双叶杏、本田未央、岛村卯月 |
+| 原神 | 芙宁娜、枫原万叶、纳西妲、八重神子、雷电将军 |
+| 碧蓝航线 | 埃塞克斯 |
+| Hololive | Fuwawa、Mococo |
+| 原创 | 爱美 (Aimi) |
+
+> 完整列表请在 UI 中查看「下载角色模型」面板
 
 ## 项目结构
 
 ```
 AI-RVC/
-├── venv/                # 虚拟环境 (运行 setup.bat 后生成)
-├── assets/              # 模型文件
-│   ├── hubert/          # HuBERT 模型
-│   ├── rmvpe/           # RMVPE 模型
-│   ├── pretrained_v2/   # 预训练权重
-│   └── weights/         # 用户语音模型
-├── configs/             # 配置文件
-├── i18n/                # 语言包
-├── infer/               # 推理模块
-├── lib/                 # 核心库
-├── models/              # 模型定义
-├── mcp/                 # MCP 服务器
-├── tools/               # 工具脚本
-├── ui/                  # Gradio 界面
-├── run.py               # 主入口
-├── run.bat              # Windows 启动脚本
-└── setup.bat            # Windows 安装脚本
+├── venv310/                 # 虚拟环境 (Python 3.10)
+├── assets/                  # 模型文件
+│   ├── hubert/              # HuBERT 模型 (~190 MB)
+│   ├── rmvpe/               # RMVPE 模型
+│   ├── uvr5_weights/        # UVR5 人声分离模型
+│   ├── separator_models/    # Roformer 人声分离模型 (自动下载)
+│   └── weights/             # 用户语音模型
+│       └── characters/      # 角色模型 (100+，自动下载)
+├── configs/                 # 配置文件
+│   └── config.json          # 主配置
+├── infer/                   # 推理模块
+│   ├── pipeline.py          # 自定义 RVC 推理管道
+│   ├── cover_pipeline.py    # 翻唱流水线
+│   ├── separator.py         # 人声分离 (Roformer/Demucs)
+│   └── modules/             # 官方 VC 模块
+│       ├── vc/              # 官方 VC 管道
+│       └── uvr5/            # UVR5 人声分离
+├── lib/                     # 核心库
+│   ├── audio.py             # 音频处理
+│   ├── mixer.py             # 混音模块
+│   └── logger.py            # 日志系统
+├── models/                  # 模型定义
+├── tools/                   # 工具脚本
+│   ├── download_models.py   # 基础模型下载
+│   └── character_models.py  # 角色模型管理
+├── ui/                      # Gradio 界面
+├── outputs/                 # 输出文件
+├── temp/                    # 临时文件
+└── run.py                   # 主入口
 ```
-
-## MCP 服务器
-
-本项目可作为 Claude Code 的 MCP 服务器使用，提供以下工具：
-
-- `convert_voice`: 语音转换
-- `list_models`: 列出可用模型
-- `download_model`: 下载基础模型
-- `check_models`: 检查模型状态
-
-配置文件位于 `.claude/mcp.json`。
 
 ## 常见问题
 
-### Q: CUDA out of memory
+**Q: CUDA out of memory**
 
-A: 尝试以下方法：
-- 使用较短的音频
+人声分离通常需要约 4GB 以上显存（取决于音频时长和模型），尝试：
 - 关闭其他占用显存的程序
-- 使用 CPU 模式 (在 .env 中设置 `DEVICE=cpu`)
+- 使用较短的音频（建议 < 5 分钟）
+- 在 config.json 中切换 separator 为 demucs 或 uvr5
 
-### Q: 转换后声音失真
+**Q: 首次运行很慢**
 
-A: 尝试以下方法：
-- 降低索引比率
-- 使用更高质量的输入音频
-- 确保输入音频是干声 (无伴奏)
+首次运行会自动下载模型文件（大小随模型版本变化），请耐心等待。
 
-### Q: 模型下载失败
+**Q: 高音断音/撕裂**
 
-A: 尝试以下方法：
-- 检查网络连接
-- 使用代理或镜像源
-- 手动下载模型文件放入对应目录
+这通常是 F0 提取不稳定导致的，尝试：
+- 降低 UVR5 激进度（`uvr5_agg`: 8 → 6-7）
+- 降低保护系数（`protect`: 0.33 → 0.2）
+- 增大滤波半径（`filter_radius`: 3 → 5）
+- 使用更干净的输入音频
 
-## 致谢
+**Q: 转换后声音失真**
 
-- [RVC-Project](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) - 原始 RVC 项目
-- [RMVPE](https://github.com/Dream-High/RMVPE) - 高质量 F0 提取
-- [Gradio](https://gradio.app/) - Web 界面框架
+尝试：降低索引比率、调整音调偏移、使用更高质量的输入音频。
+
+**Q: 角色模型下载失败**
+
+检查网络连接，或手动下载：
+```bash
+python -c "from tools.character_models import download_character_model; download_character_model('rin')"
+```
+
+**Q: faiss AVX512 警告**
+
+正常的回退机制，faiss 会自动使用 AVX2，不影响功能。
+
+**Q: CUDA 不可用**
+```bash
+nvidia-smi
+python -c "import torch; print(torch.cuda.is_available())"
+```
+
+## 数据核验说明（2026-03-06）
+
+以下外部数据已在 2026-03-06 复核，README 中涉及的关键数字以这些来源为准：
+
+- MVSEP 算法页（Multisong 指标与模型分数）：https://mvsep.com/algorithms  
+- MVSEP 算法详情（KimberleyJensen 模型）：https://mvsep.com/algorithms/49  
+- RVC 官方仓库与许可证：https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI  
+- 第三方模型聚合计数（voice-models 列表页）：https://voice-models.com/models  
+- RMVPE 论文：https://arxiv.org/abs/2306.15412  
+- FCPE 论文：https://arxiv.org/html/2509.15140  
+- PyTorch 安装页面（当前 CUDA wheel 选择）：https://pytorch.org/get-started/locally/
+
+## 贡献
+
+欢迎提交 Pull Request。
+
+1. Fork 本仓库
+2. 创建功能分支：`git checkout -b feature/amazing-feature`
+3. 提交更改：`git commit -m 'feat: add amazing feature'`
+4. 推送分支：`git push origin feature/amazing-feature`
+5. 创建 Pull Request
 
 ## 许可证
 
 MIT License
+
+## 致谢
+
+- [RVC-Project](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) - 原始 RVC 项目
+- [Mel-Band RoFormer](https://arxiv.org/abs/2310.01809) - 人声分离模型架构论文
+- [audio-separator](https://github.com/nomadkaraoke/python-audio-separator) - 音源分离推理框架
+- [Music-Source-Separation-Training](https://github.com/ZFTurbo/Music-Source-Separation-Training) - Roformer 预训练权重
+- [UVR5](https://github.com/Anjok07/ultimatevocalremovergui) - Ultimate Vocal Remover
+- [Demucs](https://github.com/facebookresearch/demucs) - Meta 人声分离
+- [RMVPE](https://arxiv.org/abs/2306.15412) - 高质量 F0 提取
+- [HuBERT](https://github.com/facebookresearch/fairseq/tree/main/examples/hubert) - 语音特征提取
+- [Gradio](https://gradio.app/) - Web 界面框架
+
+## 免责声明
+
+**重要提示：使用本软件前请仔细阅读以下声明**
+
+1. **仅供学习研究**：本项目仅供学习、研究和个人娱乐用途，不得用于任何商业目的。
+
+2. **禁止非法使用**：严禁使用本软件进行以下行为：
+   - 未经授权模仿他人声音进行欺诈、诈骗
+   - 制作虚假音频用于传播谣言或误导公众
+   - 侵犯他人肖像权、名誉权或其他合法权益
+   - 任何违反当地法律法规的行为
+
+3. **版权声明**：
+   - 使用本软件转换的音频版权归原作者所有
+   - 用户需自行获取原始音频和模型的使用授权
+   - 本项目内置的角色模型仅供技术演示，请勿用于商业用途
+
+4. **用户责任**：用户对使用本软件产生的所有内容和后果承担全部责任。开发者不对任何滥用行为负责。
+
+5. **无担保声明**：本软件按"原样"提供，不提供任何明示或暗示的担保。
+
+**使用本软件即表示您已阅读、理解并同意以上声明。**

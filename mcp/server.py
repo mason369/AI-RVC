@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MCP 服务器 - 为 Claude Code 提供语音转换工具
+MCP 服务器 - 为 Claude Code 提供 AI 翻唱工具
 """
 import asyncio
 import json
@@ -37,7 +37,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="convert_voice",
-            description="使用 RVC 模型进行语音转换",
+            description="使用 RVC 模型进行 AI 翻唱",
             inputSchema={
                 "type": "object",
                 "properties": {

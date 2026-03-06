@@ -1,4 +1,4 @@
-# RVC v2 语音转换依赖
+# RVC AI 翻唱依赖
 
 # PyTorch (根据 CUDA 版本选择)
 torch>=2.0.0
@@ -10,6 +10,7 @@ gradio==3.50.2
 # 音频处理
 librosa>=0.9.0
 soundfile>=0.12.0
+av>=10.0.0
 scipy>=1.10.0
 numpy>=1.23.0
 praat-parselmouth>=0.4.3
@@ -23,6 +24,16 @@ faiss-cpu>=1.7.4
 tqdm>=4.65.0
 requests>=2.28.0
 python-dotenv>=1.0.0
+colorama>=0.4.6
 
 # MCP 服务器
 mcp>=1.0.0
+
+# AI 翻唱功能
+demucs>=4.0.0          # 人声分离 (Demucs)
+audio-separator[gpu]   # 人声分离 (Mel-Band Roformer)
+huggingface_hub>=0.19.0 # 模型下载
+pedalboard>=0.7.0      # 音频效果(混响)
+
+ffmpeg-python>=0.2.0   # FFmpeg 绑定
+fairseq==0.12.2        # HuBERT 特征提取

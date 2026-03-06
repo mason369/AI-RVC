@@ -28,6 +28,7 @@ env/
 # IDE
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 
@@ -38,10 +39,17 @@ env/
 assets/hubert/*.pt
 assets/rmvpe/*.pt
 assets/pretrained_v2/*.pth
+assets/separator_models/
+assets/uvr5_weights/
 assets/weights/*.pth
 assets/weights/*.index
+assets/weights/characters/**/*.pth
+assets/weights/characters/**/*.index
+assets/weights/official_models/
+assets/weights/official_indexes/
 
 # 临时文件
+temp/
 *.tmp
 *.temp
 *.log
@@ -56,3 +64,11 @@ logs/
 
 # Gradio
 flagged/
+/venv310
+
+# 上游参考代码 (vendored, 独立 git repo)
+_official_rvc/
+
+# 输出文件
+output/
+outputs/
