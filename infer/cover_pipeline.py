@@ -124,11 +124,18 @@ class CoverPipeline:
         for _ in uvr(model_name, str(input_dir), str(vocal_dir), [], str(ins_dir), 10, "wav"):
             pass
 
-        vocal_files = sorted(vocal_dir.glob("*.wav"), key=lambda path: path.stat().st_mtime)
-        if not vocal_files:
-            log.warning("UVR DeEcho 未生成输出，回退到原始主唱直通")
+        preferred_files = sorted(
+            vocal_dir.glob("instrument_*.wav"),
+            key=lambda path: path.stat().st_mtime,
+        )
+        if not preferred_files:
+            preferred_files = sorted(vocal_dir.glob("*.wav"), key=lambda path: path.stat().st_mtime)
+        if not preferred_files:
+            log.warning("UVR DeEcho produced no usable vocal output; falling back to direct lead input")
             return None
-        return str(vocal_files[-1])
+        selected_file = preferred_files[-1]
+        log.audio(f"UVR DeEcho selected vocal output: {selected_file.name}")
+        return str(selected_file)
 
     def _init_separator(
         self,
