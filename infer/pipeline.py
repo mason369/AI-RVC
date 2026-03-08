@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional, Tuple, Union
 from scipy import signal as sp_signal
 
-from lib.audio import load_audio, save_audio, normalize_audio
+from lib.audio import load_audio, save_audio, normalize_audio, soft_clip
 from lib.device import get_device, empty_device_cache, supports_fp16
 from lib.logger import log
 from infer.f0_extractor import get_f0_extractor, shift_f0, F0Method
@@ -37,6 +37,7 @@ class VoiceConversionPipeline:
         self.voice_model = None
         self.index = None
         self.f0_extractor = None
+        self.spk_count = 1
 
         # 默认参数
         self.sample_rate = 16000  # HuBERT 输入采样率
@@ -230,6 +231,7 @@ class VoiceConversionPipeline:
             gin_channels=model_config.get("gin_channels", 256),
             sr=self.output_sr
         )
+        self.spk_count = int(model_config.get("spk_embed_dim", 1) or 1)
 
         # 加载权重
         self.voice_model.load_state_dict(cpt["weight"], strict=False)
@@ -409,7 +411,7 @@ class VoiceConversionPipeline:
         rms_out = rms_out[:min_len]
 
         gain = rms_in / (rms_out + 1e-6)
-        gain = np.clip(gain, 0.1, 10.0)
+        gain = np.clip(gain, 0.2, 4.0)
         gain = gain ** rms_mix_rate
 
         gain_samples = np.repeat(gain, hop_out)
@@ -516,7 +518,8 @@ class VoiceConversionPipeline:
         self,
         features: np.ndarray,
         f0: np.ndarray,
-        use_fp16: bool = False
+        use_fp16: bool = False,
+        speaker_id: int = 0,
     ) -> np.ndarray:
         """
         处理单个音频块
@@ -561,7 +564,8 @@ class VoiceConversionPipeline:
         log.debug(f"[_process_chunk] F0 张量: shape={f0_tensor.shape}, max={f0_tensor.max().item():.1f}, min={f0_tensor.min().item():.1f}")
         log.debug(f"[_process_chunk] F0 coarse (pitch索引): shape={f0_coarse.shape}, max={f0_coarse.max().item()}, min={f0_coarse.min().item()}")
 
-        sid = torch.tensor([0], device=self.device)
+        safe_speaker_id = int(max(0, min(max(1, int(self.spk_count)) - 1, int(speaker_id))))
+        sid = torch.tensor([safe_speaker_id], device=self.device)
         log.debug(f"[_process_chunk] 说话人 ID: {sid.item()}")
 
         # FP16 推理
@@ -610,6 +614,7 @@ class VoiceConversionPipeline:
         resample_sr: int = 0,
         rms_mix_rate: float = 0.25,
         protect: float = 0.33,
+        speaker_id: int = 0,
         silence_gate: bool = False,
         silence_threshold_db: float = -40.0,
         silence_smoothing_ms: float = 50.0,
@@ -627,6 +632,7 @@ class VoiceConversionPipeline:
             resample_sr: 重采样率 (0 表示不重采样)
             rms_mix_rate: RMS 混合比率
             protect: 保护清辅音
+            speaker_id: 说话人 ID（多说话人模型可调）
             silence_gate: 启用静音门限
             silence_threshold_db: 静音阈值 (dB, 相对峰值)
             silence_smoothing_ms: 门限平滑时长 (ms)
@@ -647,6 +653,7 @@ class VoiceConversionPipeline:
         audio = load_audio(audio_path, sr=self.sample_rate)
         audio = normalize_audio(audio)
         rms_mix_rate = float(np.clip(rms_mix_rate, 0.0, 1.0))
+        speaker_id = int(max(0, min(max(1, int(self.spk_count)) - 1, int(speaker_id))))
 
         # 高通滤波去除低频隆隆声（与官方管道一致）
         audio = sp_signal.filtfilt(_bh, _ah, audio).astype(np.float32)
@@ -699,6 +706,40 @@ class VoiceConversionPipeline:
                 protect_mask = protect_mask[:, np.newaxis]  # [T, 1] 广播到 [T, C]
                 features = features * protect_mask + features_before_index * (1 - protect_mask)
 
+        # --- 能量感知硬门控（索引+protect 之后、分块推理之前）---
+        import librosa as _librosa_local
+        _hop_feat = 320  # HuBERT hop
+        _n_feat = features.shape[0]
+        _frame_rms = _librosa_local.feature.rms(
+            y=audio, frame_length=_hop_feat * 2, hop_length=_hop_feat, center=True
+        )[0]
+        if _frame_rms.ndim > 1:
+            _frame_rms = _frame_rms[0]
+        if len(_frame_rms) > _n_feat:
+            _frame_rms = _frame_rms[:_n_feat]
+        elif len(_frame_rms) < _n_feat:
+            _frame_rms = np.pad(_frame_rms, (0, _n_feat - len(_frame_rms)), mode='edge')
+        _energy_db = 20.0 * np.log10(_frame_rms + 1e-8)
+        _ref_db = float(np.percentile(_energy_db, 95)) if _frame_rms.size > 0 else -20.0
+        # 硬门控：只有低于 ref-45dB 的真正静默帧被清零
+        _silence_threshold = _ref_db - 45.0
+        _energy_gate = (_energy_db > _silence_threshold).astype(np.float32)
+        _sm = np.array([1, 2, 3, 2, 1], dtype=np.float32)
+        _sm /= _sm.sum()
+        _energy_gate = np.convolve(_energy_gate, _sm, mode='same')[:_n_feat]
+        _energy_gate = (_energy_gate > 0.5).astype(np.float32)  # 重新二值化
+
+        # 特征硬门控（50fps）
+        features = features * _energy_gate[:, np.newaxis]
+
+        # F0 硬清零（100fps = 特征帧率 × 2）
+        _f0_gate = np.repeat(_energy_gate, 2)
+        if len(_f0_gate) > len(f0):
+            _f0_gate = _f0_gate[:len(f0)]
+        elif len(_f0_gate) < len(f0):
+            _f0_gate = np.pad(_f0_gate, (0, len(f0) - len(_f0_gate)), mode='constant', constant_values=1.0)
+        f0 = f0 * _f0_gate
+
         # 步骤3: 语音合成 (voice_model 推理) - 分块处理
         # 分块参数
         CHUNK_SECONDS = 30  # 每块 30 秒
@@ -713,7 +754,7 @@ class VoiceConversionPipeline:
 
         # 如果音频短于一块，直接处理
         if total_frames <= chunk_frames:
-            audio_out = self._process_chunk(features, f0)
+            audio_out = self._process_chunk(features, f0, speaker_id=speaker_id)
         else:
             # 分块处理
             log.info(f"音频较长 ({total_frames} 帧)，启用分块处理...")
@@ -733,7 +774,7 @@ class VoiceConversionPipeline:
                 log.debug(f"处理块 {chunk_idx}: 帧 {start}-{end}")
 
                 # 处理当前块
-                chunk_audio = self._process_chunk(chunk_features, chunk_f0)
+                chunk_audio = self._process_chunk(chunk_features, chunk_f0, speaker_id=speaker_id)
                 audio_chunks.append(chunk_audio)
                 chunk_idx += 1
 
@@ -788,8 +829,8 @@ class VoiceConversionPipeline:
                 protect=protect
             )
 
-        # 归一化输出音频，确保响度合理
-        audio_out = normalize_audio(audio_out, target_db=-20.0)
+        # 峰值限幅（不改变整体响度，后续由 cover_pipeline 控制音量）
+        audio_out = soft_clip(audio_out, threshold=0.9, ceiling=0.99)
 
         # 保存
         save_audio(output_path, audio_out, sr=save_sr)

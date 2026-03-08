@@ -4,6 +4,7 @@ Gradio 界面 - RVC AI 翻唱
 """
 import os
 import json
+import re
 import tempfile
 import gradio as gr
 from pathlib import Path
@@ -47,6 +48,8 @@ def normalize_config(config: dict) -> dict:
         config["weights_dir"] = paths["weights"]
     if "output_dir" not in config and "outputs" in paths:
         config["output_dir"] = paths["outputs"]
+    elif config.get("output_dir") == "output" and "outputs" in paths:
+        config["output_dir"] = paths["outputs"]
     if "temp_dir" not in config and "temp" in paths:
         config["temp_dir"] = paths["temp"]
 
@@ -68,6 +71,13 @@ def t(key: str, section: str = None) -> str:
 def _to_int(value, fallback: int) -> int:
     try:
         return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _to_float(value, fallback: float) -> float:
+    try:
+        return float(value)
     except (TypeError, ValueError):
         return fallback
 
@@ -350,22 +360,29 @@ def process_cover(
     audio_path: str,
     character_name: str,
     pitch_shift: int,
+    index_ratio: float,
+    speaker_id: float,
+    karaoke_separation: bool,
+    karaoke_merge_backing_into_accompaniment: bool,
     vocals_volume: float,
     accompaniment_volume: float,
     reverb_amount: float,
+    rms_mix_rate: float,
+    backing_mix: float,
     progress=gr.Progress()
-) -> Tuple[Optional[str], Optional[str], Optional[str], str]:
+) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[str], Optional[str], str]:
     """
     处理翻唱
 
     Returns:
-        Tuple[cover_path, vocals_path, accompaniment_path, status]
+        Tuple[cover, converted_vocals, original_vocals, lead_vocals, backing_vocals, accompaniment, status]
     """
+    _none6 = (None, None, None, None, None, None)
     if audio_path is None:
-        return None, None, None, "请上传歌曲文件"
+        return *_none6, "请上传歌曲文件"
 
     if not character_name:
-        return None, None, None, "请选择角色"
+        return *_none6, "请选择角色"
 
     try:
         from tools.character_models import get_character_model_path
@@ -375,7 +392,7 @@ def process_cover(
         resolved_name = resolve_character_name(character_name)
         model_info = get_character_model_path(resolved_name)
         if model_info is None:
-            return None, None, None, f"角色模型不存在: {resolved_name}"
+            return *_none6, f"角色模型不存在: {resolved_name}"
 
         # 进度回调
         def progress_callback(msg: str, step: int, total: int):
@@ -397,16 +414,19 @@ def process_cover(
         uvr5_format = cover_cfg.get("uvr5_format", "wav")
         use_official = bool(cover_cfg.get("use_official", True))
         f0_method = cover_cfg.get("f0_method", config.get("f0_method", "rmvpe"))
-        index_ratio = cover_cfg.get("index_rate", config.get("index_rate", 0.5))
         filter_radius = cover_cfg.get("filter_radius", config.get("filter_radius", 3))
-        rms_mix_rate = cover_cfg.get("rms_mix_rate", config.get("rms_mix_rate", 0.25))
         protect = cover_cfg.get("protect", config.get("protect", 0.33))
         silence_gate = cover_cfg.get("silence_gate", True)
         silence_threshold_db = cover_cfg.get("silence_threshold_db", -40.0)
         silence_smoothing_ms = cover_cfg.get("silence_smoothing_ms", 50.0)
         silence_min_duration_ms = cover_cfg.get("silence_min_duration_ms", 200.0)
         hubert_layer = cover_cfg.get("hubert_layer", config.get("hubert_layer", 12))
-        backing_mix = float(cover_cfg.get("backing_mix", 0.0))
+        karaoke_model = cover_cfg.get("karaoke_model", "mel_band_roformer_karaoke_gabox.ckpt")
+
+        index_ratio = max(0.0, min(1.0, float(index_ratio) / 100.0))
+        speaker_id = int(max(0, round(float(speaker_id))))
+        rms_mix_rate = max(0.0, min(1.0, float(rms_mix_rate) / 100.0))
+        backing_mix = max(0.0, min(1.0, float(backing_mix) / 100.0))
 
         # 输出目录
         output_dir = ROOT_DIR / config.get("paths", {}).get(
@@ -424,6 +444,7 @@ def process_cover(
             filter_radius=filter_radius,
             rms_mix_rate=rms_mix_rate,
             protect=protect,
+            speaker_id=speaker_id,
             f0_method=f0_method,
             demucs_model=demucs_model,
             demucs_shifts=demucs_shifts,
@@ -443,22 +464,33 @@ def process_cover(
             accompaniment_volume=accompaniment_volume / 100,
             reverb_amount=reverb_amount / 100,
             backing_mix=backing_mix,
+            karaoke_separation=bool(karaoke_separation),
+            karaoke_model=karaoke_model,
+            karaoke_merge_backing_into_accompaniment=bool(karaoke_merge_backing_into_accompaniment),
             output_dir=str(output_dir),
+            model_display_name=resolved_name,
             progress_callback=progress_callback
         )
+
+        status_msg = "✅ 翻唱完成!"
+        if result.get("all_files_dir"):
+            status_msg += f"\n全部文件目录: {result['all_files_dir']}"
 
         return (
             result["cover"],
             result["converted_vocals"],
+            result.get("vocals"),
+            result.get("lead_vocals"),
+            result.get("backing_vocals"),
             result["accompaniment"],
-            "✅ 翻唱完成!"
+            status_msg
         )
 
     except Exception as e:
         import traceback
         error_msg = str(e) if str(e) else traceback.format_exc()
         log.error(f"处理失败: {error_msg}")
-        return None, None, None, f"❌ 处理失败: {error_msg}"
+        return None, None, None, None, None, None, f"❌ 处理失败: {error_msg}"
 
 
 def check_models_status() -> str:
@@ -1250,6 +1282,7 @@ def create_ui() -> gr.Blocks:
                     # 右侧：参数设置
                     with gr.Column(scale=1):
                         gr.Markdown(f"#### ⚙️ {t('conversion_settings', 'cover')}")
+                        cover_cfg = config.get("cover", {})
 
                         cover_pitch_shift = gr.Slider(
                             label=t("pitch_shift", "cover"),
@@ -1260,7 +1293,48 @@ def create_ui() -> gr.Blocks:
                             info="正数升调，负数降调"
                         )
 
+                        cover_index_rate = gr.Slider(
+                            label=t("index_rate", "cover"),
+                            minimum=0,
+                            maximum=100,
+                            value=_to_int(
+                                round(
+                                    _to_float(
+                                        cover_cfg.get("index_rate", config.get("index_rate", 0.35)),
+                                        0.35,
+                                    ) * 100
+                                ),
+                                35,
+                            ),
+                            step=5,
+                            info=t("index_rate_info", "cover"),
+                        )
+
+                        cover_speaker_id = gr.Slider(
+                            label=t("speaker_id", "cover"),
+                            minimum=0,
+                            maximum=255,
+                            value=_to_int(cover_cfg.get("speaker_id", 0), 0),
+                            step=1,
+                            info=t("speaker_id_info", "cover"),
+                        )
+
                         gr.Markdown(f"#### 🎚️ {t('mix_settings', 'cover')}")
+                        cover_karaoke = gr.Checkbox(
+                            label=t("karaoke_separation", "cover"),
+                            value=bool(cover_cfg.get("karaoke_separation", True)),
+                            info=t("karaoke_separation_info", "cover")
+                        )
+                        cover_karaoke_merge_backing = gr.Checkbox(
+                            label=t("karaoke_merge_backing", "cover"),
+                            value=bool(
+                                cover_cfg.get(
+                                    "karaoke_merge_backing_into_accompaniment",
+                                    True
+                                )
+                            ),
+                            info=t("karaoke_merge_backing_info", "cover")
+                        )
 
                         mix_presets, default_mix_preset = get_cover_mix_presets()
                         default_mix = mix_presets[default_mix_preset]
@@ -1300,6 +1374,38 @@ def create_ui() -> gr.Blocks:
                             info="为人声添加混响效果"
                         )
 
+                        cover_rms_mix_rate = gr.Slider(
+                            label=t("rms_mix_rate", "cover"),
+                            minimum=0,
+                            maximum=100,
+                            value=_to_int(
+                                round(
+                                    _to_float(
+                                        cover_cfg.get(
+                                            "rms_mix_rate",
+                                            config.get("rms_mix_rate", 0.15),
+                                        ),
+                                        0.15,
+                                    ) * 100
+                                ),
+                                15,
+                            ),
+                            step=5,
+                            info=t("rms_mix_rate_info", "cover"),
+                        )
+
+                        cover_backing_mix = gr.Slider(
+                            label=t("backing_mix", "cover"),
+                            minimum=0,
+                            maximum=100,
+                            value=_to_int(
+                                round(_to_float(cover_cfg.get("backing_mix", 0.0), 0.0) * 100),
+                                0,
+                            ),
+                            step=5,
+                            info=t("backing_mix_info", "cover"),
+                        )
+
                 # 开始按钮
                 cover_btn = gr.Button(
                     f"🚀 {t('start_cover', 'cover')}",
@@ -1325,11 +1431,30 @@ def create_ui() -> gr.Blocks:
                     )
 
                 with gr.Row():
-                    cover_vocals_output = gr.Audio(
+                    cover_converted_vocals_output = gr.Audio(
                         label=t("converted_vocals", "cover"),
                         type="filepath",
                         interactive=False
                     )
+                    cover_original_vocals_output = gr.Audio(
+                        label=t("original_vocals", "cover"),
+                        type="filepath",
+                        interactive=False
+                    )
+
+                with gr.Row():
+                    cover_lead_vocals_output = gr.Audio(
+                        label=t("lead_vocals", "cover"),
+                        type="filepath",
+                        interactive=False
+                    )
+                    cover_backing_vocals_output = gr.Audio(
+                        label=t("backing_vocals", "cover"),
+                        type="filepath",
+                        interactive=False
+                    )
+
+                with gr.Row():
                     cover_accompaniment_output = gr.Audio(
                         label=t("accompaniment", "cover"),
                         type="filepath",
@@ -1401,13 +1526,22 @@ def create_ui() -> gr.Blocks:
                         cover_input_audio,
                         character_dropdown,
                         cover_pitch_shift,
+                        cover_index_rate,
+                        cover_speaker_id,
+                        cover_karaoke,
+                        cover_karaoke_merge_backing,
                         cover_vocals_volume,
                         cover_accompaniment_volume,
-                        cover_reverb
+                        cover_reverb,
+                        cover_rms_mix_rate,
+                        cover_backing_mix,
                     ],
                     outputs=[
                         cover_output,
-                        cover_vocals_output,
+                        cover_converted_vocals_output,
+                        cover_original_vocals_output,
+                        cover_lead_vocals_output,
+                        cover_backing_vocals_output,
                         cover_accompaniment_output,
                         cover_status
                     ]
@@ -1548,6 +1682,68 @@ def create_ui() -> gr.Blocks:
     return app
 
 
+def _patch_gradio_file_download(blocks):
+    """
+    Patch Gradio v3 的 /file= 路由，为文件添加 Content-Disposition header，
+    使浏览器下载时使用干净的文件名而非完整路径。
+    """
+    try:
+        from starlette.responses import FileResponse
+        from urllib.parse import quote
+        import fastapi
+
+        def _clean_download_name(response: FileResponse, path_or_url: str) -> str:
+            candidates = [
+                getattr(response, "filename", None),
+                getattr(response, "path", None),
+                path_or_url,
+            ]
+            for candidate in candidates:
+                if not candidate:
+                    continue
+                name = Path(str(candidate)).name
+                if not name:
+                    continue
+                name = re.sub(
+                    r"^[A-Za-z]__.*?_gradio_[0-9a-f]{8,}_",
+                    "",
+                    name,
+                    flags=re.IGNORECASE,
+                )
+                if name:
+                    return name
+            return "download"
+
+        fastapi_app = getattr(blocks, "server_app", None)
+        if fastapi_app is None:
+            return
+
+        for route in fastapi_app.routes:
+            if hasattr(route, "path") and route.path == "/file={path_or_url:path}":
+                original_endpoint = route.endpoint
+
+                async def patched_file(
+                    path_or_url: str,
+                    request: fastapi.Request,
+                    _orig=original_endpoint,
+                ):
+                    response = await _orig(path_or_url, request=request)
+                    if isinstance(response, FileResponse) and "content-disposition" not in response.headers:
+                        basename = _clean_download_name(response, path_or_url)
+                        encoded = quote(basename)
+                        if encoded != basename:
+                            cd = f"inline; filename*=utf-8''{encoded}"
+                        else:
+                            cd = f'inline; filename="{basename}"'
+                        response.headers["content-disposition"] = cd
+                    return response
+
+                route.endpoint = patched_file
+                break
+    except Exception as e:
+        log.warning(f"Patch Gradio file download failed: {e}")
+
+
 def launch(host: str = "127.0.0.1", port: int = 7860, share: bool = False):
     """启动 Gradio 界面"""
     app = create_ui()
@@ -1556,8 +1752,11 @@ def launch(host: str = "127.0.0.1", port: int = 7860, share: bool = False):
         server_name=host,
         server_port=port,
         share=share,
-        inbrowser=True
+        inbrowser=True,
+        prevent_thread_lock=True
     )
+    _patch_gradio_file_download(app)
+    app.block_thread()
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@
 """
 import os
 import gc
+import shutil
 import torch
 import numpy as np
 from pathlib import Path
@@ -34,6 +35,31 @@ except ImportError:
 
 # Mel-Band Roformer 默认模型
 ROFORMER_DEFAULT_MODEL = "vocals_mel_band_roformer.ckpt"
+KARAOKE_DEFAULT_MODEL = "mel_band_roformer_karaoke_gabox.ckpt"
+KARAOKE_FALLBACK_MODELS = [
+    "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
+]
+
+
+def _resolve_output_files(output_files, output_dir: Path) -> list[str]:
+    """Resolve relative output filenames returned by audio-separator."""
+    resolved_files = []
+    for file_name in output_files:
+        file_path = Path(file_name)
+        if not file_path.is_absolute():
+            file_path = output_dir / file_path
+        resolved_files.append(str(file_path))
+    return resolved_files
+
+
+def _safe_move(src_path: str, dst_path: str) -> None:
+    """Move file with overwrite."""
+    if src_path == dst_path:
+        return
+    dst = Path(dst_path)
+    if dst.exists():
+        dst.unlink()
+    shutil.move(src_path, dst_path)
 
 
 class RoformerSeparator:
@@ -65,13 +91,14 @@ class RoformerSeparator:
         Path(model_dir).mkdir(parents=True, exist_ok=True)
 
         self.separator = Separator(
+            log_level=_logging.WARNING,
             output_dir=output_dir or str(
                 Path(__file__).parent.parent / "temp" / "separator"
             ),
             model_file_dir=model_dir,
         )
         self.separator.load_model(self.model_filename)
-        log.info(f"Mel-Band Roformer 模型已加载")
+        log.info("Mel-Band Roformer 模型已加载")
 
     def separate(
         self,
@@ -157,6 +184,150 @@ class RoformerSeparator:
         if self.separator is not None:
             del self.separator
             self.separator = None
+        gc.collect()
+        empty_device_cache()
+
+
+class KaraokeSeparator:
+    """主唱/和声分离器 - 基于 Mel-Band Roformer Karaoke 模型"""
+
+    def __init__(
+        self,
+        model_filename: str = KARAOKE_DEFAULT_MODEL,
+        device: str = "cuda",
+    ):
+        if not AUDIO_SEPARATOR_AVAILABLE:
+            raise ImportError(
+                "请安装 audio-separator: pip install audio-separator[gpu]"
+            )
+        self.device = str(get_device(device))
+        self.separator = None
+        self.active_model = None
+
+        models = [model_filename]
+        for fallback in KARAOKE_FALLBACK_MODELS:
+            if fallback not in models:
+                models.append(fallback)
+        self.model_candidates = models
+
+    def load_model(self, output_dir: str = ""):
+        """加载 Karaoke 模型（主模型失败时自动回退）"""
+        if self.separator is not None:
+            return
+
+        model_dir = str(Path(__file__).parent.parent / "assets" / "separator_models")
+        Path(model_dir).mkdir(parents=True, exist_ok=True)
+
+        last_error = None
+        for model_name in self.model_candidates:
+            try:
+                log.info(f"正在加载 Karaoke 模型: {model_name}")
+                separator = Separator(
+                    log_level=_logging.WARNING,
+                    output_dir=output_dir or str(
+                        Path(__file__).parent.parent / "temp" / "separator"
+                    ),
+                    model_file_dir=model_dir,
+                )
+                separator.load_model(model_name)
+                self.separator = separator
+                self.active_model = model_name
+                log.info("Karaoke 模型已加载")
+                return
+            except Exception as exc:
+                last_error = exc
+                log.warning(f"Karaoke 模型加载失败: {model_name} ({exc})")
+
+        raise RuntimeError(f"无法加载 Karaoke 模型: {last_error}")
+
+    @staticmethod
+    def _classify_stem(file_name: str) -> Optional[str]:
+        lower_name = file_name.lower()
+
+        lead_markers = [
+            "(vocals)",
+            "(lead)",
+            "(karaoke)",
+            "(main_vocal)",
+            "(main vocals)",
+            "_(vocals)_",
+        ]
+        backing_markers = [
+            "(instrumental)",
+            "(other)",
+            "(backing)",
+            "(no_vocal",
+            "_(instrumental)_",
+            "_(other)_",
+        ]
+
+        for marker in lead_markers:
+            if marker in lower_name:
+                return "lead"
+        for marker in backing_markers:
+            if marker in lower_name:
+                return "backing"
+
+        if "vocals" in lower_name:
+            return "lead"
+        if "instrumental" in lower_name or "other" in lower_name:
+            return "backing"
+        return None
+
+    def separate(self, audio_path: str, output_dir: str) -> Tuple[str, str]:
+        """
+        分离主唱和和声
+
+        Returns:
+            Tuple[lead_vocals_path, backing_vocals_path]
+        """
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        self.load_model(output_dir=str(output_path))
+        self.separator.output_dir = str(output_path)
+        output_files = self.separator.separate(audio_path)
+        resolved_files = _resolve_output_files(output_files, output_path)
+
+        lead_vocals_path = None
+        backing_vocals_path = None
+        for file_path in resolved_files:
+            stem_role = self._classify_stem(Path(file_path).name)
+            if stem_role == "lead" and lead_vocals_path is None:
+                lead_vocals_path = file_path
+            elif stem_role == "backing" and backing_vocals_path is None:
+                backing_vocals_path = file_path
+
+        if lead_vocals_path is None and resolved_files:
+            lead_vocals_path = resolved_files[0]
+        if backing_vocals_path is None:
+            for file_path in resolved_files:
+                if file_path != lead_vocals_path:
+                    backing_vocals_path = file_path
+                    break
+
+        if not lead_vocals_path or not Path(lead_vocals_path).exists():
+            raise FileNotFoundError(
+                f"Karaoke主唱轨未找到，输出文件: {[Path(p).name for p in resolved_files]}"
+            )
+        if not backing_vocals_path or not Path(backing_vocals_path).exists():
+            raise FileNotFoundError(
+                f"Karaoke和声轨未找到，输出文件: {[Path(p).name for p in resolved_files]}"
+            )
+
+        final_lead = str(output_path / "lead_vocals.wav")
+        final_backing = str(output_path / "backing_vocals.wav")
+        _safe_move(lead_vocals_path, final_lead)
+        _safe_move(backing_vocals_path, final_backing)
+
+        return final_lead, final_backing
+
+    def unload_model(self):
+        """卸载模型释放显存"""
+        if self.separator is not None:
+            del self.separator
+            self.separator = None
+        self.active_model = None
         gc.collect()
         empty_device_cache()
 

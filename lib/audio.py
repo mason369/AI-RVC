@@ -41,6 +41,50 @@ def save_audio(path: str, audio: np.ndarray, sr: int = 48000):
     sf.write(path, audio, sr)
 
 
+def soft_clip(
+    audio: np.ndarray,
+    threshold: float = 0.9,
+    ceiling: float = 0.99,
+) -> np.ndarray:
+    """
+    使用平滑软削波抑制峰值，尽量保留主体响度。
+
+    Args:
+        audio: 输入音频
+        threshold: 开始压缩的阈值
+        ceiling: 软削波上限
+
+    Returns:
+        np.ndarray: 处理后的音频
+    """
+    audio = np.asarray(audio, dtype=np.float32)
+
+    if threshold <= 0:
+        raise ValueError("threshold 必须大于 0")
+    if ceiling <= threshold:
+        raise ValueError("ceiling 必须大于 threshold")
+
+    result = audio.copy()
+    abs_audio = np.abs(result)
+    mask = abs_audio > threshold
+    if not np.any(mask):
+        return result
+
+    overshoot = (abs_audio[mask] - threshold) / (ceiling - threshold + 1e-8)
+    compressed = threshold + (ceiling - threshold) * np.tanh(overshoot)
+    result[mask] = np.sign(result[mask]) * compressed
+    return result.astype(np.float32, copy=False)
+
+
+def soft_clip_array(
+    audio: np.ndarray,
+    threshold: float = 0.9,
+    ceiling: float = 0.99,
+) -> np.ndarray:
+    """软削波数组版本，支持单声道/多声道。"""
+    return soft_clip(audio, threshold=threshold, ceiling=ceiling)
+
+
 def get_audio_info(path: str) -> dict:
     """
     获取音频文件信息
