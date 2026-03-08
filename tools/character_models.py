@@ -84,9 +84,47 @@ def _find_index_file(pth_file: Path) -> Optional[Path]:
     candidate = pth_file.with_suffix(".index")
     if candidate.exists():
         return candidate
+
+    index_files = list(pth_file.parent.glob("*.index"))
+    if not index_files:
+        return None
+
     for idx in pth_file.parent.glob("*.index"):
         if idx.stem.lower() == pth_file.stem.lower():
             return idx
+
+    if len(index_files) == 1:
+        return index_files[0]
+
+    def _normalize_name(text: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+    def _tokenize_name(text: str) -> List[str]:
+        return [token for token in re.split(r"[^a-z0-9]+", text.lower()) if len(token) >= 2]
+
+    model_norm = _normalize_name(pth_file.stem)
+    model_tokens = set(_tokenize_name(pth_file.stem))
+
+    best_match = None
+    best_score = -1
+    for idx in index_files:
+        idx_norm = _normalize_name(idx.stem)
+        idx_tokens = set(_tokenize_name(idx.stem))
+        score = 0
+        if idx_norm == model_norm:
+            score += 1000
+        if model_norm and (model_norm in idx_norm or idx_norm in model_norm):
+            score += 300
+        shared_tokens = len(model_tokens & idx_tokens)
+        score += shared_tokens * 40
+        if "added" in idx.stem.lower():
+            score += 10
+        if score > best_score:
+            best_score = score
+            best_match = idx
+
+    if best_match is not None and best_score > 0:
+        return best_match
     return None
 
 

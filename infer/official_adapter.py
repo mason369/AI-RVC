@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Optional, Tuple
@@ -36,6 +37,54 @@ def _to_float(value, default):
         return float(value)
     except (TypeError, ValueError):
         return float(default)
+
+
+def _resolve_index_path(model_path: Path, index_path: Optional[str]) -> Optional[Path]:
+    """Best-effort resolve of the matching FAISS index for a model."""
+    if index_path:
+        idx_path = Path(index_path)
+        if idx_path.exists():
+            return idx_path
+
+    direct_candidate = model_path.with_suffix(".index")
+    if direct_candidate.exists():
+        return direct_candidate
+
+    index_files = list(model_path.parent.glob("*.index"))
+    if not index_files:
+        return None
+    if len(index_files) == 1:
+        return index_files[0]
+
+    def _normalize_name(text: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+    def _tokenize_name(text: str):
+        return [token for token in re.split(r"[^a-z0-9]+", text.lower()) if len(token) >= 2]
+
+    model_norm = _normalize_name(model_path.stem)
+    model_tokens = set(_tokenize_name(model_path.stem))
+
+    best_match = None
+    best_score = -1
+    for idx in index_files:
+        idx_norm = _normalize_name(idx.stem)
+        idx_tokens = set(_tokenize_name(idx.stem))
+        score = 0
+        if idx_norm == model_norm:
+            score += 1000
+        if model_norm and (model_norm in idx_norm or idx_norm in model_norm):
+            score += 300
+        score += len(model_tokens & idx_tokens) * 40
+        if "added" in idx.stem.lower():
+            score += 10
+        if score > best_score:
+            best_score = score
+            best_match = idx
+
+    if best_match is not None and best_score > 0:
+        return best_match
+    return None
 
 
 def setup_official_env(root_dir: Path) -> dict:
@@ -98,16 +147,19 @@ def export_model_to_official(
         log.detail(f"模型文件已存在，跳过复制")
 
     target_index_path = None
-    if index_path:
-        idx_path = Path(index_path)
-        if idx_path.exists():
-            target_index = official_indexes / f"{model_path.stem}.index"
-            if not target_index.exists() or target_index.stat().st_size != idx_path.stat().st_size:
-                log.detail(f"复制索引文件: {idx_path} -> {target_index}")
-                shutil.copy(idx_path, target_index)
-            else:
-                log.detail(f"索引文件已存在，跳过复制")
-            target_index_path = str(target_index)
+    resolved_index = _resolve_index_path(model_path, index_path)
+    if resolved_index is not None:
+        if index_path and Path(index_path).exists():
+            log.detail(f"使用指定索引文件: {resolved_index.name}")
+        else:
+            log.detail(f"自动匹配索引文件: {resolved_index.name}")
+        target_index = official_indexes / f"{model_path.stem}.index"
+        if not target_index.exists() or target_index.stat().st_size != resolved_index.stat().st_size:
+            log.detail(f"复制索引文件: {resolved_index} -> {target_index}")
+            shutil.copy(resolved_index, target_index)
+        else:
+            log.detail("索引文件已存在，跳过复制")
+        target_index_path = str(target_index)
 
     return sid, target_index_path
 
@@ -210,6 +262,7 @@ def convert_vocals_official(
     filter_radius: int,
     rms_mix_rate: float,
     protect: float,
+    speaker_id: int = 0,
 ) -> str:
     """Run official VC pipeline on vocals."""
     rms_mix_rate = float(max(0.0, min(1.0, rms_mix_rate)))
@@ -256,6 +309,16 @@ def convert_vocals_official(
     config.f0_max = _to_float(_get_cfg_value(app_cfg, "f0_max", 1100), 1100)
     if config.f0_max <= config.f0_min:
         config.f0_max = max(config.f0_min + 1.0, 1100.0)
+    # Keep RMVPE extraction aligned with RVC training pitch embedding range.
+    # Allowing much wider ranges (e.g. 1600Hz) often tracks higher harmonics
+    # instead of the fundamental and introduces synthetic buzzing artifacts.
+    if f0_method == "rmvpe":
+        if config.f0_min != 50.0 or config.f0_max != 1100.0:
+            log.warning(
+                "检测到RMVPE F0范围偏离RVC训练范围，已强制使用 50-1100Hz 以避免误跟踪高次谐波"
+            )
+        config.f0_min = 50.0
+        config.f0_max = 1100.0
     config.rmvpe_threshold = _to_float(_get_cfg_value(app_cfg, "rmvpe_threshold", 0.02), 0.02)
     config.f0_energy_threshold_db = _to_float(
         _get_cfg_value(app_cfg, "f0_energy_threshold_db", -50), -50
@@ -303,7 +366,16 @@ def convert_vocals_official(
     log.progress(f"加载模型: {sid}")
     vc.get_vc(sid)
 
-    spk_id = 0
+    spk_max = 1
+    try:
+        if getattr(vc, "cpt", None) is not None:
+            spk_max = int(vc.cpt["config"][-3])
+    except Exception:
+        spk_max = 1
+    spk_max = max(1, spk_max)
+    spk_id = int(max(0, min(spk_max - 1, int(speaker_id))))
+    if spk_id != int(speaker_id):
+        log.warning(f"说话人ID超出范围，已自动修正为 {spk_id} (可用范围: 0-{spk_max - 1})")
     log.progress("执行人声转换...")
     log.detail(f"说话人ID: {spk_id}")
 

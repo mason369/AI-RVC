@@ -24,6 +24,13 @@ except ImportError:
 class Logger:
     """统一日志工具"""
 
+    SAFE_CHAR_MAP = {
+        "✓": "[OK] ",
+        "✗": "[X] ",
+        "→": "->",
+        "◆": "*",
+    }
+
     COLORS = {
         "DEBUG": Fore.LIGHTBLACK_EX,
         "INFO": Fore.GREEN,
@@ -44,6 +51,36 @@ class Logger:
 
     # 详细日志开关
     verbose = True
+
+    @staticmethod
+    def _sanitize_console_text(text: str) -> str:
+        """将不兼容当前终端编码的字符替换为安全文本。"""
+        sanitized = text
+        for src, dst in Logger.SAFE_CHAR_MAP.items():
+            sanitized = sanitized.replace(src, dst)
+        return sanitized
+
+    @staticmethod
+    def _emit(text: str):
+        """安全输出到终端，避免 Windows/GBK 控制台因 Unicode 崩溃。"""
+        try:
+            print(text, flush=True)
+            return
+        except UnicodeEncodeError:
+            pass
+
+        fallback = Logger._sanitize_console_text(text)
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        try:
+            print(
+                fallback.encode(encoding, errors="replace").decode(encoding),
+                flush=True,
+            )
+        except Exception:
+            print(
+                fallback.encode("ascii", errors="replace").decode("ascii"),
+                flush=True,
+            )
 
     @staticmethod
     def _log(level: str, msg: str, force_print: bool = True):
@@ -69,7 +106,7 @@ class Logger:
             prefix = f"[{level}] "
 
         output = f"{color}[{timestamp}]{prefix}{msg}{reset}"
-        print(output, flush=True)
+        Logger._emit(output)
 
     @staticmethod
     def debug(msg: str):
@@ -103,7 +140,7 @@ class Logger:
         timestamp = datetime.now().strftime("%H:%M:%S")
         color = Logger.COLORS.get("STEP", "")
         reset = Logger.RESET
-        print(f"{color}[{timestamp}][{current}/{total}] {msg}{reset}", flush=True)
+        Logger._emit(f"{color}[{timestamp}][{current}/{total}] {msg}{reset}")
 
     @staticmethod
     def detail(msg: str):
@@ -138,9 +175,9 @@ class Logger:
         timestamp = datetime.now().strftime("%H:%M:%S")
         color = Logger.COLORS.get("INFO", "")
         reset = Logger.RESET
-        print(f"{color}[{timestamp}] {'=' * 50}{reset}", flush=True)
-        print(f"{color}[{timestamp}] {msg}{reset}", flush=True)
-        print(f"{color}[{timestamp}] {'=' * 50}{reset}", flush=True)
+        Logger._emit(f"{color}[{timestamp}] {'=' * 50}{reset}")
+        Logger._emit(f"{color}[{timestamp}] {msg}{reset}")
+        Logger._emit(f"{color}[{timestamp}] {'=' * 50}{reset}")
 
     @staticmethod
     def separator(char: str = "-", length: int = 40):
@@ -148,7 +185,7 @@ class Logger:
         timestamp = datetime.now().strftime("%H:%M:%S")
         color = Logger.COLORS.get("DEBUG", "")
         reset = Logger.RESET
-        print(f"{color}[{timestamp}] {char * length}{reset}", flush=True)
+        Logger._emit(f"{color}[{timestamp}] {char * length}{reset}")
 
     @staticmethod
     def set_verbose(enabled: bool):

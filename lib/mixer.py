@@ -8,6 +8,8 @@ import soundfile as sf
 from pathlib import Path
 from typing import Optional
 
+from lib.audio import soft_clip_array
+
 try:
     from lib.logger import log
 except ImportError:
@@ -150,8 +152,12 @@ def mix_vocals_and_accompaniment(
     elif reverb_amount > 0 and log:
         log.warning("Pedalboard 不可用，跳过混响")
 
-    vocals = vocals * vocals_volume
-    accompaniment = accompaniment * accompaniment_volume
+    vocals = soft_clip_array(vocals * vocals_volume, threshold=0.85, ceiling=0.95)
+    accompaniment = soft_clip_array(
+        accompaniment * accompaniment_volume,
+        threshold=0.85,
+        ceiling=0.95,
+    )
 
     vocals_len = vocals.shape[-1]
     accompaniment_len = accompaniment.shape[-1]
@@ -176,11 +182,10 @@ def mix_vocals_and_accompaniment(
     if log:
         log.detail(f"混合后峰值: {max_val:.4f}")
 
-    if max_val > 0.95:
-        normalize_factor = 0.95 / max_val
-        mixed = mixed * normalize_factor
-        if log:
-            log.detail(f"归一化处理: x{normalize_factor:.4f}")
+    mixed = soft_clip_array(mixed, threshold=0.90, ceiling=0.98)
+    if log:
+        final_peak = float(np.max(np.abs(mixed)))
+        log.detail(f"软削波后峰值: {final_peak:.4f}")
 
     if mixed.ndim == 2:
         mixed = mixed.T
