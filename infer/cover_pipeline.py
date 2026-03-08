@@ -10,7 +10,7 @@ import shutil
 import torch
 import numpy as np
 from pathlib import Path
-from typing import Optional, Callable, Dict, Tuple
+from typing import Optional, Callable, Dict, Tuple, List
 
 from infer.separator import (
     VocalSeparator,
@@ -124,18 +124,122 @@ class CoverPipeline:
         for _ in uvr(model_name, str(input_dir), str(vocal_dir), [], str(ins_dir), 10, "wav"):
             pass
 
-        preferred_files = sorted(
-            vocal_dir.glob("instrument_*.wav"),
+        candidate_files = sorted(
+            list(vocal_dir.glob("*.wav")) + list(ins_dir.glob("*.wav")),
             key=lambda path: path.stat().st_mtime,
         )
-        if not preferred_files:
-            preferred_files = sorted(vocal_dir.glob("*.wav"), key=lambda path: path.stat().st_mtime)
-        if not preferred_files:
+        if not candidate_files:
             log.warning("UVR DeEcho produced no usable vocal output; falling back to direct lead input")
             return None
-        selected_file = preferred_files[-1]
+
+        selected_file = self._select_best_uvr_deecho_output(vocals_path, candidate_files)
+        if selected_file is None:
+            selected_file = candidate_files[-1]
         log.audio(f"UVR DeEcho selected vocal output: {selected_file.name}")
         return str(selected_file)
+
+    @staticmethod
+    def _score_uvr_deecho_candidate(reference_path: str, candidate_path: Path) -> Optional[Tuple[float, Dict[str, float]]]:
+        """Score UVR DeEcho candidate for VC: keep direct lead, minimize quiet residuals."""
+        import librosa
+
+        try:
+            reference_audio, reference_sr = librosa.load(reference_path, sr=None, mono=True)
+            candidate_audio, candidate_sr = librosa.load(str(candidate_path), sr=None, mono=True)
+        except Exception:
+            return None
+
+        reference_audio = np.asarray(reference_audio, dtype=np.float32)
+        candidate_audio = np.asarray(candidate_audio, dtype=np.float32)
+        if reference_audio.size == 0 or candidate_audio.size == 0:
+            return None
+
+        if candidate_sr != reference_sr:
+            candidate_audio = librosa.resample(
+                candidate_audio,
+                orig_sr=candidate_sr,
+                target_sr=reference_sr,
+            ).astype(np.float32)
+
+        aligned_len = min(reference_audio.size, candidate_audio.size)
+        if aligned_len <= 2048:
+            return None
+
+        reference_audio = reference_audio[:aligned_len]
+        candidate_audio = candidate_audio[:aligned_len]
+
+        frame_length = 2048
+        hop_length = 512
+        eps = 1e-8
+        frame_rms = librosa.feature.rms(
+            y=reference_audio,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0]
+        if frame_rms.size == 0:
+            return None
+
+        frame_db = 20.0 * np.log10(frame_rms + eps)
+        ref_db = float(np.percentile(frame_db, 95))
+        active_frames = frame_db > (ref_db - 24.0)
+        quiet_frames = frame_db < (ref_db - 36.0)
+
+        active_mask = np.repeat(active_frames.astype(np.float32), hop_length)
+        quiet_mask = np.repeat(quiet_frames.astype(np.float32), hop_length)
+        if active_mask.size < aligned_len:
+            active_mask = np.pad(active_mask, (0, aligned_len - active_mask.size), mode="edge")
+        if quiet_mask.size < aligned_len:
+            quiet_mask = np.pad(quiet_mask, (0, aligned_len - quiet_mask.size), mode="edge")
+        active_mask = active_mask[:aligned_len] > 0.5
+        quiet_mask = quiet_mask[:aligned_len] > 0.5
+
+        if not np.any(active_mask):
+            return None
+
+        active_rms = float(np.sqrt(np.mean(np.square(candidate_audio[active_mask])) + 1e-12))
+        quiet_rms = float(np.sqrt(np.mean(np.square(candidate_audio[quiet_mask])) + 1e-12)) if np.any(quiet_mask) else 1e-6
+        ref_active_rms = float(np.sqrt(np.mean(np.square(reference_audio[active_mask])) + 1e-12))
+        corr = 0.0
+        if np.sum(active_mask) > 32:
+            corr_val = np.corrcoef(reference_audio[active_mask], candidate_audio[active_mask])[0, 1]
+            if np.isfinite(corr_val):
+                corr = float(np.clip(corr_val, -1.0, 1.0))
+
+        separation_db = float(20.0 * np.log10((active_rms + 1e-12) / (quiet_rms + 1e-12)))
+        active_ratio = float(active_rms / (ref_active_rms + 1e-12))
+        ratio_penalty = abs(float(np.log2(max(active_ratio, 1e-4))))
+        score = separation_db + 18.0 * corr - 6.0 * ratio_penalty
+
+        return score, {
+            "score": score,
+            "separation_db": separation_db,
+            "corr": corr,
+            "active_ratio": active_ratio,
+        }
+
+    def _select_best_uvr_deecho_output(self, reference_path: str, candidate_files: List[Path]) -> Optional[Path]:
+        """Pick the UVR DeEcho branch best suited for VC input."""
+        best_path = None
+        best_score = None
+
+        for candidate_path in candidate_files:
+            scored = self._score_uvr_deecho_candidate(reference_path, candidate_path)
+            if scored is None:
+                continue
+
+            score, metrics = scored
+            log.detail(
+                "UVR DeEcho candidate: "
+                f"{candidate_path.name}, score={metrics['score']:.2f}, "
+                f"sep={metrics['separation_db']:.2f}dB, corr={metrics['corr']:.3f}, "
+                f"ratio={metrics['active_ratio']:.3f}"
+            )
+            if best_score is None or score > best_score:
+                best_score = score
+                best_path = candidate_path
+
+        return best_path
 
     def _init_separator(
         self,
@@ -587,7 +691,7 @@ class CoverPipeline:
         source_vocals_path: str,
         converted_vocals_path: str,
     ) -> None:
-        """Suppress hallucinated noise in no-vocal gaps using source activity only."""
+        """Suppress hallucinated noise in sustained no-vocal gaps only."""
         import librosa
         import soundfile as sf
 
@@ -611,14 +715,21 @@ class CoverPipeline:
 
         source_audio = source_audio[:aligned_len]
         converted_main = converted_audio[:aligned_len]
-        gain = self._compute_activity_sample_weights(source_audio, converted_sr)[:aligned_len]
-        gain = np.clip(gain, 0.0, 1.0).astype(np.float32)
+        gain, gated_frames, total_frames = self._compute_quiet_gap_sample_gain(
+            source_audio,
+            converted_sr,
+        )
+        gain = np.clip(gain[:aligned_len], 0.0, 1.0).astype(np.float32)
         suppressed = converted_main * gain
 
         attenuated_samples = int(np.sum(gain < 0.08))
         if attenuated_samples > 0:
             log.detail(
                 f"Source gap suppression: attenuated {attenuated_samples}/{aligned_len} samples in no-vocal regions"
+            )
+        if gated_frames > 0:
+            log.detail(
+                f"Source gap suppression: detected {gated_frames}/{total_frames} sustained quiet frames"
             )
 
         if len(converted_audio) > aligned_len:
@@ -628,6 +739,81 @@ class CoverPipeline:
             converted_audio = suppressed
 
         sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr)
+
+    @staticmethod
+    def _compute_quiet_gap_sample_gain(
+        reference_audio: np.ndarray,
+        sr: int,
+        frame_length: int = 2048,
+        hop_length: int = 512,
+    ) -> Tuple[np.ndarray, int, int]:
+        """Build a deep attenuation curve for sustained quiet gaps between vocal phrases."""
+        import librosa
+
+        reference_audio = np.asarray(reference_audio, dtype=np.float32).reshape(-1)
+        if reference_audio.size == 0:
+            return np.zeros(0, dtype=np.float32), 0, 0
+
+        eps = 1e-8
+        frame_rms = librosa.feature.rms(
+            y=reference_audio,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0]
+        frame_rms = np.asarray(frame_rms, dtype=np.float32)
+        if frame_rms.size == 0:
+            return np.ones(reference_audio.size, dtype=np.float32), 0, 0
+
+        frame_db = 20.0 * np.log10(frame_rms + eps)
+        ref_db = float(np.percentile(frame_db, 95))
+
+        activity = np.clip((frame_db - (ref_db - 28.0)) / 14.0, 0.0, 1.0)
+        kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
+        kernel /= np.sum(kernel)
+        activity = np.convolve(activity, kernel, mode="same")
+        activity = CoverPipeline._hold_activity_curve(
+            activity,
+            max(1, int(0.08 * sr / hop_length)),
+        )
+
+        quiet_mask = (
+            (frame_db < (ref_db - 36.0))
+            & (activity < 0.12)
+        )
+
+        min_frames = max(1, int(0.12 * sr / hop_length))
+        gate = quiet_mask.astype(np.float32)
+        filtered = np.zeros_like(gate)
+        run_start = 0
+        in_run = False
+        for i in range(len(gate)):
+            if gate[i] > 0.5:
+                if not in_run:
+                    run_start = i
+                    in_run = True
+            else:
+                if in_run:
+                    if (i - run_start) >= min_frames:
+                        filtered[run_start:i] = 1.0
+                    in_run = False
+        if in_run and (len(gate) - run_start) >= min_frames:
+            filtered[run_start:len(gate)] = 1.0
+
+        transition_frames = max(1, int(0.04 * sr / hop_length))
+        smooth_kernel = np.ones(transition_frames, dtype=np.float32) / transition_frames
+        filtered = np.convolve(filtered, smooth_kernel, mode="same")
+        filtered = np.clip(filtered, 0.0, 1.0)
+
+        gain_curve = 1.0 - filtered * 0.985
+        sample_gain = CoverPipeline._frame_curve_to_sample_gain(
+            gain_curve,
+            len(reference_audio),
+            hop_length,
+        )
+
+        gated_count = int(np.sum(filtered > 0.5))
+        return sample_gain.astype(np.float32), gated_count, len(filtered)
 
     def _compute_active_rms_gain(
         self,
@@ -701,8 +887,39 @@ class CoverPipeline:
         if normalized_mode == "on":
             return vc_preprocessed
         if normalized_mode == "auto":
-            return vc_preprocessed and self._last_vc_preprocess_mode in {"legacy"}
+            return vc_preprocessed and self._last_vc_preprocess_mode in {"uvr_deecho", "legacy"}
         return False
+
+    def _refine_source_constrained_output(
+        self,
+        source_vocals_path: str,
+        converted_vocals_path: str,
+        source_constraint_mode: str,
+        f0_method: str,
+    ) -> None:
+        """Apply extra cleanup passes for mature UVR DeEcho routing."""
+        normalized_mode = str(source_constraint_mode or "auto").strip().lower()
+        if normalized_mode != "auto":
+            return
+        if self._last_vc_preprocess_mode != "uvr_deecho":
+            return
+
+        self._apply_silence_gate_official(
+            vocals_path=source_vocals_path,
+            converted_path=converted_vocals_path,
+            f0_method=f0_method,
+            silence_threshold_db=-38.0,
+            silence_smoothing_ms=35.0,
+            silence_min_duration_ms=60.0,
+            protect=0.0,
+        )
+        log.detail("Low-energy unvoiced cleanup: applied after source-guided reconstruction")
+
+        self._apply_source_gap_suppression(
+            source_vocals_path=source_vocals_path,
+            converted_vocals_path=converted_vocals_path,
+        )
+        log.detail("Source gap suppression: refined after source-guided reconstruction")
 
     def _prepare_vocals_for_vc(
         self,
@@ -1449,6 +1666,12 @@ class CoverPipeline:
                             original_vocals_path=vocals_path,
                         )
                         log.detail("Applied source-guided reconstruction to suppress echo/noise")
+                        self._refine_source_constrained_output(
+                            source_vocals_path=vc_input_path,
+                            converted_vocals_path=converted_vocals_path,
+                            source_constraint_mode=normalized_source_constraint_mode,
+                            f0_method=f0_method,
+                        )
                     except Exception as e:
                         log.warning(f"Source-guided reconstruction failed, keeping raw conversion: {e}")
                 elif vc_preprocessed and normalized_source_constraint_mode == "off":
@@ -1532,6 +1755,12 @@ class CoverPipeline:
                             original_vocals_path=vocals_path,
                         )
                         log.detail("Applied source-guided reconstruction to suppress echo/noise")
+                        self._refine_source_constrained_output(
+                            source_vocals_path=vc_input_path,
+                            converted_vocals_path=converted_vocals_path,
+                            source_constraint_mode=normalized_source_constraint_mode,
+                            f0_method=f0_method,
+                        )
                     except Exception as e:
                         log.warning(f"Source-guided reconstruction failed, keeping raw conversion: {e}")
                 elif vc_preprocessed and normalized_source_constraint_mode == "off":
