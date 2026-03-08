@@ -126,6 +126,29 @@ def apply_cover_mix_preset(preset_name: str) -> Tuple[int, int, int]:
     return preset["vocals_volume"], preset["accompaniment_volume"], preset["reverb"]
 
 
+
+def get_vc_preprocess_option_maps() -> Tuple[Dict[str, str], Dict[str, str]]:
+    """Build VC preprocess dropdown option maps."""
+    label_to_value = {
+        t("vc_preprocess_auto", "cover"): "auto",
+        t("vc_preprocess_direct", "cover"): "direct",
+        t("vc_preprocess_uvr_deecho", "cover"): "uvr_deecho",
+        t("vc_preprocess_legacy", "cover"): "legacy",
+    }
+    value_to_label = {value: label for label, value in label_to_value.items()}
+    return label_to_value, value_to_label
+
+
+def get_source_constraint_option_maps() -> Tuple[Dict[str, str], Dict[str, str]]:
+    """Build source constraint dropdown option maps."""
+    label_to_value = {
+        t("source_constraint_auto", "cover"): "auto",
+        t("source_constraint_off", "cover"): "off",
+        t("source_constraint_on", "cover"): "on",
+    }
+    value_to_label = {value: label for label, value in label_to_value.items()}
+    return label_to_value, value_to_label
+
 def init_pipeline():
     """初始化推理管道"""
     global pipeline
@@ -364,6 +387,8 @@ def process_cover(
     speaker_id: float,
     karaoke_separation: bool,
     karaoke_merge_backing_into_accompaniment: bool,
+    vc_preprocess_mode: str,
+    source_constraint_mode: str,
     vocals_volume: float,
     accompaniment_volume: float,
     reverb_amount: float,
@@ -422,6 +447,17 @@ def process_cover(
         silence_min_duration_ms = cover_cfg.get("silence_min_duration_ms", 200.0)
         hubert_layer = cover_cfg.get("hubert_layer", config.get("hubert_layer", 12))
         karaoke_model = cover_cfg.get("karaoke_model", "mel_band_roformer_karaoke_gabox.ckpt")
+        default_vc_preprocess_mode = str(cover_cfg.get("vc_preprocess_mode", "auto"))
+        default_source_constraint_mode = str(cover_cfg.get("source_constraint_mode", "auto"))
+        vc_label_to_value, vc_value_to_label = get_vc_preprocess_option_maps()
+        source_label_to_value, source_value_to_label = get_source_constraint_option_maps()
+
+        vc_preprocess_mode = vc_label_to_value.get(str(vc_preprocess_mode), str(vc_preprocess_mode or default_vc_preprocess_mode).strip().lower())
+        if vc_preprocess_mode not in {"auto", "direct", "uvr_deecho", "legacy"}:
+            vc_preprocess_mode = default_vc_preprocess_mode
+        source_constraint_mode = source_label_to_value.get(str(source_constraint_mode), str(source_constraint_mode or default_source_constraint_mode).strip().lower())
+        if source_constraint_mode not in {"auto", "off", "on"}:
+            source_constraint_mode = default_source_constraint_mode
 
         index_ratio = max(0.0, min(1.0, float(index_ratio) / 100.0))
         speaker_id = int(max(0, round(float(speaker_id))))
@@ -467,6 +503,8 @@ def process_cover(
             karaoke_separation=bool(karaoke_separation),
             karaoke_model=karaoke_model,
             karaoke_merge_backing_into_accompaniment=bool(karaoke_merge_backing_into_accompaniment),
+            vc_preprocess_mode=vc_preprocess_mode,
+            source_constraint_mode=source_constraint_mode,
             output_dir=str(output_dir),
             model_display_name=resolved_name,
             progress_callback=progress_callback
@@ -1336,6 +1374,23 @@ def create_ui() -> gr.Blocks:
                             info=t("karaoke_merge_backing_info", "cover")
                         )
 
+                        vc_label_to_value, vc_value_to_label = get_vc_preprocess_option_maps()
+                        source_label_to_value, source_value_to_label = get_source_constraint_option_maps()
+
+                        cover_vc_preprocess_mode = gr.Dropdown(
+                            label=t("vc_preprocess_mode", "cover"),
+                            choices=list(vc_label_to_value.keys()),
+                            value=vc_value_to_label.get(str(cover_cfg.get("vc_preprocess_mode", "auto")), list(vc_label_to_value.keys())[0]),
+                            info=t("vc_preprocess_mode_info", "cover"),
+                        )
+
+                        cover_source_constraint_mode = gr.Dropdown(
+                            label=t("source_constraint_mode", "cover"),
+                            choices=list(source_label_to_value.keys()),
+                            value=source_value_to_label.get(str(cover_cfg.get("source_constraint_mode", "auto")), list(source_label_to_value.keys())[0]),
+                            info=t("source_constraint_mode_info", "cover"),
+                        )
+
                         mix_presets, default_mix_preset = get_cover_mix_presets()
                         default_mix = mix_presets[default_mix_preset]
 
@@ -1530,6 +1585,8 @@ def create_ui() -> gr.Blocks:
                         cover_speaker_id,
                         cover_karaoke,
                         cover_karaoke_merge_backing,
+                        cover_vc_preprocess_mode,
+                        cover_source_constraint_mode,
                         cover_vocals_volume,
                         cover_accompaniment_volume,
                         cover_reverb,

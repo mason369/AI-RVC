@@ -637,31 +637,68 @@ class CoverPipeline:
 
         return (dereverbed * sample_gain).astype(np.float32)
 
-    def _prepare_vocals_for_vc(self, vocals_path: str, session_dir: Path) -> str:
+    def _should_apply_source_constraint(
+        self,
+        vc_preprocessed: bool,
+        source_constraint_mode: str,
+    ) -> bool:
+        """Decide whether to run source-guided post constraint."""
+        normalized_mode = str(source_constraint_mode or "auto").strip().lower()
+        if normalized_mode == "on":
+            return vc_preprocessed
+        if normalized_mode == "auto":
+            return vc_preprocessed and self._last_vc_preprocess_mode in {"uvr_deecho", "legacy"}
+        return False
+
+    def _prepare_vocals_for_vc(
+        self,
+        vocals_path: str,
+        session_dir: Path,
+        preprocess_mode: str = "auto",
+    ) -> str:
         """
-        Prepare vocals for VC.
+        Prepare vocals for VC using a mature-project-friendly routing strategy.
 
-        Priority:
-        1) learned UVR de-echo / de-reverb if locally available
-        2) otherwise pass the separated lead through directly
-
-        This avoids hand-crafted dereverb stages re-amplifying echo tails and
-        creating false vocal-like artifacts before RVC.
+        Modes:
+        - auto: prefer learned UVR DeEcho/DeReverb, otherwise direct lead -> RVC
+        - direct: pass separated lead directly to RVC
+        - uvr_deecho: require learned UVR DeEcho if available, else fallback to direct
+        - legacy: old hand-crafted dereverb + tail gating chain
         """
         import librosa
         import soundfile as sf
 
-        preprocess_input = self._apply_uvr_deecho_for_vc(vocals_path, session_dir) or vocals_path
-        if preprocess_input == vocals_path:
-            self._last_vc_preprocess_mode = "direct"
-            log.detail("VC预处理策略: 原始主唱直通 -> 单声道选择")
-        else:
-            self._last_vc_preprocess_mode = "uvr_deecho"
-            log.detail("VC预处理策略: UVR学习型DeEcho/DeReverb -> 单声道选择")
+        preprocess_mode = str(preprocess_mode or "auto").strip().lower()
+        if preprocess_mode not in {"auto", "direct", "uvr_deecho", "legacy"}:
+            preprocess_mode = "auto"
 
-        audio, sr = librosa.load(preprocess_input, sr=None, mono=False)
-        audio = self._ensure_2d(audio).astype(np.float32)
-        mono = self._select_mono_for_vc(audio, sr)
+        if preprocess_mode == "legacy":
+            audio, sr = librosa.load(vocals_path, sr=None, mono=False)
+            audio = self._ensure_2d(audio).astype(np.float32)
+            mono = self._select_mono_for_vc(audio, sr)
+            mono_dry = mono.copy()
+            mono = self._dereverb_for_vc(mono, sr)
+            mono = self._gate_echo_tails(mono_dry, mono, sr)
+            self._last_vc_preprocess_mode = "legacy"
+            log.detail("VC preprocess: legacy dereverb chain -> mono select")
+        else:
+            preprocess_input = vocals_path
+            if preprocess_mode in {"auto", "uvr_deecho"}:
+                preprocess_input = self._apply_uvr_deecho_for_vc(vocals_path, session_dir) or vocals_path
+
+            if preprocess_input == vocals_path:
+                self._last_vc_preprocess_mode = "direct"
+                if preprocess_mode == "uvr_deecho":
+                    log.warning("Official DeEcho model not found, falling back to direct lead input")
+                log.detail("VC preprocess: direct lead -> mono select")
+            else:
+                self._last_vc_preprocess_mode = "uvr_deecho"
+                log.detail("VC preprocess: UVR learned DeEcho/DeReverb -> mono select")
+
+            audio, sr = librosa.load(preprocess_input, sr=None, mono=False)
+            audio = self._ensure_2d(audio).astype(np.float32)
+            mono = self._select_mono_for_vc(audio, sr)
+
         mono = soft_clip(mono, threshold=0.9, ceiling=0.99)
 
         out_path = session_dir / "vocals_for_vc.wav"
@@ -1015,7 +1052,7 @@ class CoverPipeline:
         if abs(gain - 1.0) > 1e-3 and out_rms > 1e-6 and ref_rms > 1e-6:
             constrained = self._apply_weighted_gain(constrained, gain_weights, gain)
             log.detail(
-                f"??????RMS??: ref={ref_rms:.6f}, out={out_rms:.6f}, gain={gain:.3f}"
+                f"Source-constrained active RMS: ref={ref_rms:.6f}, out={out_rms:.6f}, gain={gain:.3f}"
             )
 
         constrained_frame_rms = librosa.feature.rms(
@@ -1117,6 +1154,8 @@ class CoverPipeline:
         karaoke_separation: bool = True,
         karaoke_model: str = KARAOKE_DEFAULT_MODEL,
         karaoke_merge_backing_into_accompaniment: bool = True,
+        vc_preprocess_mode: str = "auto",
+        source_constraint_mode: str = "auto",
         output_dir: Optional[str] = None,
         model_display_name: Optional[str] = None,
         progress_callback: Optional[Callable[[str, int, int], None]] = None
@@ -1288,7 +1327,7 @@ class CoverPipeline:
             vc_input_path = vocals_path
             vc_preprocessed = False
             try:
-                prepared_path = self._prepare_vocals_for_vc(vocals_path, session_dir)
+                prepared_path = self._prepare_vocals_for_vc(vocals_path, session_dir, preprocess_mode=vc_preprocess_mode)
                 vc_input_path = prepared_path
                 vc_preprocessed = True
                 log.audio(f"VC预处理输入: {Path(vc_input_path).name}")
@@ -1331,20 +1370,28 @@ class CoverPipeline:
                         silence_min_duration_ms=silence_min_duration_ms,
                         protect=protect
                     )
-                if vc_preprocessed and self._last_vc_preprocess_mode == "uvr_deecho":
+                normalized_source_constraint_mode = str(source_constraint_mode or "auto").strip().lower()
+                should_apply_source_constraint = self._should_apply_source_constraint(
+                    vc_preprocessed=vc_preprocessed,
+                    source_constraint_mode=normalized_source_constraint_mode,
+                )
+
+                if should_apply_source_constraint:
                     try:
                         self._constrain_converted_to_source(
                             source_vocals_path=vc_input_path,
                             converted_vocals_path=converted_vocals_path,
                             original_vocals_path=vocals_path,
                         )
-                        log.detail("已应用源主唱约束重建，抑制转换后回声/杂音")
+                        log.detail("Applied source-guided reconstruction to suppress echo/noise")
                     except Exception as e:
-                        log.warning(f"源主唱约束重建失败，保留原始转换结果: {e}")
+                        log.warning(f"Source-guided reconstruction failed, keeping raw conversion: {e}")
+                elif vc_preprocessed and normalized_source_constraint_mode == "off":
+                    log.detail("Source constraint: off")
                 elif vc_preprocessed:
-                    log.detail("VC直通模式: 跳过源主唱约束重建，避免过度改写转换人声")
+                    log.detail("Skipping source-guided reconstruction for this preprocess mode")
                 else:
-                    log.warning("预处理未成功，跳过源主唱约束重建")
+                    log.warning("VC preprocess unavailable, skipping source-guided reconstruction")
                 log.success("官方VC转换完成")
             else:
                 log.detail("使用自定义VC管道进行转换")
@@ -1397,18 +1444,28 @@ class CoverPipeline:
                     silence_smoothing_ms=silence_smoothing_ms,
                     silence_min_duration_ms=silence_min_duration_ms,
                 )
-                if vc_preprocessed:
+                normalized_source_constraint_mode = str(source_constraint_mode or "auto").strip().lower()
+                should_apply_source_constraint = self._should_apply_source_constraint(
+                    vc_preprocessed=vc_preprocessed,
+                    source_constraint_mode=normalized_source_constraint_mode,
+                )
+
+                if should_apply_source_constraint:
                     try:
                         self._constrain_converted_to_source(
                             source_vocals_path=vc_input_path,
                             converted_vocals_path=converted_vocals_path,
                             original_vocals_path=vocals_path,
                         )
-                        log.detail("已应用源主唱约束重建，抑制转换后回声/杂音")
+                        log.detail("Applied source-guided reconstruction to suppress echo/noise")
                     except Exception as e:
-                        log.warning(f"源主唱约束重建失败，保留原始转换结果: {e}")
+                        log.warning(f"Source-guided reconstruction failed, keeping raw conversion: {e}")
+                elif vc_preprocessed and normalized_source_constraint_mode == "off":
+                    log.detail("Source constraint: off")
+                elif vc_preprocessed:
+                    log.detail("Skipping source-guided reconstruction for this preprocess mode")
                 else:
-                    log.warning("预处理未成功，跳过源主唱约束重建")
+                    log.warning("VC preprocess unavailable, skipping source-guided reconstruction")
                 log.success("自定义VC转换完成")
 
                 log.detail("释放RVC管道资源...")
