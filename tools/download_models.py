@@ -94,6 +94,14 @@ MODELS = {
 # 必需模型列表
 REQUIRED_MODELS = ["hubert_base.pt", "rmvpe.pt", "HP2_all_vocals.pth"]
 
+# Mature DeEcho / DeReverb models downloaded separately
+MATURE_DEECHO_MODELS = [
+    "VR-DeEchoDeReverb.pth",
+    "onnx_dereverb_By_FoxJoy/vocals.onnx",
+    "VR-DeEchoNormal.pth",
+    "VR-DeEchoAggressive.pth",
+]
+
 
 def get_project_root() -> Path:
     """获取项目根目录"""
@@ -265,6 +273,37 @@ def check_all_models() -> Dict[str, bool]:
         dict: 模型名称 -> 是否存在
     """
     return {name: check_model(name) for name in MODELS}
+
+
+def get_available_mature_deecho_models() -> List[str]:
+    """Return locally available mature DeEcho / DeReverb models."""
+    return [name for name in MATURE_DEECHO_MODELS if check_model(name)]
+
+
+def get_preferred_mature_deecho_model() -> Optional[str]:
+    """Return the preferred learned DeEcho model by priority."""
+    available = set(get_available_mature_deecho_models())
+    for name in MATURE_DEECHO_MODELS:
+        if name in available:
+            return name
+    return None
+
+
+def download_mature_deecho_models() -> bool:
+    """Download mature DeEcho / DeReverb recommended models."""
+    print("=" * 50)
+    print("Downloading mature DeEcho / DeReverb models...")
+    print("=" * 50)
+
+    success = True
+    for name in MATURE_DEECHO_MODELS:
+        if not check_model(name):
+            if not download_model(name):
+                success = False
+        else:
+            print(f"[OK] {name} already exists")
+
+    return success
 
 
 def print_model_status():

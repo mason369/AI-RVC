@@ -84,7 +84,9 @@
     "source_constraint_mode_info": "控制是否在 VC 后按源主唱再次重建/清理",
     "source_constraint_auto": "自动(推荐)",
     "source_constraint_off": "关闭",
-    "source_constraint_on": "始终开启"
+    "source_constraint_on": "始终开启",
+    "vc_preprocess_status": "当前VC预处理路由",
+    "vc_preprocess_status_info": "显示本机当前自动模式会走的实际路径"
   },
   "models": {
     "base_models": "基础模型",
@@ -93,7 +95,12 @@
     "download_required": "下载必需模型",
     "model_status": "模型状态",
     "voice_models": "语音模型",
-    "voice_models_desc": "将 .pth 模型文件放入 assets/weights/ 目录，然后刷新模型列表。"
+    "voice_models_desc": "将 .pth 模型文件放入 assets/weights/ 目录，然后刷新模型列表。",
+    "mature_deecho_models": "成熟 DeEcho 模型",
+    "mature_deecho_models_desc": "用于成熟项目常见的学习型去回声/去混响流程。未下载时，翻唱页的自动模式会回退为主唱直通 RVC。",
+    "download_mature_deecho": "下载成熟 DeEcho 模型",
+    "mature_deecho_status": "成熟 DeEcho 状态",
+    "mature_deecho_check": "检查成熟 DeEcho 状态"
   },
   "settings": {
     "device_info": "设备信息",
