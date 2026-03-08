@@ -582,6 +582,53 @@ class CoverPipeline:
             return 0.0
         return float(np.sqrt(np.sum((audio * audio) * weights) / total + 1e-12))
 
+    def _apply_source_gap_suppression(
+        self,
+        source_vocals_path: str,
+        converted_vocals_path: str,
+    ) -> None:
+        """Suppress hallucinated noise in no-vocal gaps using source activity only."""
+        import librosa
+        import soundfile as sf
+
+        source_audio, source_sr = librosa.load(source_vocals_path, sr=None, mono=True)
+        converted_audio, converted_sr = sf.read(converted_vocals_path)
+        if converted_audio.ndim > 1:
+            converted_audio = converted_audio.mean(axis=1)
+        source_audio = np.asarray(source_audio, dtype=np.float32)
+        converted_audio = np.asarray(converted_audio, dtype=np.float32)
+
+        if source_sr != converted_sr:
+            source_audio = librosa.resample(
+                source_audio,
+                orig_sr=source_sr,
+                target_sr=converted_sr,
+            ).astype(np.float32)
+
+        aligned_len = min(len(source_audio), len(converted_audio))
+        if aligned_len <= 0:
+            return
+
+        source_audio = source_audio[:aligned_len]
+        converted_main = converted_audio[:aligned_len]
+        gain = self._compute_activity_sample_weights(source_audio, converted_sr)[:aligned_len]
+        gain = np.clip(gain, 0.0, 1.0).astype(np.float32)
+        suppressed = converted_main * gain
+
+        attenuated_samples = int(np.sum(gain < 0.08))
+        if attenuated_samples > 0:
+            log.detail(
+                f"Source gap suppression: attenuated {attenuated_samples}/{aligned_len} samples in no-vocal regions"
+            )
+
+        if len(converted_audio) > aligned_len:
+            tail = converted_audio[aligned_len:] * 0.0
+            converted_audio = np.concatenate([suppressed, tail.astype(np.float32)])
+        else:
+            converted_audio = suppressed
+
+        sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr)
+
     def _compute_active_rms_gain(
         self,
         reference_audio: np.ndarray,
@@ -1407,7 +1454,14 @@ class CoverPipeline:
                 elif vc_preprocessed and normalized_source_constraint_mode == "off":
                     log.detail("Source constraint: off")
                 elif vc_preprocessed and normalized_source_constraint_mode == "auto":
-                    log.detail("Source constraint auto: skipped for mature/default route")
+                    try:
+                        self._apply_source_gap_suppression(
+                            source_vocals_path=vc_input_path,
+                            converted_vocals_path=converted_vocals_path,
+                        )
+                        log.detail("Source gap suppression: applied for mature/default route")
+                    except Exception as e:
+                        log.warning(f"Source gap suppression failed, keeping raw conversion: {e}")
                 elif vc_preprocessed:
                     log.detail("Skipping source-guided reconstruction for this preprocess mode")
                 else:
@@ -1483,7 +1537,14 @@ class CoverPipeline:
                 elif vc_preprocessed and normalized_source_constraint_mode == "off":
                     log.detail("Source constraint: off")
                 elif vc_preprocessed and normalized_source_constraint_mode == "auto":
-                    log.detail("Source constraint auto: skipped for mature/default route")
+                    try:
+                        self._apply_source_gap_suppression(
+                            source_vocals_path=vc_input_path,
+                            converted_vocals_path=converted_vocals_path,
+                        )
+                        log.detail("Source gap suppression: applied for mature/default route")
+                    except Exception as e:
+                        log.warning(f"Source gap suppression failed, keeping raw conversion: {e}")
                 elif vc_preprocessed:
                     log.detail("Skipping source-guided reconstruction for this preprocess mode")
                 else:
