@@ -531,6 +531,59 @@ def process_cover(
         return None, None, None, None, None, None, f"❌ 处理失败: {error_msg}"
 
 
+def check_mature_deecho_status() -> str:
+    """Check mature DeEcho model availability."""
+    from tools.download_models import MATURE_DEECHO_MODELS, check_model, get_preferred_mature_deecho_model
+
+    status_lines = []
+    preferred = get_preferred_mature_deecho_model()
+    for name in MATURE_DEECHO_MODELS:
+        exists = check_model(name)
+        icon = "✅" if exists else "❌"
+        suffix = "  ← 当前自动模式优先使用" if preferred == name else ""
+        status_lines.append(f"{icon} {name}{suffix}")
+
+    if preferred:
+        status_lines.append("")
+        status_lines.append(f"当前可用学习型 DeEcho: {preferred}")
+    else:
+        status_lines.append("")
+        status_lines.append("当前未检测到学习型 DeEcho 模型；翻唱自动模式将回退为主唱直通 RVC")
+
+    return "\n".join(status_lines)
+
+
+def download_mature_deecho_models_ui() -> str:
+    """Download mature DeEcho models."""
+    from tools.download_models import download_mature_deecho_models
+
+    try:
+        success = download_mature_deecho_models()
+        status = check_mature_deecho_status()
+        prefix = "✅ 下载完成" if success else "⚠️ 下载过程中存在失败项"
+        return f"{prefix}\n\n{status}"
+    except Exception as e:
+        return f"❌ 下载失败: {str(e)}"
+
+
+def get_cover_vc_route_status() -> str:
+    """Return the actual auto preprocess route shown in the cover UI."""
+    from tools.download_models import get_preferred_mature_deecho_model
+
+    preferred = get_preferred_mature_deecho_model()
+    if preferred:
+        return (
+            "✅ 自动模式当前会优先使用学习型 DeEcho / DeReverb\n"
+            f"当前命中模型: {preferred}\n"
+            "流程: 主唱分离 → UVR DeEcho/DeReverb → RVC → 混音"
+        )
+    return (
+        "ℹ️ 自动模式当前会回退为主唱直通 RVC\n"
+        "原因: 本地未检测到成熟 DeEcho / DeReverb 模型\n"
+        "流程: 主唱分离 → 直接进入 RVC → 混音"
+    )
+
+
 def check_models_status() -> str:
     """检查模型状态"""
     from tools.download_models import check_model, REQUIRED_MODELS
@@ -1192,6 +1245,38 @@ def create_ui() -> gr.Blocks:
                 )
 
                 gr.Markdown("---")
+                gr.Markdown(f"### 🎛️ {t('mature_deecho_models', 'models')}")
+                gr.Markdown(t("mature_deecho_models_desc", "models"))
+
+                with gr.Row():
+                    mature_deecho_check_btn = gr.Button(
+                        f"🔍 {t('mature_deecho_check', 'models')}",
+                        variant="secondary"
+                    )
+                    mature_deecho_download_btn = gr.Button(
+                        f"⬇️ {t('download_mature_deecho', 'models')}",
+                        variant="primary"
+                    )
+
+                mature_deecho_status = gr.Textbox(
+                    label=t("mature_deecho_status", "models"),
+                    interactive=False,
+                    lines=7,
+                    value=check_mature_deecho_status(),
+                    elem_classes=["status-box"]
+                )
+
+                mature_deecho_check_btn.click(
+                    fn=check_mature_deecho_status,
+                    outputs=[mature_deecho_status]
+                )
+
+                mature_deecho_download_btn.click(
+                    fn=download_mature_deecho_models_ui,
+                    outputs=[mature_deecho_status]
+                )
+
+                gr.Markdown("---")
 
                 gr.Markdown(f"### 🎤 {t('voice_models', 'models')}")
                 gr.Markdown(t("voice_models_desc", "models"))
@@ -1389,6 +1474,15 @@ def create_ui() -> gr.Blocks:
                             choices=list(source_label_to_value.keys()),
                             value=source_value_to_label.get(str(cover_cfg.get("source_constraint_mode", "auto")), list(source_label_to_value.keys())[0]),
                             info=t("source_constraint_mode_info", "cover"),
+                        )
+
+                        cover_vc_route_status = gr.Textbox(
+                            label=t("vc_preprocess_status", "cover"),
+                            value=get_cover_vc_route_status(),
+                            info=t("vc_preprocess_status_info", "cover"),
+                            interactive=False,
+                            lines=3,
+                            elem_classes=["status-box"]
                         )
 
                         mix_presets, default_mix_preset = get_cover_mix_presets()
