@@ -647,7 +647,7 @@ class CoverPipeline:
         if normalized_mode == "on":
             return vc_preprocessed
         if normalized_mode == "auto":
-            return vc_preprocessed and self._last_vc_preprocess_mode in {"uvr_deecho", "legacy"}
+            return vc_preprocessed and self._last_vc_preprocess_mode in {"legacy"}
         return False
 
     def _prepare_vocals_for_vc(
@@ -1399,6 +1399,8 @@ class CoverPipeline:
                         log.warning(f"Source-guided reconstruction failed, keeping raw conversion: {e}")
                 elif vc_preprocessed and normalized_source_constraint_mode == "off":
                     log.detail("Source constraint: off")
+                elif vc_preprocessed and normalized_source_constraint_mode == "auto":
+                    log.detail("Source constraint auto: skipped for mature/default route")
                 elif vc_preprocessed:
                     log.detail("Skipping source-guided reconstruction for this preprocess mode")
                 else:
@@ -1473,6 +1475,8 @@ class CoverPipeline:
                         log.warning(f"Source-guided reconstruction failed, keeping raw conversion: {e}")
                 elif vc_preprocessed and normalized_source_constraint_mode == "off":
                     log.detail("Source constraint: off")
+                elif vc_preprocessed and normalized_source_constraint_mode == "auto":
+                    log.detail("Source constraint auto: skipped for mature/default route")
                 elif vc_preprocessed:
                     log.detail("Skipping source-guided reconstruction for this preprocess mode")
                 else:

@@ -81,7 +81,7 @@
     "vc_preprocess_uvr_deecho": "官方DeEcho优先",
     "vc_preprocess_legacy": "旧版手工链",
     "source_constraint_mode": "源约束策略",
-    "source_constraint_mode_info": "控制是否在 VC 后按源主唱再次重建/清理",
+    "source_constraint_mode_info": "自动(推荐)下仅旧版手工链启用；学习型 DeEcho 或主唱直通默认不再追加自定义源约束",
     "source_constraint_auto": "自动(推荐)",
     "source_constraint_off": "关闭",
     "source_constraint_on": "始终开启",
