@@ -87,9 +87,14 @@ def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format
                     need_reformat = 0
                     if log:
                         log.detail("格式符合要求，直接处理")
-                    pre_fun._path_audio_(
-                        inp_path, save_root_ins, save_root_vocal, format0, is_hp3=is_hp3
-                    )
+                    if "DeEcho" in model_name:
+                        pre_fun._path_audio_(
+                            inp_path, save_root_vocal, save_root_ins, format0, is_hp3=is_hp3
+                        )
+                    else:
+                        pre_fun._path_audio_(
+                            inp_path, save_root_ins, save_root_vocal, format0, is_hp3=is_hp3
+                        )
                     done = 1
             except:
                 need_reformat = 1
@@ -113,9 +118,14 @@ def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format
                 if done == 0:
                     if log:
                         log.progress("执行人声分离...")
-                    pre_fun._path_audio_(
-                        inp_path, save_root_ins, save_root_vocal, format0
-                    )
+                    if "DeEcho" in model_name:
+                        pre_fun._path_audio_(
+                            inp_path, save_root_vocal, save_root_ins, format0
+                        )
+                    else:
+                        pre_fun._path_audio_(
+                            inp_path, save_root_ins, save_root_vocal, format0
+                        )
                 infos.append("%s->Success" % (os.path.basename(inp_path)))
                 if log:
                     log.success(f"{os.path.basename(inp_path)} 处理成功")
