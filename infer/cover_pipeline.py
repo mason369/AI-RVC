@@ -1324,10 +1324,21 @@ class CoverPipeline:
                 log.audio(f"和声文件: {Path(backing_vocals_path).name} ({_format_size(backing_size)})")
                 vocals_path = lead_vocals_path
 
+            normalized_vc_preprocess_mode = str(vc_preprocess_mode or "auto").strip().lower()
+            normalized_source_constraint_mode = str(source_constraint_mode or "auto").strip().lower()
+            available_uvr_deecho_model = self._get_available_uvr_deecho_model()
+            log.config(f"VC preprocess mode: {normalized_vc_preprocess_mode}")
+            if normalized_vc_preprocess_mode in {"auto", "uvr_deecho"}:
+                if available_uvr_deecho_model:
+                    log.config(f"Mature DeEcho model: {available_uvr_deecho_model}")
+                else:
+                    log.config("Mature DeEcho model: not found, fallback to direct lead input")
+            log.config(f"Source constraint mode: {normalized_source_constraint_mode}")
+
             vc_input_path = vocals_path
             vc_preprocessed = False
             try:
-                prepared_path = self._prepare_vocals_for_vc(vocals_path, session_dir, preprocess_mode=vc_preprocess_mode)
+                prepared_path = self._prepare_vocals_for_vc(vocals_path, session_dir, preprocess_mode=normalized_vc_preprocess_mode)
                 vc_input_path = prepared_path
                 vc_preprocessed = True
                 log.audio(f"VC预处理输入: {Path(vc_input_path).name}")

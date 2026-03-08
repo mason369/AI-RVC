@@ -510,9 +510,11 @@ def process_cover(
             progress_callback=progress_callback
         )
 
-        status_msg = "✅ 翻唱完成!"
+        status_msg = "\u2705 \u7ffb\u5531\u5b8c\u6210!"
+        status_msg += f"\n{get_cover_vc_route_status(vc_preprocess_mode).splitlines()[0]}"
+        status_msg += f"\n\u6e90\u7ea6\u675f\u7b56\u7565: {source_constraint_mode}"
         if result.get("all_files_dir"):
-            status_msg += f"\n全部文件目录: {result['all_files_dir']}"
+            status_msg += f"\n\u5168\u90e8\u6587\u4ef6\u76ee\u5f55: {result['all_files_dir']}"
 
         return (
             result["cover"],
@@ -566,22 +568,52 @@ def download_mature_deecho_models_ui() -> str:
         return f"❌ 下载失败: {str(e)}"
 
 
-def get_cover_vc_route_status() -> str:
-    """Return the actual auto preprocess route shown in the cover UI."""
+def get_cover_vc_route_status(vc_preprocess_mode: Optional[str] = None) -> str:
+    """Return the actual preprocess route shown in the cover UI."""
     from tools.download_models import get_preferred_mature_deecho_model
 
+    mode = str(vc_preprocess_mode or config.get("cover", {}).get("vc_preprocess_mode", "auto")).strip().lower()
+    vc_label_to_value, _ = get_vc_preprocess_option_maps()
+    mode = vc_label_to_value.get(mode, mode)
     preferred = get_preferred_mature_deecho_model()
+    newline = chr(10)
+
+    if mode == "direct":
+        return newline.join([
+            "ℹ️ 当前固定为主唱直通 RVC",
+            "流程: 主唱分离 → 直接进入 RVC → 混音",
+            "说明: 不使用学习型 DeEcho，也不走旧版手工链",
+        ])
+    if mode == "legacy":
+        return newline.join([
+            "⚠️ 当前固定为旧版手工链",
+            "流程: 主唱分离 → 手工去回声链 → RVC → 混音",
+            "说明: 仅用于对比，不是默认推荐路径",
+        ])
+    if mode == "uvr_deecho":
+        if preferred:
+            return newline.join([
+                "✅ 当前固定优先使用学习型 DeEcho / DeReverb",
+                f"当前命中模型: {preferred}",
+                "流程: 主唱分离 → UVR DeEcho/DeReverb → RVC → 混音",
+            ])
+        return newline.join([
+            "⚠️ 当前设为官方 DeEcho 优先，但本地缺少模型",
+            "当前将回退流程: 主唱分离 → 直接进入 RVC → 混音",
+            "建议: 先在模型管理页下载成熟 DeEcho 模型",
+        ])
+
     if preferred:
-        return (
-            "✅ 自动模式当前会优先使用学习型 DeEcho / DeReverb\n"
-            f"当前命中模型: {preferred}\n"
-            "流程: 主唱分离 → UVR DeEcho/DeReverb → RVC → 混音"
-        )
-    return (
-        "ℹ️ 自动模式当前会回退为主唱直通 RVC\n"
-        "原因: 本地未检测到成熟 DeEcho / DeReverb 模型\n"
-        "流程: 主唱分离 → 直接进入 RVC → 混音"
-    )
+        return newline.join([
+            "✅ 自动模式当前会优先使用学习型 DeEcho / DeReverb",
+            f"当前命中模型: {preferred}",
+            "流程: 主唱分离 → UVR DeEcho/DeReverb → RVC → 混音",
+        ])
+    return newline.join([
+        "ℹ️ 自动模式当前会回退为主唱直通 RVC",
+        "原因: 本地未检测到成熟 DeEcho / DeReverb 模型",
+        "流程: 主唱分离 → 直接进入 RVC → 混音",
+    ])
 
 
 def check_models_status() -> str:
@@ -1266,16 +1298,6 @@ def create_ui() -> gr.Blocks:
                     elem_classes=["status-box"]
                 )
 
-                mature_deecho_check_btn.click(
-                    fn=check_mature_deecho_status,
-                    outputs=[mature_deecho_status]
-                )
-
-                mature_deecho_download_btn.click(
-                    fn=download_mature_deecho_models_ui,
-                    outputs=[mature_deecho_status]
-                )
-
                 gr.Markdown("---")
 
                 gr.Markdown(f"### 🎤 {t('voice_models', 'models')}")
@@ -1667,6 +1689,32 @@ def create_ui() -> gr.Blocks:
                         cover_accompaniment_volume,
                         cover_reverb
                     ]
+                )
+
+                mature_deecho_check_btn.click(
+                    fn=check_mature_deecho_status,
+                    outputs=[mature_deecho_status]
+                )
+                mature_deecho_check_btn.click(
+                    fn=get_cover_vc_route_status,
+                    inputs=[cover_vc_preprocess_mode],
+                    outputs=[cover_vc_route_status]
+                )
+
+                mature_deecho_download_btn.click(
+                    fn=download_mature_deecho_models_ui,
+                    outputs=[mature_deecho_status]
+                )
+                mature_deecho_download_btn.click(
+                    fn=get_cover_vc_route_status,
+                    inputs=[cover_vc_preprocess_mode],
+                    outputs=[cover_vc_route_status]
+                )
+
+                cover_vc_preprocess_mode.change(
+                    fn=get_cover_vc_route_status,
+                    inputs=[cover_vc_preprocess_mode],
+                    outputs=[cover_vc_route_status]
                 )
 
                 cover_btn.click(
