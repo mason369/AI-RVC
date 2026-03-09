@@ -555,8 +555,8 @@ class CoverPipeline:
         filtered = np.convolve(filtered, kernel, mode="same")
         filtered = np.clip(filtered, 0.0, 1.0)
 
-        # Apply: gated frames attenuated to 0.08x，保留少量尾音避免过于机械
-        gain_curve = 1.0 - filtered * 0.92  # 1.0 for normal, 0.08 for gated
+        # Apply: gated frames attenuated to 0.18x，保留更多尾音避免不自然断裂
+        gain_curve = 1.0 - filtered * 0.82  # 1.0 for normal, 0.18 for gated
 
         # Expand frame-level gain to sample-level
         sample_gain = CoverPipeline._frame_curve_to_sample_gain(
@@ -807,7 +807,7 @@ class CoverPipeline:
         filtered = np.convolve(filtered, smooth_kernel, mode="same")
         filtered = np.clip(filtered, 0.0, 1.0)
 
-        gain_curve = 1.0 - filtered * 0.985
+        gain_curve = 1.0 - filtered * 0.92
         sample_gain = CoverPipeline._frame_curve_to_sample_gain(
             gain_curve,
             len(reference_audio),
@@ -910,9 +910,9 @@ class CoverPipeline:
             vocals_path=source_vocals_path,
             converted_path=converted_vocals_path,
             f0_method=f0_method,
-            silence_threshold_db=-38.0,
+            silence_threshold_db=-42.0,
             silence_smoothing_ms=35.0,
-            silence_min_duration_ms=60.0,
+            silence_min_duration_ms=80.0,
             protect=0.0,
         )
         log.detail("Low-energy unvoiced cleanup: applied after source-guided reconstruction")
@@ -929,7 +929,13 @@ class CoverPipeline:
         deecho_mono: np.ndarray,
         sr: int,
     ) -> np.ndarray:
-        """Keep direct lead as the main VC input, use DeEcho only in low-activity regions."""
+        """Blend direct lead with DeEcho result, using echo presence detection.
+
+        Previous logic only applied DeEcho in low-activity (silent) regions,
+        which meant echo during active singing passed straight through to HuBERT.
+        Now we detect echo presence per-frame by comparing direct vs deecho energy:
+        large energy difference = strong echo = higher DeEcho weight even while singing.
+        """
         import librosa
 
         direct_mono = np.asarray(direct_mono, dtype=np.float32).reshape(-1)
@@ -944,6 +950,10 @@ class CoverPipeline:
         frame_length = 2048
         hop_length = 512
         eps = 1e-8
+        smooth_kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
+        smooth_kernel /= np.sum(smooth_kernel)
+
+        # --- Activity detection (unchanged) ---
         frame_rms = librosa.feature.rms(
             y=direct_main,
             frame_length=frame_length,
@@ -954,8 +964,6 @@ class CoverPipeline:
         ref_db = float(np.percentile(frame_db, 95)) if frame_db.size > 0 else -20.0
 
         activity = np.clip((frame_db - (ref_db - 32.0)) / 14.0, 0.0, 1.0)
-        smooth_kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
-        smooth_kernel /= np.sum(smooth_kernel)
         activity = np.convolve(activity, smooth_kernel, mode="same")
         activity = CoverPipeline._hold_activity_curve(
             activity,
@@ -963,9 +971,50 @@ class CoverPipeline:
         )
         activity = np.clip(activity, 0.0, 1.0)
 
-        deecho_weight = 0.65 * np.square(1.0 - activity)
+        # --- Echo presence detection ---
+        # Compare per-frame RMS of direct vs deecho: if deecho removed a lot
+        # of energy, that energy was echo/reverb.
+        deecho_rms = librosa.feature.rms(
+            y=deecho_main,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0]
+        n_frames = min(frame_rms.shape[-1], deecho_rms.shape[-1])
+        frame_rms_aligned = frame_rms[..., :n_frames]
+        deecho_rms_aligned = deecho_rms[..., :n_frames]
+
+        # echo_ratio: how much energy was removed by deecho (0=none, 1=all)
+        echo_ratio = np.clip(
+            1.0 - (deecho_rms_aligned / (frame_rms_aligned + eps)),
+            0.0,
+            1.0,
+        )
+        # Smooth to avoid frame-level jitter
+        if echo_ratio.ndim > 1:
+            echo_ratio = echo_ratio[0]
+        echo_ratio = np.convolve(echo_ratio, smooth_kernel, mode="same")
+        # Widen with a hold window to cover reverb tails
+        echo_ratio = CoverPipeline._hold_activity_curve(
+            echo_ratio,
+            max(1, int(0.08 * sr / hop_length)),
+        )
+        echo_ratio = np.clip(echo_ratio, 0.0, 1.0)
+
+        # Align to activity length
+        n_blend = min(len(activity), len(echo_ratio))
+        activity = activity[:n_blend]
+        echo_ratio = echo_ratio[:n_blend]
+
+        # --- Blending weight ---
+        # Base: original low-activity weight (for silent gaps)
+        base_weight = 0.65 * np.square(1.0 - activity[:n_blend])
+        # Echo boost: even during active singing, apply DeEcho proportional
+        # to detected echo. Max additional contribution capped at 0.55.
+        echo_boost = 0.55 * echo_ratio * activity[:n_blend]
+        deecho_weight = base_weight + echo_boost
         deecho_weight = np.convolve(deecho_weight, smooth_kernel, mode="same")
-        deecho_weight = np.clip(deecho_weight, 0.0, 0.65)
+        deecho_weight = np.clip(deecho_weight, 0.0, 0.80)
         deecho_weight = CoverPipeline._frame_curve_to_sample_gain(
             deecho_weight,
             aligned_len,
@@ -1361,18 +1410,25 @@ class CoverPipeline:
         soft_mask = np.maximum(soft_mask, mask_floor[np.newaxis, :])
         soft_mask = np.clip(soft_mask, 0.0, 1.0)
 
-        # Step 1: Dynamic dry blend in STFT domain
-        # Low-activity frames are reconstructed toward the prepared source signal.
-        # This removes VC-hallucinated breath/noise in echo-only gaps at the root,
-        # instead of trying to hide them with a harder silence threshold.
+        # Step 1: Magnitude-only constraint in STFT domain
+        # Instead of mixing source and converted complex spectra (which causes
+        # phase interference / tearing artifacts), we only constrain the
+        # MAGNITUDE toward the source envelope while preserving the converted
+        # signal's phase.  This eliminates phase cancellation.
         source_replace = 0.85 * (1.0 - activity)[np.newaxis, :] * (1.0 - soft_mask)
-        source_replace = np.clip(source_replace, 0.0, 0.90)
-        constrained_spec = conv_spec * (1.0 - source_replace) + src_spec * source_replace
+        source_replace = np.clip(source_replace, 0.0, 0.70)
+
+        # Target magnitude: blend toward source magnitude, keep converted phase
+        target_mag = conv_mag * (1.0 - source_replace) + src_mag * source_replace
+        # Compute gain per bin: how much to scale converted magnitude
+        mag_gain = target_mag / (conv_mag + eps)
+        mag_gain = np.clip(mag_gain, 0.05, 2.0)
+        constrained_spec = conv_spec * mag_gain
 
         replaced_frames = int(np.sum(np.mean(source_replace, axis=0) > 0.05))
         if replaced_frames > 0:
             log.detail(
-                f"源低活动段回灌重建: {replaced_frames}/{frame_count} 帧使用源主唱抑制幻觉噪声"
+                f"源低活动段幅度约束: {replaced_frames}/{frame_count} 帧抑制幻觉噪声(相位保留)"
             )
 
         # Step 2: istft to get constrained main body
@@ -1413,7 +1469,7 @@ class CoverPipeline:
         frame_budget = base_budget_rms * allowed_boost + noise_floor
         cleanup_gain = np.clip(
             frame_budget / (constrained_frame_rms + eps),
-            0.35 + 0.45 * phrase_activity,
+            0.55 + 0.30 * phrase_activity,
             1.0,
         )
         cleanup_gain = np.convolve(cleanup_gain, frame_kernel, mode="same")
