@@ -703,6 +703,11 @@ class VoiceConversionPipeline:
                     f0_end = min(f0_start + f0_per_feat, len(f0))
                     if f0_end > f0_start and np.all(f0[f0_start:f0_end] <= 0):
                         protect_mask[fi] = protect
+                smooth_kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
+                smooth_kernel /= np.sum(smooth_kernel)
+                protect_mask = np.convolve(protect_mask, smooth_kernel, mode="same")
+                protect_mask = np.convolve(protect_mask, smooth_kernel, mode="same")
+                protect_mask = np.clip(protect_mask, protect, 1.0)
                 protect_mask = protect_mask[:, np.newaxis]  # [T, 1] 广播到 [T, C]
                 features = features * protect_mask + features_before_index * (1 - protect_mask)
 

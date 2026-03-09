@@ -120,6 +120,54 @@ def repair_f0(
     return f0
 
 
+def _normalize_rmvpe_hybrid_mode(mode: Optional[str]) -> str:
+    """Normalize user-facing hybrid mode aliases to internal fallback modes."""
+    normalized = str(mode or "off").strip().lower()
+    if normalized in {"", "off", "none", "strict", "official", "rmvpe_strict", "rmvpe-strict", "raw", "rmvpe"}:
+        return "off"
+    if normalized in {
+        "fallback",
+        "smart",
+        "rmvpe+fallback",
+        "rmvpe_fallback",
+        "rmvpe-fallback",
+        "hybrid_fallback",
+        "hybrid-fallback",
+        "hybrid",
+        "auto",
+        "harvest",
+        "harvest_fallback",
+        "harvest-fallback",
+    }:
+        return "fallback"
+    return normalized
+
+
+def _build_protect_mix_curve(pitchf: torch.Tensor, protect: float) -> torch.Tensor:
+    """Create a smooth protect curve for voiced/unvoiced transitions."""
+    protect = float(np.clip(protect, 0.0, 1.0))
+    if protect >= 1.0:
+        return torch.ones_like(pitchf, dtype=torch.float32)
+
+    voiced = (pitchf > 0).detach().float().cpu().numpy()
+    if voiced.ndim == 2:
+        voiced_curve = voiced[0]
+    else:
+        voiced_curve = voiced.reshape(-1)
+
+    smooth_kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
+    smooth_kernel /= np.sum(smooth_kernel)
+    voiced_curve = np.convolve(voiced_curve, smooth_kernel, mode="same")
+    voiced_curve = np.convolve(voiced_curve, smooth_kernel, mode="same")
+    voiced_curve = np.clip(voiced_curve, 0.0, 1.0)
+
+    mix_curve = protect + (1.0 - protect) * voiced_curve
+    mix_curve = torch.from_numpy(mix_curve.astype(np.float32)).to(pitchf.device)
+    if pitchf.ndim == 2:
+        mix_curve = mix_curve.unsqueeze(0)
+    return mix_curve
+
+
 def _compute_energy_mask(
     audio: np.ndarray,
     hop_length: int,
@@ -299,7 +347,9 @@ class Pipeline(object):
             self.f0_max = max(self.f0_min + 1.0, 1100.0)
         self.rmvpe_threshold = float(getattr(config, "rmvpe_threshold", 0.02))
         self.f0_energy_threshold_db = float(getattr(config, "f0_energy_threshold_db", -50))
-        self.f0_hybrid_mode = str(getattr(config, "f0_hybrid_mode", "off")).strip().lower()
+        self.f0_hybrid_mode = _normalize_rmvpe_hybrid_mode(
+            getattr(config, "f0_hybrid_mode", "off")
+        )
         self.rmvpe_strict_modes = {
             "",
             "off",
@@ -321,6 +371,12 @@ class Pipeline(object):
         self.crepe_pd_threshold = float(getattr(config, "crepe_pd_threshold", 0.1))
         self.crepe_force_ratio = float(getattr(config, "crepe_force_ratio", 0.05))
         self.crepe_replace_semitones = float(getattr(config, "crepe_replace_semitones", 0.0))
+        self.f0_fallback_context_radius = int(getattr(config, "f0_fallback_context_radius", 24))
+        self.f0_fallback_repair_gap = int(getattr(config, "f0_fallback_repair_gap", 12))
+        self.f0_fallback_post_gap = int(getattr(config, "f0_fallback_post_gap", 10))
+        self.f0_fallback_use_crepe = bool(getattr(config, "f0_fallback_use_crepe", True))
+        self.f0_fallback_crepe_max_ratio = float(getattr(config, "f0_fallback_crepe_max_ratio", 0.02))
+        self.f0_fallback_crepe_max_frames = int(getattr(config, "f0_fallback_crepe_max_frames", 320))
         self.f0_stabilize = bool(getattr(config, "f0_stabilize", False))
         self.f0_stabilize_window = int(getattr(config, "f0_stabilize_window", 2))
         self.f0_stabilize_max_semitones = float(
@@ -337,6 +393,16 @@ class Pipeline(object):
             self.crepe_pd_threshold = 0.0
         if self.crepe_replace_semitones < 0:
             self.crepe_replace_semitones = 0.0
+        if self.f0_fallback_context_radius < 1:
+            self.f0_fallback_context_radius = 1
+        if self.f0_fallback_repair_gap < 0:
+            self.f0_fallback_repair_gap = 0
+        if self.f0_fallback_post_gap < 0:
+            self.f0_fallback_post_gap = 0
+        if self.f0_fallback_crepe_max_ratio < 0:
+            self.f0_fallback_crepe_max_ratio = 0.0
+        if self.f0_fallback_crepe_max_frames < 0:
+            self.f0_fallback_crepe_max_frames = 0
         if self.f0_stabilize_window < 1:
             self.f0_stabilize_window = 1
         if self.f0_stabilize_max_semitones < 0:
@@ -353,6 +419,13 @@ class Pipeline(object):
             log.detail(
                 f"F0混合: {self.f0_hybrid_mode}, CREPE阈值: {self.crepe_pd_threshold}, "
                 f"强制比率: {self.crepe_force_ratio}, 替换阈值(半音): {self.crepe_replace_semitones}"
+            )
+            log.detail(
+                f"F0兜底: 上下文半径={self.f0_fallback_context_radius}, "
+                f"预修补长度={self.f0_fallback_repair_gap}, 后修补长度={self.f0_fallback_post_gap}, "
+                f"CREPE兜底={self.f0_fallback_use_crepe}, "
+                f"CREPE最大占比={self.f0_fallback_crepe_max_ratio:.2%}, "
+                f"CREPE最大帧数={self.f0_fallback_crepe_max_frames}"
             )
             log.detail(
                 "RMVPE兜底: "
@@ -582,7 +655,11 @@ class Pipeline(object):
                     energy_mask = None
 
                 # Repair short unvoiced gaps only when fallback mode is explicitly enabled.
-                f0 = repair_f0(f0, max_gap=12, mask=energy_mask)
+                f0 = repair_f0(
+                    f0,
+                    max_gap=self.f0_fallback_repair_gap,
+                    mask=energy_mask,
+                )
 
                 # Conservative F0 fallback:
                 # only fill dropouts that are surrounded by voiced context.
@@ -594,7 +671,7 @@ class Pipeline(object):
                         left_seen = np.maximum.accumulate(left_seen)
                         right_seen = np.where(voiced_seed, idx, 10**9)
                         right_seen = np.minimum.accumulate(right_seen[::-1])[::-1]
-                        context_radius = 24
+                        context_radius = self.f0_fallback_context_radius
                         left_near = (idx - left_seen) <= context_radius
                         right_near = (right_seen - idx) <= context_radius
                         voiced_context = left_near & right_near
@@ -620,7 +697,17 @@ class Pipeline(object):
                         f0[fill_mask] = f0_fb[fill_mask]
 
                         need_fill2 = (f0 <= 0) & energy_mask & voiced_context
-                        if np.any(need_fill2):
+                        need_fill2_count = int(np.sum(need_fill2))
+                        need_fill2_ratio = float(need_fill2_count) / max(len(f0), 1)
+                        if np.any(need_fill2) and self.f0_fallback_use_crepe:
+                            allow_crepe_fallback = (
+                                need_fill2_count <= self.f0_fallback_crepe_max_frames
+                                and need_fill2_ratio <= self.f0_fallback_crepe_max_ratio
+                            )
+                        else:
+                            allow_crepe_fallback = False
+
+                        if np.any(need_fill2) and allow_crepe_fallback:
                             if log:
                                 log.detail(
                                     f"Harvest后仍掉线(主唱上下文): {int(need_fill2.sum())}/{len(f0)}，启用CREPE兜底"
@@ -652,6 +739,11 @@ class Pipeline(object):
                                 ((f0_cr > 0) & (f0_fb <= 0)) | agree_mask
                             )
                             f0[fill_mask2] = f0_cr[fill_mask2]
+                        elif np.any(need_fill2) and log:
+                            log.detail(
+                                f"Harvest后仍掉线(主唱上下文): {need_fill2_count}/{len(f0)}，"
+                                "已跳过CREPE兜底（超出保守阈值）"
+                            )
 
                         final_drop = (f0 <= 0) & energy_mask & voiced_context
                         if np.any(final_drop) and log:
@@ -660,7 +752,11 @@ class Pipeline(object):
                             )
 
                         # Only smooth short, context-consistent gaps.
-                        f0 = repair_f0(f0, max_gap=10, mask=voiced_context)
+                        f0 = repair_f0(
+                            f0,
+                            max_gap=self.f0_fallback_post_gap,
+                            mask=voiced_context,
+                        )
             elif f0_method == "rmvpe" and log:
                 log.detail("RMVPE严格模式: 不启用Harvest/CREPE兜底，仅使用RMVPE原始结果")
 
@@ -791,10 +887,7 @@ class Pipeline(object):
         if protect < 0.5 and pitch is not None and pitchf is not None:
             if log:
                 log.detail(f"应用保护: protect={protect}")
-            pitchff = pitchf.clone()
-            pitchff[pitchf > 0] = 1
-            pitchff[pitchf < 1] = protect
-            pitchff = pitchff.unsqueeze(-1)
+            pitchff = _build_protect_mix_curve(pitchf, protect).unsqueeze(-1)
             feats = feats * pitchff + feats0 * (1 - pitchff)
             feats = feats.to(feats0.dtype)
         p_len = torch.tensor([p_len], device=self.device).long()
