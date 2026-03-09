@@ -80,23 +80,33 @@ class RoformerSeparator:
 
     def load_model(self, output_dir: str = ""):
         """加载 Roformer 模型"""
-        if self.separator is not None:
-            return
-
-        log.info(f"正在加载 Mel-Band Roformer 模型: {self.model_filename}")
-
         model_dir = str(
             Path(__file__).parent.parent / "assets" / "separator_models"
         )
         Path(model_dir).mkdir(parents=True, exist_ok=True)
 
+        target_dir = output_dir or str(
+            Path(__file__).parent.parent / "temp" / "separator"
+        )
+
+        # Recreate the Separator when output_dir changes, because
+        # some audio-separator versions cache internal paths at init.
+        if self.separator is not None:
+            if getattr(self, '_init_output_dir', None) == target_dir:
+                return
+            # output_dir changed — rebuild Separator
+            del self.separator
+            self.separator = None
+            gc.collect()
+
+        log.info(f"正在加载 Mel-Band Roformer 模型: {self.model_filename}")
+
         self.separator = Separator(
             log_level=_logging.WARNING,
-            output_dir=output_dir or str(
-                Path(__file__).parent.parent / "temp" / "separator"
-            ),
+            output_dir=target_dir,
             model_file_dir=model_dir,
         )
+        self._init_output_dir = target_dir
         self.separator.load_model(self.model_filename)
         log.info("Mel-Band Roformer 模型已加载")
 
@@ -136,6 +146,23 @@ class RoformerSeparator:
                 p = output_path / p
             resolved_files.append(str(p))
 
+        # Fallback: if resolved files don't exist, search the output dir
+        # for freshly created files. This handles cases where audio-separator
+        # writes to a slightly different path (e.g. after output_dir update
+        # on a reused Separator instance).
+        if resolved_files and not any(Path(f).exists() for f in resolved_files):
+            import glob as _glob
+            all_wavs = sorted(
+                _glob.glob(str(output_path / "*.wav")),
+                key=lambda x: os.path.getmtime(x),
+                reverse=True,
+            )
+            # Take the most recent files (should be our separation output)
+            if len(all_wavs) >= 2:
+                resolved_files = all_wavs[:2]
+            elif len(all_wavs) == 1:
+                resolved_files = all_wavs[:1]
+
         # audio-separator 返回文件列表，通常 [primary, secondary]
         # primary = Vocals, secondary = Instrumental (或反过来，取决于模型)
         vocals_path = None
@@ -168,10 +195,18 @@ class RoformerSeparator:
         final_accompaniment = str(output_path / "accompaniment.wav")
 
         if vocals_path and vocals_path != final_vocals:
-            import shutil
+            if not Path(vocals_path).exists():
+                raise FileNotFoundError(
+                    f"分离器输出人声文件不存在: {vocals_path}\n"
+                    f"输出目录内容: {list(output_path.glob('*'))}"
+                )
             shutil.move(vocals_path, final_vocals)
         if accompaniment_path and accompaniment_path != final_accompaniment:
-            import shutil
+            if not Path(accompaniment_path).exists():
+                raise FileNotFoundError(
+                    f"分离器输出伴奏文件不存在: {accompaniment_path}\n"
+                    f"输出目录内容: {list(output_path.glob('*'))}"
+                )
             shutil.move(accompaniment_path, final_accompaniment)
 
         if progress_callback:
@@ -212,11 +247,21 @@ class KaraokeSeparator:
 
     def load_model(self, output_dir: str = ""):
         """加载 Karaoke 模型（主模型失败时自动回退）"""
-        if self.separator is not None:
-            return
-
         model_dir = str(Path(__file__).parent.parent / "assets" / "separator_models")
         Path(model_dir).mkdir(parents=True, exist_ok=True)
+
+        target_dir = output_dir or str(
+            Path(__file__).parent.parent / "temp" / "separator"
+        )
+
+        # Recreate the Separator when output_dir changes
+        if self.separator is not None:
+            if getattr(self, '_init_output_dir', None) == target_dir:
+                return
+            del self.separator
+            self.separator = None
+            self.active_model = None
+            gc.collect()
 
         last_error = None
         for model_name in self.model_candidates:
@@ -224,13 +269,12 @@ class KaraokeSeparator:
                 log.info(f"正在加载 Karaoke 模型: {model_name}")
                 separator = Separator(
                     log_level=_logging.WARNING,
-                    output_dir=output_dir or str(
-                        Path(__file__).parent.parent / "temp" / "separator"
-                    ),
+                    output_dir=target_dir,
                     model_file_dir=model_dir,
                 )
                 separator.load_model(model_name)
                 self.separator = separator
+                self._init_output_dir = target_dir
                 self.active_model = model_name
                 log.info("Karaoke 模型已加载")
                 return
