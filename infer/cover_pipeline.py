@@ -25,7 +25,9 @@ from infer.separator import (
 from infer.official_adapter import (
     setup_official_env,
     separate_uvr5,
+    separate_uvr5_official_upstream,
     convert_vocals_official,
+    convert_vocals_official_upstream,
 )
 from lib.audio import soft_clip
 from lib.mixer import mix_vocals_and_accompaniment
@@ -921,6 +923,60 @@ class CoverPipeline:
         )
         log.detail("Source gap suppression: refined after source-guided reconstruction")
 
+    @staticmethod
+    def _blend_direct_with_deecho(
+        direct_mono: np.ndarray,
+        deecho_mono: np.ndarray,
+        sr: int,
+    ) -> np.ndarray:
+        """Keep direct lead as the main VC input, use DeEcho only in low-activity regions."""
+        import librosa
+
+        direct_mono = np.asarray(direct_mono, dtype=np.float32).reshape(-1)
+        deecho_mono = np.asarray(deecho_mono, dtype=np.float32).reshape(-1)
+        aligned_len = min(direct_mono.size, deecho_mono.size)
+        if aligned_len <= 0:
+            return direct_mono.astype(np.float32)
+
+        direct_main = direct_mono[:aligned_len]
+        deecho_main = deecho_mono[:aligned_len]
+
+        frame_length = 2048
+        hop_length = 512
+        eps = 1e-8
+        frame_rms = librosa.feature.rms(
+            y=direct_main,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0]
+        frame_db = 20.0 * np.log10(frame_rms + eps)
+        ref_db = float(np.percentile(frame_db, 95)) if frame_db.size > 0 else -20.0
+
+        activity = np.clip((frame_db - (ref_db - 32.0)) / 14.0, 0.0, 1.0)
+        smooth_kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
+        smooth_kernel /= np.sum(smooth_kernel)
+        activity = np.convolve(activity, smooth_kernel, mode="same")
+        activity = CoverPipeline._hold_activity_curve(
+            activity,
+            max(1, int(0.04 * sr / hop_length)),
+        )
+        activity = np.clip(activity, 0.0, 1.0)
+
+        deecho_weight = 0.65 * np.square(1.0 - activity)
+        deecho_weight = np.convolve(deecho_weight, smooth_kernel, mode="same")
+        deecho_weight = np.clip(deecho_weight, 0.0, 0.65)
+        deecho_weight = CoverPipeline._frame_curve_to_sample_gain(
+            deecho_weight,
+            aligned_len,
+            hop_length,
+        )
+
+        blended = direct_main * (1.0 - deecho_weight) + deecho_main * deecho_weight
+        if direct_mono.size > aligned_len:
+            blended = np.concatenate([blended, direct_mono[aligned_len:]])
+        return blended.astype(np.float32)
+
     def _prepare_vocals_for_vc(
         self,
         vocals_path: str,
@@ -966,9 +1022,25 @@ class CoverPipeline:
                 self._last_vc_preprocess_mode = "uvr_deecho"
                 log.detail("VC preprocess: UVR learned DeEcho/DeReverb -> mono select")
 
-            audio, sr = librosa.load(preprocess_input, sr=None, mono=False)
-            audio = self._ensure_2d(audio).astype(np.float32)
-            mono = self._select_mono_for_vc(audio, sr)
+            if preprocess_input == vocals_path:
+                audio, sr = librosa.load(preprocess_input, sr=None, mono=False)
+                audio = self._ensure_2d(audio).astype(np.float32)
+                mono = self._select_mono_for_vc(audio, sr)
+            else:
+                direct_audio, sr = librosa.load(vocals_path, sr=None, mono=False)
+                deecho_audio, deecho_sr = librosa.load(preprocess_input, sr=None, mono=False)
+                direct_audio = self._ensure_2d(direct_audio).astype(np.float32)
+                deecho_audio = self._ensure_2d(deecho_audio).astype(np.float32)
+                direct_mono = self._select_mono_for_vc(direct_audio, sr)
+                deecho_mono = self._select_mono_for_vc(deecho_audio, deecho_sr)
+                if deecho_sr != sr:
+                    deecho_mono = librosa.resample(
+                        deecho_mono,
+                        orig_sr=deecho_sr,
+                        target_sr=sr,
+                    ).astype(np.float32)
+                mono = self._blend_direct_with_deecho(direct_mono, deecho_mono, sr)
+                log.detail("VC preprocess: blended direct lead with UVR DeEcho")
 
         mono = soft_clip(mono, threshold=0.9, ceiling=0.99)
 
@@ -1427,6 +1499,8 @@ class CoverPipeline:
         karaoke_merge_backing_into_accompaniment: bool = True,
         vc_preprocess_mode: str = "auto",
         source_constraint_mode: str = "auto",
+        vc_pipeline_mode: str = "current",
+        singing_repair: bool = False,
         output_dir: Optional[str] = None,
         model_display_name: Optional[str] = None,
         progress_callback: Optional[Callable[[str, int, int], None]] = None
@@ -1470,11 +1544,20 @@ class CoverPipeline:
                 "accompaniment": 伴奏路径
             }
         """
-        total_steps = 5 if karaoke_separation else 4
-        step_karaoke = 2 if karaoke_separation else None
-        step_convert = 3 if karaoke_separation else 2
-        step_mix = 4 if karaoke_separation else 3
-        step_finalize = 5 if karaoke_separation else 4
+        normalized_vc_pipeline_mode = str(vc_pipeline_mode or "current").strip().lower()
+        if normalized_vc_pipeline_mode not in {"current", "official"}:
+            normalized_vc_pipeline_mode = "current"
+        effective_official_mode = normalized_vc_pipeline_mode == "official"
+        effective_separator = "uvr5" if effective_official_mode else separator
+        effective_karaoke_separation = False if effective_official_mode else karaoke_separation
+        effective_karaoke_merge_backing = False if effective_official_mode else karaoke_merge_backing_into_accompaniment
+        effective_use_official = True if effective_official_mode else use_official
+
+        total_steps = 5 if effective_karaoke_separation else 4
+        step_karaoke = 2 if effective_karaoke_separation else None
+        step_convert = 3 if effective_karaoke_separation else 2
+        step_mix = 4 if effective_karaoke_separation else 3
+        step_finalize = 5 if effective_karaoke_separation else 4
         session_dir = self._get_session_dir()
 
         # 记录输入信息
@@ -1489,7 +1572,6 @@ class CoverPipeline:
         log.detail(f"音频时长: {_format_duration(input_duration)}")
         log.detail(f"会话目录: {session_dir}")
         log.separator()
-
         # 记录参数配置
         log.config(f"RVC模型: {Path(model_path).name}")
         log.config(f"索引文件: {Path(index_path).name if index_path else '无'}")
@@ -1497,11 +1579,14 @@ class CoverPipeline:
         log.config(f"F0提取方法: {f0_method}")
         log.config(f"索引混合比率: {index_ratio}")
         log.config(f"说话人ID: {speaker_id}")
-        log.config(f"人声分离器: {separator}")
-        if separator == "uvr5":
+        log.config(f"VC管线模式: {normalized_vc_pipeline_mode}")
+        if effective_official_mode:
+            log.config("官方模式: 强制使用官方UVR5分离 + 官方VC，不使用Karaoke二次分离")
+        log.config(f"人声分离器: {effective_separator}")
+        if effective_separator == "uvr5":
             log.config(f"UVR5模型: {uvr5_model or '自动选择'}")
             log.config(f"UVR5激进度: {uvr5_agg}")
-        elif separator == "roformer":
+        elif effective_separator == "roformer":
             log.config(f"Roformer模型: {ROFORMER_DEFAULT_MODEL}")
         else:
             log.config(f"Demucs模型: {demucs_model}")
@@ -1511,13 +1596,15 @@ class CoverPipeline:
         log.config(f"混响量: {reverb_amount}")
         log.separator()
 
-        log.config(f"Karaoke分离: {'开启' if karaoke_separation else '关闭'}")
-        if karaoke_separation:
+        log.config(f"Karaoke分离: {'开启' if effective_karaoke_separation else '关闭'}")
+        if effective_karaoke_separation:
             log.config(f"Karaoke模型: {karaoke_model}")
             log.config(
                 "Karaoke和声混入伴奏: "
-                f"{'开启' if karaoke_merge_backing_into_accompaniment else '关闭'}"
+                f"{'开启' if effective_karaoke_merge_backing else '关闭'}"
             )
+        elif effective_official_mode:
+            log.config("Karaoke分离: 官方模式下关闭")
 
         def report_progress(msg: str, step: int):
             if progress_callback:
@@ -1528,8 +1615,19 @@ class CoverPipeline:
             # ===== 步骤 1: 人声分离 =====
             report_progress("正在分离人声和伴奏...", 1)
 
-            if use_official and separator == "uvr5":
-                log.model(f"使用官方UVR5进行人声分离")
+            if effective_official_mode:
+                log.model("官方模式：使用内置官方UVR5进行人声分离")
+                uvr_temp = session_dir / "official_uvr5"
+                log.detail(f"官方UVR5临时目录: {uvr_temp}")
+                vocals_path, accompaniment_path = separate_uvr5_official_upstream(
+                    input_audio,
+                    uvr_temp,
+                    uvr5_model,
+                    agg=uvr5_agg,
+                    fmt=uvr5_format,
+                )
+            elif effective_use_official and effective_separator == "uvr5":
+                log.model("使用当前项目官方封装UVR5进行人声分离")
                 setup_official_env(Path(__file__).parent.parent)
                 uvr_temp = session_dir / "uvr5"
                 log.detail(f"UVR5临时目录: {uvr_temp}")
@@ -1540,15 +1638,15 @@ class CoverPipeline:
                     agg=uvr5_agg,
                     fmt=uvr5_format,
                 )
-                log.success(f"UVR5分离完成")
-            elif separator == "roformer":
-                log.model(f"使用 Mel-Band Roformer 进行人声分离")
+                log.success("UVR5分离完成")
+            elif effective_separator == "roformer":
+                log.model("使用 Mel-Band Roformer 进行人声分离")
                 self._init_separator("roformer")
                 vocals_path, accompaniment_path = self.separator.separate(
                     input_audio,
                     str(session_dir)
                 )
-                log.success(f"Mel-Band Roformer 分离完成")
+                log.success("Mel-Band Roformer 分离完成")
             else:
                 log.model(f"使用Demucs进行人声分离: {demucs_model}")
                 self._init_separator(
@@ -1561,18 +1659,7 @@ class CoverPipeline:
                     input_audio,
                     str(session_dir)
                 )
-                log.success(f"Demucs分离完成")
-
-            # 记录分离结果
-            vocals_size = Path(vocals_path).stat().st_size if Path(vocals_path).exists() else 0
-            accomp_size = Path(accompaniment_path).stat().st_size if Path(accompaniment_path).exists() else 0
-            log.audio(f"人声文件: {Path(vocals_path).name} ({_format_size(vocals_size)})")
-            log.audio(f"伴奏文件: {Path(accompaniment_path).name} ({_format_size(accomp_size)})")
-
-            # 释放分离器显存
-            if self.separator is not None:
-                log.detail("释放分离器显存...")
-                self.separator.unload_model()
+                log.success("Demucs分离完成")
             gc.collect()
             empty_device_cache()
             log.detail("已清理设备缓存")
@@ -1582,7 +1669,7 @@ class CoverPipeline:
             lead_vocals_path = None
             backing_vocals_path = None
 
-            if karaoke_separation:
+            if effective_karaoke_separation:
                 report_progress("正在分离主唱和和声...", step_karaoke)
                 lead_vocals_path, backing_vocals_path = self._separate_karaoke(
                     vocals_path=vocals_path,
@@ -1598,23 +1685,28 @@ class CoverPipeline:
             normalized_vc_preprocess_mode = str(vc_preprocess_mode or "auto").strip().lower()
             normalized_source_constraint_mode = str(source_constraint_mode or "auto").strip().lower()
             available_uvr_deecho_model = self._get_available_uvr_deecho_model()
-            log.config(f"VC preprocess mode: {normalized_vc_preprocess_mode}")
-            if normalized_vc_preprocess_mode in {"auto", "uvr_deecho"}:
+            log.config(f"VC预处理模式: {normalized_vc_preprocess_mode}")
+            if normalized_vc_pipeline_mode == "current" and normalized_vc_preprocess_mode in {"auto", "uvr_deecho"}:
                 if available_uvr_deecho_model:
-                    log.config(f"Mature DeEcho model: {available_uvr_deecho_model}")
+                    log.config(f"Mature DeEcho模型: {available_uvr_deecho_model}")
                 else:
-                    log.config("Mature DeEcho model: not found, fallback to direct lead input")
-            log.config(f"Source constraint mode: {normalized_source_constraint_mode}")
+                    log.config("Mature DeEcho模型: 未找到，将回退到主唱直通")
+            log.config(f"源约束模式: {normalized_source_constraint_mode}")
 
             vc_input_path = vocals_path
             vc_preprocessed = False
-            try:
-                prepared_path = self._prepare_vocals_for_vc(vocals_path, session_dir, preprocess_mode=normalized_vc_preprocess_mode)
-                vc_input_path = prepared_path
-                vc_preprocessed = True
-                log.audio(f"VC预处理输入: {Path(vc_input_path).name}")
-            except Exception as e:
-                log.warning(f"VC预处理失败，回退原始输入: {e}")
+            if normalized_vc_pipeline_mode == "official":
+                self._last_vc_preprocess_mode = "direct"
+                log.detail("官方VC模式：跳过自定义VC预处理")
+                log.audio(f"官方VC输入: {Path(vc_input_path).name}")
+            else:
+                try:
+                    prepared_path = self._prepare_vocals_for_vc(vocals_path, session_dir, preprocess_mode=normalized_vc_preprocess_mode)
+                    vc_input_path = prepared_path
+                    vc_preprocessed = True
+                    log.audio(f"VC预处理输入: {Path(vc_input_path).name}")
+                except Exception as e:
+                    log.warning(f"VC预处理失败，回退原始输入: {e}")
 
             report_progress("正在转换人声...", step_convert)
             converted_vocals_path = str(session_dir / "converted_vocals.wav")
@@ -1622,9 +1714,71 @@ class CoverPipeline:
             log.model(f"加载RVC模型: {Path(model_path).name}")
             log.detail(f"输入人声: {vc_input_path}")
             log.detail(f"输出路径: {converted_vocals_path}")
+            if normalized_vc_pipeline_mode == "official" and not singing_repair:
+                log.detail("使用内置官方VC实现进行转换")
+                log.config(f"F0方法: {f0_method}, 音调: {pitch_shift}, 索引率: {index_ratio}")
+                log.config(f"滤波半径: {filter_radius}, RMS混合: {rms_mix_rate}, 保护: {protect}")
 
-            if use_official:
-                log.detail("使用官方VC管道进行转换")
+                convert_vocals_official_upstream(
+                    vocals_path=vc_input_path,
+                    output_path=converted_vocals_path,
+                    model_path=model_path,
+                    index_path=index_path,
+                    f0_method=f0_method,
+                    pitch_shift=pitch_shift,
+                    index_rate=index_ratio,
+                    filter_radius=filter_radius,
+                    rms_mix_rate=rms_mix_rate,
+                    protect=protect,
+                    speaker_id=speaker_id,
+                )
+                log.detail("内置官方模式已跳过自定义VC前后处理")
+                log.success("内置官方VC转换完成")
+            elif normalized_vc_pipeline_mode == "official" and singing_repair:
+                log.detail("使用官方兼容唱歌修复链进行转换")
+                log.config(f"F0方法: {f0_method}, 音调: {pitch_shift}, 索引率: {index_ratio}")
+                log.config(f"滤波半径: {filter_radius}, RMS混合: {rms_mix_rate}, 保护: {protect}")
+                log.config("唱歌修复: 开启（FP32 + 保守F0兜底 + F0稳定/限速）")
+
+                convert_vocals_official(
+                    vocals_path=vc_input_path,
+                    output_path=converted_vocals_path,
+                    model_path=model_path,
+                    index_path=index_path,
+                    f0_method=f0_method,
+                    pitch_shift=pitch_shift,
+                    index_rate=index_ratio,
+                    filter_radius=filter_radius,
+                    rms_mix_rate=rms_mix_rate,
+                    protect=protect,
+                    speaker_id=speaker_id,
+                    repair_profile=True,
+                )
+                try:
+                    self._apply_silence_gate_official(
+                        vocals_path=vc_input_path,
+                        converted_path=converted_vocals_path,
+                        f0_method=f0_method,
+                        silence_threshold_db=-38.0,
+                        silence_smoothing_ms=35.0,
+                        silence_min_duration_ms=70.0,
+                        protect=0.0,
+                    )
+                    log.detail("唱歌修复: 已应用低能量静音清理")
+                except Exception as e:
+                    log.warning(f"唱歌修复静音清理失败，保留原始转换结果: {e}")
+
+                try:
+                    self._apply_source_gap_suppression(
+                        source_vocals_path=vc_input_path,
+                        converted_vocals_path=converted_vocals_path,
+                    )
+                    log.detail("唱歌修复: 已应用源静音区抑制")
+                except Exception as e:
+                    log.warning(f"唱歌修复静音区抑制失败，保留当前结果: {e}")
+                log.success("官方兼容唱歌修复转换完成")
+            elif effective_use_official:
+                log.detail("使用当前项目官方封装VC进行转换")
                 log.config(f"F0方法: {f0_method}, 音调: {pitch_shift}, 索引率: {index_ratio}")
                 log.config(f"滤波半径: {filter_radius}, RMS混合: {rms_mix_rate}, 保护: {protect}")
 
@@ -1642,7 +1796,7 @@ class CoverPipeline:
                     speaker_id=speaker_id,
                 )
                 if silence_gate:
-                    log.detail("启用静音门限(官方VC后处理..)")
+                    log.detail("启用静音门限（当前项目官方封装VC后处理）")
                     self._apply_silence_gate_official(
                         vocals_path=vc_input_path,
                         converted_path=converted_vocals_path,
@@ -1805,8 +1959,8 @@ class CoverPipeline:
                     log.warning(f"混入原始人声失败，使用转换人声: {e}")
 
             if (
-                karaoke_separation
-                and karaoke_merge_backing_into_accompaniment
+                effective_karaoke_separation
+                and effective_karaoke_merge_backing
                 and backing_vocals_path
             ):
                 accompaniment_path = self._merge_backing_into_accompaniment(
@@ -1869,7 +2023,7 @@ class CoverPipeline:
                 log.detail(f"复制伴奏文件: {final_accompaniment}")
                 shutil.copy(accompaniment_path, final_accompaniment)
 
-                if karaoke_separation and lead_vocals_path and backing_vocals_path:
+                if effective_karaoke_separation and lead_vocals_path and backing_vocals_path:
                     log.detail(f"复制主唱文件: {final_lead}")
                     shutil.copy(lead_vocals_path, final_lead)
                     log.detail(f"复制和声文件: {final_backing}")
@@ -1887,7 +2041,7 @@ class CoverPipeline:
                     "accompaniment": final_accompaniment,
                     "all_files_dir": str(all_files_dir),
                 }
-                if karaoke_separation and lead_vocals_path and backing_vocals_path:
+                if effective_karaoke_separation and lead_vocals_path and backing_vocals_path:
                     result["lead_vocals"] = final_lead
                     result["backing_vocals"] = final_backing
             else:
@@ -1898,6 +2052,9 @@ class CoverPipeline:
                     "accompaniment": accompaniment_path,
                     "all_files_dir": str(session_dir),
                 }
+                if effective_karaoke_separation and lead_vocals_path and backing_vocals_path:
+                    result["lead_vocals"] = lead_vocals_path
+                    result["backing_vocals"] = backing_vocals_path
                 if karaoke_separation and lead_vocals_path and backing_vocals_path:
                     result["lead_vocals"] = lead_vocals_path
                     result["backing_vocals"] = backing_vocals_path

@@ -71,7 +71,9 @@
         "f0_rate_limit": false,
         "f0_rate_limit_semitones": 12.0,
         "vc_preprocess_mode": "auto",
-        "source_constraint_mode": "auto"
+        "source_constraint_mode": "auto",
+        "vc_pipeline_mode": "current",
+        "singing_repair": false
     },
     "rmvpe_threshold": 0.02,
     "f0_min": 50,
