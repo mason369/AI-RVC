@@ -726,45 +726,28 @@ class VoiceConversionPipeline:
         # 释放 HuBERT 显存
         self.unload_hubert()
 
-        # 索引检索 (CPU 操作) - 使用特征解耦技术减少音色泄漏
+        # 索引检索 (CPU 操作)
         if self.index is not None and index_ratio > 0:
             features_before_index = features.copy()
+            retrieved = self.search_index(features)
 
-            # 使用改进的检索策略
-            try:
-                from lib.feature_disentangle import (
-                    mitigate_timbre_leakage,
-                    cosine_similarity_retrieval,
-                    weighted_feature_aggregation
-                )
+            # 简单的自适应索引混合（不使用白化和残差去除）
+            # 高音区域使用稍高的索引率
+            adaptive_index_ratio = np.ones(len(features)) * index_ratio
 
-                # 使用余弦相似度检索（而非欧氏距离）
-                # 参考: "Enhancing zero-shot timbre conversion" (arXiv:2507.09070)
-                try:
-                    big_npy = self.index.reconstruct_n(0, self.index.ntotal)
-                    indices, similarities = cosine_similarity_retrieval(features, big_npy, k=8)
-                    retrieved = weighted_feature_aggregation(big_npy, indices, similarities)
-                except Exception as e:
-                    log.warning(f"余弦相似度检索失败，回退到标准检索: {e}")
-                    retrieved = self.search_index(features)
+            f0_per_feat = 2
+            for fi in range(len(features)):
+                f0_start = fi * f0_per_feat
+                f0_end = min(f0_start + f0_per_feat, len(f0))
+                if f0_end > f0_start:
+                    f0_segment = f0[f0_start:f0_end]
+                    avg_f0 = np.mean(f0_segment[f0_segment > 0]) if np.any(f0_segment > 0) else 0
+                    # 高音区域提升索引率
+                    if avg_f0 > 450:
+                        adaptive_index_ratio[fi] = min(0.75, index_ratio * 1.3)
 
-                # 应用综合音色泄漏缓解策略
-                # 参考: "Mitigating Timbre Leakage" (arXiv:2504.08524)
-                features = mitigate_timbre_leakage(
-                    features=features_before_index,
-                    retrieved_features=retrieved,
-                    f0=f0,
-                    index_ratio=index_ratio,
-                    use_whitening=True,      # 特征白化去除音色统计
-                    use_residual_removal=True  # 去除音色残差
-                )
-                log.detail("已应用特征解耦和音色泄漏缓解")
-
-            except ImportError:
-                # 回退到原始方法
-                log.warning("特征解耦模块不可用，使用标准索引混合")
-                retrieved = self.search_index(features)
-                features = features * (1 - index_ratio) + retrieved * index_ratio
+            adaptive_index_ratio = adaptive_index_ratio[:, np.newaxis]
+            features = features * (1 - adaptive_index_ratio) + retrieved * adaptive_index_ratio
 
             # 动态辅音保护：基于F0置信度和能量调整protect强度
             # 避免索引检索破坏辅音清晰度，与官方管道行为一致
@@ -937,40 +920,12 @@ class VoiceConversionPipeline:
                 sr=save_sr,
                 reduce_sibilance_enabled=True,
                 reduce_breath_enabled=True,
-                sibilance_reduction_db=4.0,  # 温和的齿音衰减
-                breath_reduction_db=8.0      # 中等的呼吸音衰减
+                sibilance_reduction_db=3.0,  # 降低衰减量，避免过度处理
+                breath_reduction_db=6.0      # 降低衰减量
             )
             log.detail("已应用人声清理后处理")
         except Exception as e:
             log.warning(f"人声清理后处理失败: {e}")
-
-        # 应用频谱后处理（修复vocoder伪影和破音）
-        # 参考: "A Conditional Diffusion Model for Singing Voice Synthesis" (arXiv:2506.21478)
-        try:
-            from lib.spectral_postprocess import apply_spectral_postprocessing
-
-            # 将F0重采样到输出采样率
-            if len(f0) > 0:
-                import librosa
-                f0_resampled = librosa.resample(
-                    f0.astype(np.float32),
-                    orig_sr=100,  # F0帧率100fps
-                    target_sr=save_sr / 160  # 输出音频对应的F0帧率
-                )
-            else:
-                f0_resampled = None
-
-            audio_out = apply_spectral_postprocessing(
-                audio_out,
-                sr=save_sr,
-                f0=f0_resampled,
-                enable_smoothing=True,
-                enable_harmonic_enhancement=True,
-                smoothing_factor=0.2  # 温和的平滑
-            )
-            log.detail("已应用频谱后处理（减少破音和伪影）")
-        except Exception as e:
-            log.warning(f"频谱后处理失败: {e}")
 
         # 峰值限幅（不改变整体响度，后续由 cover_pipeline 控制音量）
         audio_out = soft_clip(audio_out, threshold=0.9, ceiling=0.99)
