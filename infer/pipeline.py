@@ -912,20 +912,49 @@ class VoiceConversionPipeline:
             )
 
         # 应用人声清理后处理（减少齿音和呼吸音）
-        # 参考: "Managing Sibilance" 和 "How to REALLY Clean Vocals"
         try:
             from lib.vocal_cleanup import apply_vocal_cleanup
             audio_out = apply_vocal_cleanup(
                 audio_out,
                 sr=save_sr,
                 reduce_sibilance_enabled=True,
-                reduce_breath_enabled=True,
-                sibilance_reduction_db=3.0,  # 降低衰减量，避免过度处理
-                breath_reduction_db=6.0      # 降低衰减量
+                reduce_breath_enabled=False,  # 禁用，使用vocoder_fix代替
+                sibilance_reduction_db=3.0,
+                breath_reduction_db=0.0
             )
-            log.detail("已应用人声清理后处理")
+            log.detail("已应用齿音清理")
         except Exception as e:
-            log.warning(f"人声清理后处理失败: {e}")
+            log.warning(f"人声清理失败: {e}")
+
+        # 应用vocoder伪影修复（呼吸音电音和长音撕裂）
+        # 参考: GitHub Issue #65, arXiv:2601.14472
+        try:
+            from lib.vocoder_fix import apply_vocoder_artifact_fix
+
+            # 将F0重采样到音频帧率
+            if len(f0) > 0:
+                import librosa
+                # F0是100fps，需要对齐到音频帧率
+                f0_resampled = librosa.resample(
+                    f0.astype(np.float32),
+                    orig_sr=100,  # F0帧率
+                    target_sr=save_sr / (save_sr / 16000 * 160)  # 音频帧率
+                )
+            else:
+                f0_resampled = None
+
+            audio_out = apply_vocoder_artifact_fix(
+                audio_out,
+                sr=save_sr,
+                f0=f0_resampled,
+                chunk_boundaries=None,
+                fix_phase=True,        # 修复相位不连续（长音撕裂）
+                fix_breath=True,       # 修复呼吸音电音
+                fix_sustained=True     # 稳定长音
+            )
+            log.detail("已应用vocoder伪影修复（呼吸音电音和长音撕裂）")
+        except Exception as e:
+            log.warning(f"Vocoder伪影修复失败: {e}")
 
         # 峰值限幅（不改变整体响度，后续由 cover_pipeline 控制音量）
         audio_out = soft_clip(audio_out, threshold=0.9, ceiling=0.99)
