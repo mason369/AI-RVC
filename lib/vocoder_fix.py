@@ -26,10 +26,11 @@ def fix_phase_discontinuity(audio: np.ndarray, sr: int, chunk_boundaries: Option
     # 使用希尔伯特变换提取瞬时相位
     analytic_signal = signal.hilbert(audio)
     instantaneous_phase = np.unwrap(np.angle(analytic_signal))
+    amplitude = np.abs(analytic_signal)
 
     # 检测相位跳变
     phase_diff = np.diff(instantaneous_phase)
-    phase_diff_threshold = np.percentile(np.abs(phase_diff), 99) * 2
+    phase_diff_threshold = np.percentile(np.abs(phase_diff), 99) * 2.5
 
     # 找到相位跳变点
     discontinuities = np.where(np.abs(phase_diff) > phase_diff_threshold)[0]
@@ -39,19 +40,22 @@ def fix_phase_discontinuity(audio: np.ndarray, sr: int, chunk_boundaries: Option
 
     # 修复每个不连续点
     result = audio.copy()
+    phase_corrected = instantaneous_phase.copy()
+
     for disc_idx in discontinuities:
-        # 在不连续点周围应用平滑
-        window_size = int(0.01 * sr)  # 10ms窗口
-        start = max(0, disc_idx - window_size // 2)
-        end = min(len(audio), disc_idx + window_size // 2)
+        # 计算相位跳变量
+        phase_jump = phase_diff[disc_idx]
 
-        if end - start < 10:
-            continue
+        # 在不连续点之后应用相位校正（累积补偿）
+        correction_length = min(int(0.02 * sr), len(phase_corrected) - disc_idx - 1)  # 20ms
+        if correction_length > 0:
+            # 线性过渡相位校正
+            correction_curve = np.linspace(phase_jump, 0, correction_length)
+            phase_corrected[disc_idx + 1:disc_idx + 1 + correction_length] -= correction_curve
 
-        # 使用汉宁窗平滑
-        window = signal.windows.hann(end - start)
-        # 只平滑幅度，保留相位
-        result[start:end] = result[start:end] * window
+    # 用校正后的相位重建信号
+    corrected_signal = amplitude * np.exp(1j * phase_corrected)
+    result = np.real(corrected_signal).astype(np.float32)
 
     return result
 
@@ -101,21 +105,27 @@ def reduce_breath_electric_noise(audio: np.ndarray, sr: int, f0: Optional[np.nda
 
     # 归一化能量
     energy_db = 10 * np.log10(energy + 1e-10)
-    energy_threshold = np.percentile(energy_db, 20)  # 低能量阈值
+    energy_threshold = np.percentile(energy_db, 10)  # 只处理最低10%能量的帧
 
-    # 检测呼吸音：低能量 + 高频谱平坦度
-    is_breath = (energy_db < energy_threshold) & (spectral_flatness > 0.6)
+    # 检测呼吸音：极低能量 + 高频谱平坦度（噪声特征）
+    is_breath = (energy_db < energy_threshold) & (spectral_flatness > 0.7)
 
-    # 如果提供了F0，使用F0=0来辅助判断
+    # 如果提供了F0，使用F0=0来辅助判断，但需要排除辅音
+    # 辅音特征：F0=0 但能量不是极低，且频谱平坦度不高
     if f0 is not None and len(f0) > 0:
         # F0对齐到音频帧
         f0_per_audio_frame = len(f0) / n_frames
         for i in range(n_frames):
             f0_idx = int(i * f0_per_audio_frame)
             if f0_idx < len(f0) and f0[f0_idx] == 0:
-                is_breath[i] = True
+                # F0=0 但能量较高或频谱平坦度低 -> 可能是辅音，不处理
+                if energy_db[i] > energy_threshold + 15 or spectral_flatness[i] < 0.5:
+                    is_breath[i] = False
+                # 能量不是极低 -> 不是呼吸音
+                elif energy_db[i] > energy_threshold + 5:
+                    is_breath[i] = False
 
-    # 对呼吸音区域应用降噪
+    # 对呼吸音区域应用温和的降噪
     result = audio.copy()
 
     for i in range(n_frames):
@@ -134,8 +144,8 @@ def reduce_breath_electric_noise(audio: np.ndarray, sr: int, f0: Optional[np.nda
             phase = np.angle(fft)
 
             # 频谱门限：去除低于阈值的频率成分
-            threshold = np.percentile(magnitude, 70)  # 保留30%的能量
-            magnitude = np.where(magnitude > threshold, magnitude, magnitude * 0.1)
+            threshold = np.percentile(magnitude, 80)  # 保留20%的能量（更温和）
+            magnitude = np.where(magnitude > threshold, magnitude, magnitude * 0.3)
 
             # 重建
             fft_cleaned = magnitude * np.exp(1j * phase)
@@ -143,14 +153,15 @@ def reduce_breath_electric_noise(audio: np.ndarray, sr: int, f0: Optional[np.nda
 
             # 平滑过渡
             fade_length = min(hop_length // 2, len(frame) // 4)
-            fade_in = np.linspace(0, 1, fade_length)
-            fade_out = np.linspace(1, 0, fade_length)
+            if fade_length > 0:
+                fade_in = np.linspace(0, 1, fade_length)
+                fade_out = np.linspace(1, 0, fade_length)
 
-            frame_cleaned[:fade_length] *= fade_in
-            frame_cleaned[-fade_length:] *= fade_out
+                frame_cleaned[:fade_length] *= fade_in
+                frame_cleaned[-fade_length:] *= fade_out
 
-            # 混合
-            result[start:end] = frame * 0.3 + frame_cleaned * 0.7
+            # 温和混合（保留更多原始信号，避免音量损失）
+            result[start:end] = frame * 0.7 + frame_cleaned * 0.3
 
     return result
 
@@ -229,17 +240,30 @@ def stabilize_sustained_notes(audio: np.ndarray, sr: int, f0: Optional[np.ndarra
             # 提取长音段
             sustained_segment = audio[start_sample:end_sample]
 
-            # 使用LPC分析提取稳定的谐波结构
-            # 简化版本：使用低通滤波平滑幅度包络
+            # 使用低通滤波平滑幅度包络（而非除法）
             envelope = np.abs(signal.hilbert(sustained_segment))
 
             # 平滑包络
             b, a = signal.butter(2, 50 / (sr / 2), btype='low')
             smoothed_envelope = signal.filtfilt(b, a, envelope)
 
-            # 应用平滑包络
+            # 计算增益调整（避免除法放大噪声）
+            # 只在包络变化剧烈的地方应用平滑
+            envelope_variation = np.abs(envelope - smoothed_envelope)
+            variation_threshold = np.percentile(envelope_variation, 75)
+
+            # 创建混合掩码：变化大的地方用平滑包络，变化小的地方保持原样
+            blend_mask = np.clip(envelope_variation / (variation_threshold + 1e-6), 0, 1)
+
+            # 计算目标包络
+            target_envelope = smoothed_envelope * blend_mask + envelope * (1 - blend_mask)
+
+            # 应用包络调整（使用乘法而非除法）
             if np.max(envelope) > 1e-6:
-                result[start_sample:end_sample] = sustained_segment * (smoothed_envelope / (envelope + 1e-6))
+                gain = target_envelope / (envelope + 1e-6)
+                # 限制增益范围，避免放大噪声
+                gain = np.clip(gain, 0.5, 2.0)
+                result[start_sample:end_sample] = sustained_segment * gain
 
         i += 1
 

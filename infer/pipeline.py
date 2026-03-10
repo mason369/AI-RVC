@@ -209,20 +209,25 @@ class VoiceConversionPipeline:
 
         log.debug(f"解析后的配置: {model_config}")
 
-        # 根据hidden_channels选择正确的合成器
-        hidden_channels = model_config.get("hidden_channels", 192)
-        if hidden_channels == 256 or hidden_channels >= 512:
-            # v2模型：768维
-            from infer.lib.infer_pack.models import SynthesizerTrnMs768NSFsid
-            synthesizer_class = SynthesizerTrnMs768NSFsid
-            self.model_version = "v2"
-            log.debug(f"使用v2合成器 (768维): hidden_channels={hidden_channels}")
-        else:
+        # 根据gin_channels选择正确的合成器
+        # v1模型: gin_channels=256, 使用256维HuBERT特征
+        # v2模型: gin_channels=256, 使用768维HuBERT特征
+        # 判断依据：检查模型文件中是否有'version'字段，或根据实际权重形状判断
+        gin_channels = model_config.get("gin_channels", 256)
+
+        # 优先使用模型文件中的version字段
+        if "version" in cpt and cpt["version"] == "v1":
             # v1模型：256维
             from infer.lib.infer_pack.models import SynthesizerTrnMs256NSFsid
             synthesizer_class = SynthesizerTrnMs256NSFsid
             self.model_version = "v1"
-            log.debug(f"使用v1合成器 (256维): hidden_channels={hidden_channels}")
+            log.debug(f"使用v1合成器 (256维): version={cpt['version']}")
+        else:
+            # v2模型：768维（默认）
+            from infer.lib.infer_pack.models import SynthesizerTrnMs768NSFsid
+            synthesizer_class = SynthesizerTrnMs768NSFsid
+            self.model_version = "v2"
+            log.debug(f"使用v2合成器 (768维): version={cpt.get('version', 'v2')}")
 
         # 加载模型权重
         self.voice_model = synthesizer_class(
@@ -634,8 +639,8 @@ class VoiceConversionPipeline:
         rms_mix_rate: float = 0.25,
         protect: float = 0.33,
         speaker_id: int = 0,
-        silence_gate: bool = False,
-        silence_threshold_db: float = -40.0,
+        silence_gate: bool = True,
+        silence_threshold_db: float = -45.0,
         silence_smoothing_ms: float = 50.0,
         silence_min_duration_ms: float = 200.0
     ) -> str:
@@ -652,7 +657,7 @@ class VoiceConversionPipeline:
             rms_mix_rate: RMS 混合比率
             protect: 保护清辅音
             speaker_id: 说话人 ID（多说话人模型可调）
-            silence_gate: 启用静音门限
+            silence_gate: 启用静音门限（默认开启以消除静音段底噪）
             silence_threshold_db: 静音阈值 (dB, 相对峰值)
             silence_smoothing_ms: 门限平滑时长 (ms)
             silence_min_duration_ms: 最短静音时长 (ms)
@@ -788,7 +793,8 @@ class VoiceConversionPipeline:
                 protect_mask = protect_mask[:, np.newaxis]  # [T, 1] 广播到 [T, C]
                 features = features * protect_mask + features_before_index * (1 - protect_mask)
 
-        # --- 能量感知硬门控（索引+protect 之后、分块推理之前）---
+        # --- 能量感知软门控（索引+protect 之后、分块推理之前）---
+        # 注意：使用软门控而非硬清零，避免音量损失
         import librosa as _librosa_local
         _hop_feat = 320  # HuBERT hop
         _n_feat = features.shape[0]
@@ -803,18 +809,42 @@ class VoiceConversionPipeline:
             _frame_rms = np.pad(_frame_rms, (0, _n_feat - len(_frame_rms)), mode='edge')
         _energy_db = 20.0 * np.log10(_frame_rms + 1e-8)
         _ref_db = float(np.percentile(_energy_db, 95)) if _frame_rms.size > 0 else -20.0
-        # 硬门控：只有低于 ref-45dB 的真正静默帧被清零
-        _silence_threshold = _ref_db - 45.0
-        _energy_gate = (_energy_db > _silence_threshold).astype(np.float32)
+
+        # 改进的软门控：使用渐变衰减而非硬清零，保留低能量内容
+        _silence_threshold = _ref_db - 65.0  # 进一步放宽到-65dB（只处理极端静音）
+        _is_very_quiet = (_energy_db < _silence_threshold).astype(np.float32)
+
+        # 检查F0：F0=0的帧更可能是静音（但也可能是辅音）
+        _f0_50fps = f0[::2] if len(f0) >= _n_feat * 2 else np.pad(f0[::2], (0, _n_feat - len(f0[::2])), mode='edge')
+        _f0_50fps = _f0_50fps[:_n_feat]
+        _is_unvoiced = (_f0_50fps <= 0).astype(np.float32)
+
+        # 组合判断：极低能量 + 无声 = 可能静音
+        _is_silence = _is_very_quiet * _is_unvoiced
+
+        # 平滑门控曲线
         _sm = np.array([1, 2, 3, 2, 1], dtype=np.float32)
         _sm /= _sm.sum()
-        _energy_gate = np.convolve(_energy_gate, _sm, mode='same')[:_n_feat]
-        _energy_gate = (_energy_gate > 0.5).astype(np.float32)  # 重新二值化
+        _is_silence = np.convolve(_is_silence, _sm, mode='same')[:_n_feat]
 
-        # 特征硬门控（50fps）
+        # 最小静音时长过滤（避免误判短暂的低能量辅音）
+        _min_silence_frames = 10  # 约200ms @ 50fps（更保守）
+        _silence_binary = (_is_silence > 0.7).astype(int)  # 提高阈值到0.7
+        _changes = np.diff(np.concatenate(([0], _silence_binary, [0])))
+        _starts = np.where(_changes == 1)[0]
+        _ends = np.where(_changes == -1)[0]
+        _keep_silence = np.zeros_like(_silence_binary, dtype=bool)
+        for _s, _e in zip(_starts, _ends):
+            if _e - _s >= _min_silence_frames:
+                _keep_silence[_s:_e] = True
+
+        # 软门控：使用渐变衰减而非硬清零（0.3-1.0 而非 0-1）
+        _energy_gate = np.where(_keep_silence, 0.3, 1.0).astype(np.float32)
+
+        # 特征软门控（50fps）- 保留30%而非完全清零
         features = features * _energy_gate[:, np.newaxis]
 
-        # F0 硬清零（100fps = 特征帧率 × 2）
+        # F0 软清零（100fps = 特征帧率 × 2）- 保留30%而非完全清零
         _f0_gate = np.repeat(_energy_gate, 2)
         if len(_f0_gate) > len(f0):
             _f0_gate = _f0_gate[:len(f0)]
@@ -912,22 +942,23 @@ class VoiceConversionPipeline:
             )
 
         # 应用人声清理后处理（减少齿音和呼吸音）
+        # 注意：为避免过度处理导致音质下降，默认禁用
         try:
             from lib.vocal_cleanup import apply_vocal_cleanup
             audio_out = apply_vocal_cleanup(
                 audio_out,
                 sr=save_sr,
-                reduce_sibilance_enabled=True,
-                reduce_breath_enabled=False,  # 禁用，使用vocoder_fix代替
-                sibilance_reduction_db=3.0,
+                reduce_sibilance_enabled=False,  # 禁用齿音处理，避免音质损失
+                reduce_breath_enabled=False,
+                sibilance_reduction_db=2.0,
                 breath_reduction_db=0.0
             )
-            log.detail("已应用齿音清理")
+            log.detail("已应用人声清理")
         except Exception as e:
             log.warning(f"人声清理失败: {e}")
 
         # 应用vocoder伪影修复（呼吸音电音和长音撕裂）
-        # 参考: GitHub Issue #65, arXiv:2601.14472
+        # 注意：只保留相位修复，禁用其他处理避免音量损失
         try:
             from lib.vocoder_fix import apply_vocoder_artifact_fix
 
@@ -948,11 +979,11 @@ class VoiceConversionPipeline:
                 sr=save_sr,
                 f0=f0_resampled,
                 chunk_boundaries=None,
-                fix_phase=True,        # 修复相位不连续（长音撕裂）
-                fix_breath=True,       # 修复呼吸音电音
-                fix_sustained=True     # 稳定长音
+                fix_phase=True,        # 保留相位修复（修复长音撕裂）
+                fix_breath=False,      # 禁用呼吸音处理，避免音量损失
+                fix_sustained=False    # 禁用长音稳定，避免音质损失
             )
-            log.detail("已应用vocoder伪影修复（呼吸音电音和长音撕裂）")
+            log.detail("已应用vocoder伪影修复（仅相位）")
         except Exception as e:
             log.warning(f"Vocoder伪影修复失败: {e}")
 
@@ -966,7 +997,10 @@ class VoiceConversionPipeline:
 
     def _crossfade_chunks(self, chunks: list, overlap_frames: int) -> np.ndarray:
         """
-        使用交叉淡入淡出拼接音频块
+        使用 SOLA (Synchronized Overlap-Add) 拼接音频块
+
+        SOLA 通过在重叠区域搜索最佳相位对齐点来避免分块边界的撕裂伪影。
+        参考: w-okada/voice-changer Issue #163, DDSP-SVC 实现
 
         Args:
             chunks: 音频块列表
@@ -986,10 +1020,10 @@ class VoiceConversionPipeline:
         output_sr = getattr(self, 'output_sr', 40000)
 
         # 每个特征帧对应的输出样本数
-        samples_per_frame = int(HOP_LENGTH * output_sr / INPUT_SR)  # 16kHz->40kHz: 800, 16kHz->48kHz: 960
+        samples_per_frame = int(HOP_LENGTH * output_sr / INPUT_SR)
         overlap_samples = overlap_frames * samples_per_frame
 
-        log.debug(f"Crossfade: overlap_frames={overlap_frames}, samples_per_frame={samples_per_frame}, overlap_samples={overlap_samples}")
+        log.debug(f"SOLA Crossfade: overlap_frames={overlap_frames}, samples_per_frame={samples_per_frame}, overlap_samples={overlap_samples}")
 
         result = chunks[0]
 
@@ -1000,20 +1034,85 @@ class VoiceConversionPipeline:
             actual_overlap = min(overlap_samples, len(result), len(chunk))
 
             if actual_overlap > 0:
-                # 创建淡入淡出曲线
-                fade_out = np.linspace(1, 0, actual_overlap)
-                fade_in = np.linspace(0, 1, actual_overlap)
+                # SOLA: 在重叠区域搜索最佳相位对齐点
+                # 搜索范围：不超过一个基频周期（约 100-200 样本 @ 48kHz）
+                search_range = min(int(output_sr * 0.005), actual_overlap // 4)  # 5ms 或 1/4 重叠
 
-                # 应用交叉淡入淡出
-                result_end = result[-actual_overlap:] * fade_out
-                chunk_start = chunk[:actual_overlap] * fade_in
+                # 提取前一块的尾部作为参考
+                reference = result[-actual_overlap:]
 
-                # 拼接
-                result = np.concatenate([
-                    result[:-actual_overlap],
-                    result_end + chunk_start,
-                    chunk[actual_overlap:]
-                ])
+                # 在新块的开头搜索最佳对齐位置
+                best_offset = 0
+                max_correlation = -1.0
+
+                for offset in range(max(0, -search_range), min(search_range + 1, len(chunk) - actual_overlap + 1)):
+                    # 提取候选区域
+                    candidate_start = max(0, offset)
+                    candidate_end = candidate_start + actual_overlap
+
+                    if candidate_end > len(chunk):
+                        continue
+
+                    candidate = chunk[candidate_start:candidate_end]
+
+                    # 计算归一化互相关
+                    ref_norm = np.linalg.norm(reference)
+                    cand_norm = np.linalg.norm(candidate)
+
+                    if ref_norm > 1e-6 and cand_norm > 1e-6:
+                        correlation = np.dot(reference, candidate) / (ref_norm * cand_norm)
+
+                        if correlation > max_correlation:
+                            max_correlation = correlation
+                            best_offset = offset
+
+                log.debug(f"SOLA chunk {i}: best_offset={best_offset}, correlation={max_correlation:.4f}")
+
+                # 如果相关性太低（<0.3），说明信号不连续，使用简单crossfade避免伪影
+                if max_correlation < 0.3:
+                    log.debug(f"SOLA chunk {i}: low correlation, using simple crossfade")
+                    fade_out = np.linspace(1, 0, actual_overlap)
+                    fade_in = np.linspace(0, 1, actual_overlap)
+                    result_end = result[-actual_overlap:] * fade_out
+                    chunk_start = chunk[:actual_overlap] * fade_in
+                    result = np.concatenate([
+                        result[:-actual_overlap],
+                        result_end + chunk_start,
+                        chunk[actual_overlap:]
+                    ])
+                    continue
+
+                # 在最佳对齐点应用交叉淡入淡出
+                aligned_start = max(0, best_offset)
+                aligned_end = aligned_start + actual_overlap
+
+                if aligned_end <= len(chunk):
+                    # 创建淡入淡出曲线（使用余弦窗以获得更平滑的过渡）
+                    fade_out = np.cos(np.linspace(0, np.pi / 2, actual_overlap)) ** 2
+                    fade_in = np.sin(np.linspace(0, np.pi / 2, actual_overlap)) ** 2
+
+                    # 应用交叉淡入淡出
+                    result_end = result[-actual_overlap:] * fade_out
+                    chunk_aligned = chunk[aligned_start:aligned_end] * fade_in
+
+                    # 拼接
+                    result = np.concatenate([
+                        result[:-actual_overlap],
+                        result_end + chunk_aligned,
+                        chunk[aligned_end:]
+                    ])
+                else:
+                    # 对齐失败，回退到简单拼接
+                    log.warning(f"SOLA alignment failed for chunk {i}, using simple crossfade")
+                    fade_out = np.linspace(1, 0, actual_overlap)
+                    fade_in = np.linspace(0, 1, actual_overlap)
+                    result_end = result[-actual_overlap:] * fade_out
+                    chunk_start = chunk[:actual_overlap] * fade_in
+                    result = np.concatenate([
+                        result[:-actual_overlap],
+                        result_end + chunk_start,
+                        chunk[actual_overlap:]
+                    ])
             else:
                 # 无重叠，直接拼接
                 result = np.concatenate([result, chunk])

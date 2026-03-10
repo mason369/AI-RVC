@@ -1503,8 +1503,8 @@ class CoverPipeline:
             reference_audio=orig if orig is not None else src,
             target_audio=constrained,
             sr=conv_sr,
-            min_gain=0.80,
-            max_gain=1.25,
+            min_gain=0.95,  # 放宽到0.95，只降低5%（从0.80改为0.95）
+            max_gain=1.30,  # 允许更大的提升（从1.25改为1.30）
         )
         if abs(gain - 1.0) > 1e-3 and out_rms > 1e-6 and ref_rms > 1e-6:
             constrained = self._apply_weighted_gain(constrained, gain_weights, gain)
@@ -1522,12 +1522,12 @@ class CoverPipeline:
         base_budget_rms = np.maximum(src_frame_rms, orig_frame_rms)
         ref_frame_rms = float(np.percentile(base_budget_rms, 95))
         energy_guard = np.clip(0.20 * direct_activity + 0.15 * direct_ratio + 0.65 * phrase_activity, 0.0, 1.0)
-        allowed_boost = 0.35 + 1.20 * energy_guard
-        noise_floor = ref_frame_rms * (0.003 + 0.007 * (1.0 - phrase_activity))
+        allowed_boost = 0.50 + 1.50 * energy_guard  # 提高基础boost（从0.35改为0.50，从1.20改为1.50）
+        noise_floor = ref_frame_rms * (0.002 + 0.005 * (1.0 - phrase_activity))  # 降低noise_floor
         frame_budget = base_budget_rms * allowed_boost + noise_floor
         cleanup_gain = np.clip(
             frame_budget / (constrained_frame_rms + eps),
-            0.55 + 0.30 * phrase_activity,
+            0.75 + 0.20 * phrase_activity,  # 提高最小增益（从0.55改为0.75）
             1.0,
         )
         cleanup_gain = np.convolve(cleanup_gain, frame_kernel, mode="same")
