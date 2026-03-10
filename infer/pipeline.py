@@ -560,12 +560,10 @@ class VoiceConversionPipeline:
 
         # 转换为张量
         features_tensor = torch.from_numpy(features).float().to(self.device).unsqueeze(0)
-        features_tensor = features_tensor.transpose(1, 2)  # [B, C, T]
-        log.debug(f"[_process_chunk] 转置后特征: shape={features_tensor.shape}")
-
         # HuBERT 输出帧率是 50fps (hop=320 @ 16kHz)，但 RVC 模型期望 100fps
         # 需要 2x 上采样特征
-        features_tensor = F.interpolate(features_tensor, scale_factor=2, mode='nearest')
+        # 注意：interpolate 需要 [B, C, T] 格式，但模型需要 [B, T, C] 格式
+        features_tensor = F.interpolate(features_tensor.transpose(1, 2), scale_factor=2, mode='nearest').transpose(1, 2)
         log.debug(f"[_process_chunk] 2x上采样后特征: shape={features_tensor.shape}")
 
         # F0 对齐到上采样后的特征长度
