@@ -208,10 +208,21 @@ class VoiceConversionPipeline:
 
         log.debug(f"解析后的配置: {model_config}")
 
-        # 加载模型权重
-        from models.synthesizer import SynthesizerTrnMs768NSFsid
+        # 根据hidden_channels选择正确的合成器
+        hidden_channels = model_config.get("hidden_channels", 192)
+        if hidden_channels == 256 or hidden_channels >= 512:
+            # v2模型：768维
+            from models.synthesizer import SynthesizerTrnMs768NSFsid
+            synthesizer_class = SynthesizerTrnMs768NSFsid
+            log.debug(f"使用v2合成器 (768维): hidden_channels={hidden_channels}")
+        else:
+            # v1模型：256维
+            from models.synthesizer import SynthesizerTrnMs256NSFsid
+            synthesizer_class = SynthesizerTrnMs256NSFsid
+            log.debug(f"使用v1合成器 (256维): hidden_channels={hidden_channels}")
 
-        self.voice_model = SynthesizerTrnMs768NSFsid(
+        # 加载模型权重
+        self.voice_model = synthesizer_class(
             spec_channels=model_config.get("spec_channels", 1025),
             segment_size=model_config.get("segment_size", 32),
             inter_channels=model_config.get("inter_channels", 192),
