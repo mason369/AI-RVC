@@ -1978,9 +1978,9 @@ class CoverPipeline:
                 sf.write(converted_vocals_path, wet_signal, sr)
                 log.detail(f"混响重应用完成: mix_ratio=0.8")
 
-        else:
-            # 使用自定义VC管道进行转换
-            log.detail("使用自定义VC管道进行转换")
+            else:
+                # 使用自定义VC管道进行转换
+                log.detail("使用自定义VC管道进行转换")
                 self._init_rvc_pipeline()
                 self.rvc_pipeline.hubert_layer = hubert_layer
                 log.config(f"HuBERT层: {hubert_layer}")
