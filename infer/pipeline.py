@@ -38,6 +38,7 @@ class VoiceConversionPipeline:
         self.index = None
         self.f0_extractor = None
         self.spk_count = 1
+        self.model_version = "v2"  # 默认 v2（768 维）
 
         # 默认参数
         self.sample_rate = 16000  # HuBERT 输入采样率
@@ -214,11 +215,13 @@ class VoiceConversionPipeline:
             # v2模型：768维
             from infer.lib.infer_pack.models import SynthesizerTrnMs768NSFsid
             synthesizer_class = SynthesizerTrnMs768NSFsid
+            self.model_version = "v2"
             log.debug(f"使用v2合成器 (768维): hidden_channels={hidden_channels}")
         else:
             # v1模型：256维
             from infer.lib.infer_pack.models import SynthesizerTrnMs256NSFsid
             synthesizer_class = SynthesizerTrnMs256NSFsid
+            self.model_version = "v1"
             log.debug(f"使用v1合成器 (256维): hidden_channels={hidden_channels}")
 
         # 加载模型权重
@@ -290,12 +293,13 @@ class VoiceConversionPipeline:
         log.info(f"F0 提取器已加载: {method}")
 
     @torch.no_grad()
-    def extract_features(self, audio: np.ndarray) -> torch.Tensor:
+    def extract_features(self, audio: np.ndarray, use_final_proj: bool = False) -> torch.Tensor:
         """
         使用 HuBERT 提取特征
 
         Args:
             audio: 16kHz 音频数据
+            use_final_proj: 是否使用 final_proj 将 768 维降到 256 维（v1 模型需要）
 
         Returns:
             torch.Tensor: HuBERT 特征
@@ -309,14 +313,17 @@ class VoiceConversionPipeline:
             audio_tensor = audio_tensor.unsqueeze(0)
 
         if self.hubert_model_type == "fairseq":
+            # v1 模型使用第 9 层，v2 模型使用第 12 层
+            output_layer = 9 if use_final_proj else 12
             feats = self.hubert_model.extract_features(
                 audio_tensor,
                 padding_mask=None,
-                output_layer=self.hubert_layer
+                output_layer=output_layer
             )[0]
-            # 注意：不使用final_proj，因为它会输出256维
-            # 而v1模型需要768维（会在模型内部投影到192维）
-            # v2模型也需要768维
+            # v1 模型需要 256 维特征，使用 final_proj 投影
+            # v2 模型需要 768 维特征，不使用 final_proj
+            if use_final_proj and hasattr(self.hubert_model, 'final_proj'):
+                feats = self.hubert_model.final_proj(feats)
             return feats
 
         if self.hubert_model_type == "torchaudio":
@@ -706,7 +713,9 @@ class VoiceConversionPipeline:
         self.unload_f0_extractor()
 
         # 步骤2: 提取 HuBERT 特征
-        features = self.extract_features(audio)
+        # v1 模型需要 256 维特征（使用 final_proj），v2 模型需要 768 维
+        use_final_proj = (self.model_version == "v1")
+        features = self.extract_features(audio, use_final_proj=use_final_proj)
         features = features.squeeze(0).cpu().numpy()
 
         # 释放 HuBERT 显存
