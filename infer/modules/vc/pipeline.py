@@ -466,6 +466,16 @@ class Pipeline(object):
             log.detail(f"时间步长: {time_step:.2f}ms, F0范围: {f0_min}-{f0_max}Hz")
             log.detail(f"音频长度: {len(x)} 样本, p_len: {p_len}")
 
+        # 将hybrid映射到rmvpe+crepe模式
+        if f0_method == "hybrid":
+            f0_method = "rmvpe"
+            # 临时设置hybrid模式
+            original_hybrid_mode = self.f0_hybrid_mode
+            self.f0_hybrid_mode = "rmvpe+crepe"
+            restore_hybrid_mode = True
+        else:
+            restore_hybrid_mode = False
+
         if f0_method == "pm":
             if log:
                 log.detail("使用Parselmouth提取F0...")
@@ -793,6 +803,10 @@ class Pipeline(object):
 
         if log:
             log.detail(f"F0处理完成: coarse shape={f0_coarse.shape}, bak shape={f0bak.shape}")
+
+        # 恢复原始hybrid模式设置
+        if restore_hybrid_mode:
+            self.f0_hybrid_mode = original_hybrid_mode
 
         return f0_coarse, f0bak
 
