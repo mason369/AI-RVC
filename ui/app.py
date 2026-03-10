@@ -126,6 +126,50 @@ def apply_cover_mix_preset(preset_name: str) -> Tuple[int, int, int]:
     return preset["vocals_volume"], preset["accompaniment_volume"], preset["reverb"]
 
 
+
+def get_vc_preprocess_option_maps() -> Tuple[Dict[str, str], Dict[str, str]]:
+    """Build VC preprocess dropdown option maps."""
+    label_to_value = {
+        t("vc_preprocess_auto", "cover"): "auto",
+        t("vc_preprocess_direct", "cover"): "direct",
+        t("vc_preprocess_uvr_deecho", "cover"): "uvr_deecho",
+        t("vc_preprocess_legacy", "cover"): "legacy",
+    }
+    value_to_label = {value: label for label, value in label_to_value.items()}
+    return label_to_value, value_to_label
+
+
+def get_source_constraint_option_maps() -> Tuple[Dict[str, str], Dict[str, str]]:
+    """Build source constraint dropdown option maps."""
+    label_to_value = {
+        t("source_constraint_auto", "cover"): "auto",
+        t("source_constraint_off", "cover"): "off",
+        t("source_constraint_on", "cover"): "on",
+    }
+    value_to_label = {value: label for label, value in label_to_value.items()}
+    return label_to_value, value_to_label
+
+
+def get_vc_pipeline_mode_option_maps() -> Tuple[Dict[str, str], Dict[str, str]]:
+    """Build VC pipeline mode dropdown option maps."""
+    label_to_value = {
+        t("vc_pipeline_mode_current", "cover"): "current",
+        t("vc_pipeline_mode_official", "cover"): "official",
+    }
+    value_to_label = {value: label for label, value in label_to_value.items()}
+    return label_to_value, value_to_label
+
+
+def update_singing_repair_visibility(vc_pipeline_mode: str):
+    """Only show singing repair option for official mode."""
+    pipeline_label_to_value, _ = get_vc_pipeline_mode_option_maps()
+    normalized = pipeline_label_to_value.get(
+        str(vc_pipeline_mode),
+        str(vc_pipeline_mode or "").strip().lower(),
+    )
+    return gr.update(visible=(normalized == "official"))
+
+
 def init_pipeline():
     """初始化推理管道"""
     global pipeline
@@ -364,6 +408,10 @@ def process_cover(
     speaker_id: float,
     karaoke_separation: bool,
     karaoke_merge_backing_into_accompaniment: bool,
+    vc_preprocess_mode: str,
+    source_constraint_mode: str,
+    vc_pipeline_mode: str,
+    singing_repair: bool,
     vocals_volume: float,
     accompaniment_volume: float,
     reverb_amount: float,
@@ -422,6 +470,24 @@ def process_cover(
         silence_min_duration_ms = cover_cfg.get("silence_min_duration_ms", 200.0)
         hubert_layer = cover_cfg.get("hubert_layer", config.get("hubert_layer", 12))
         karaoke_model = cover_cfg.get("karaoke_model", "mel_band_roformer_karaoke_gabox.ckpt")
+        default_vc_preprocess_mode = str(cover_cfg.get("vc_preprocess_mode", "auto"))
+        default_source_constraint_mode = str(cover_cfg.get("source_constraint_mode", "auto"))
+        default_vc_pipeline_mode = str(cover_cfg.get("vc_pipeline_mode", "current"))
+        default_singing_repair = bool(cover_cfg.get("singing_repair", False))
+        vc_label_to_value, vc_value_to_label = get_vc_preprocess_option_maps()
+        source_label_to_value, source_value_to_label = get_source_constraint_option_maps()
+        pipeline_label_to_value, pipeline_value_to_label = get_vc_pipeline_mode_option_maps()
+
+        vc_preprocess_mode = vc_label_to_value.get(str(vc_preprocess_mode), str(vc_preprocess_mode or default_vc_preprocess_mode).strip().lower())
+        if vc_preprocess_mode not in {"auto", "direct", "uvr_deecho", "legacy"}:
+            vc_preprocess_mode = default_vc_preprocess_mode
+        source_constraint_mode = source_label_to_value.get(str(source_constraint_mode), str(source_constraint_mode or default_source_constraint_mode).strip().lower())
+        if source_constraint_mode not in {"auto", "off", "on"}:
+            source_constraint_mode = default_source_constraint_mode
+        vc_pipeline_mode = pipeline_label_to_value.get(str(vc_pipeline_mode), str(vc_pipeline_mode or default_vc_pipeline_mode).strip().lower())
+        if vc_pipeline_mode not in {"current", "official"}:
+            vc_pipeline_mode = default_vc_pipeline_mode
+        singing_repair = bool(singing_repair if singing_repair is not None else default_singing_repair)
 
         index_ratio = max(0.0, min(1.0, float(index_ratio) / 100.0))
         speaker_id = int(max(0, round(float(speaker_id))))
@@ -467,14 +533,22 @@ def process_cover(
             karaoke_separation=bool(karaoke_separation),
             karaoke_model=karaoke_model,
             karaoke_merge_backing_into_accompaniment=bool(karaoke_merge_backing_into_accompaniment),
+            vc_preprocess_mode=vc_preprocess_mode,
+            source_constraint_mode=source_constraint_mode,
+            vc_pipeline_mode=vc_pipeline_mode,
+            singing_repair=singing_repair,
             output_dir=str(output_dir),
             model_display_name=resolved_name,
             progress_callback=progress_callback
         )
 
-        status_msg = "✅ 翻唱完成!"
+        status_msg = "\u2705 \u7ffb\u5531\u5b8c\u6210!"
+        status_msg += f"\n{get_cover_vc_route_status(vc_preprocess_mode, vc_pipeline_mode).splitlines()[0]}"
+        status_msg += f"\nVC\u7ba1\u7ebf\u6a21\u5f0f: {pipeline_value_to_label.get(vc_pipeline_mode, vc_pipeline_mode)}"
+        status_msg += f"\n唱歌修复: {'开启' if singing_repair else '关闭'}"
+        status_msg += f"\n\u6e90\u7ea6\u675f\u7b56\u7565: {source_value_to_label.get(source_constraint_mode, source_constraint_mode)}"
         if result.get("all_files_dir"):
-            status_msg += f"\n全部文件目录: {result['all_files_dir']}"
+            status_msg += f"\n\u5168\u90e8\u6587\u4ef6\u76ee\u5f55: {result['all_files_dir']}"
 
         return (
             result["cover"],
@@ -491,6 +565,102 @@ def process_cover(
         error_msg = str(e) if str(e) else traceback.format_exc()
         log.error(f"处理失败: {error_msg}")
         return None, None, None, None, None, None, f"❌ 处理失败: {error_msg}"
+
+
+def check_mature_deecho_status() -> str:
+    """Check mature DeEcho model availability."""
+    from tools.download_models import MATURE_DEECHO_MODELS, check_model, get_preferred_mature_deecho_model
+
+    status_lines = []
+    preferred = get_preferred_mature_deecho_model()
+    for name in MATURE_DEECHO_MODELS:
+        exists = check_model(name)
+        icon = "✅" if exists else "❌"
+        suffix = "  ← 当前自动模式优先使用" if preferred == name else ""
+        status_lines.append(f"{icon} {name}{suffix}")
+
+    if preferred:
+        status_lines.append("")
+        status_lines.append(f"当前可用学习型 DeEcho: {preferred}")
+    else:
+        status_lines.append("")
+        status_lines.append("当前未检测到学习型 DeEcho 模型；翻唱自动模式将回退为主唱直通 RVC")
+
+    return "\n".join(status_lines)
+
+
+def download_mature_deecho_models_ui() -> str:
+    """Download mature DeEcho models."""
+    from tools.download_models import download_mature_deecho_models
+
+    try:
+        success = download_mature_deecho_models()
+        status = check_mature_deecho_status()
+        prefix = "✅ 下载完成" if success else "⚠️ 下载过程中存在失败项"
+        return f"{prefix}\n\n{status}"
+    except Exception as e:
+        return f"❌ 下载失败: {str(e)}"
+
+
+def get_cover_vc_route_status(
+    vc_preprocess_mode: Optional[str] = None,
+    vc_pipeline_mode: Optional[str] = None,
+) -> str:
+    """Return the active VC route shown in the cover UI."""
+    from tools.download_models import get_preferred_mature_deecho_model
+
+    mode = str(vc_preprocess_mode or config.get("cover", {}).get("vc_preprocess_mode", "auto")).strip().lower()
+    pipeline_mode = str(vc_pipeline_mode or config.get("cover", {}).get("vc_pipeline_mode", "current")).strip().lower()
+    vc_label_to_value, _ = get_vc_preprocess_option_maps()
+    pipeline_label_to_value, _ = get_vc_pipeline_mode_option_maps()
+    mode = vc_label_to_value.get(mode, mode)
+    pipeline_mode = pipeline_label_to_value.get(pipeline_mode, pipeline_mode)
+    preferred = get_preferred_mature_deecho_model()
+    newline = chr(10)
+
+    if pipeline_mode == "official":
+        return newline.join([
+            "当前使用内置官方 RVC 实现",
+            "流程：主唱分离 → 官方音频加载 / 官方 VC → 混音",
+            "说明：跳过本项目自定义 VC 预处理、源约束与静音门限后处理",
+        ])
+
+    if mode == "direct":
+        return newline.join([
+            "ℹ️ 当前固定为主唱直通 RVC",
+            "流程: 主唱分离 → 直接进入 RVC → 混音",
+            "说明: 不使用学习型 DeEcho，也不走旧版手工链",
+        ])
+    if mode == "legacy":
+        return newline.join([
+            "⚠️ 当前固定为旧版手工链",
+            "流程: 主唱分离 → 手工去回声链 → RVC → 混音",
+            "说明: 仅用于对比，不是默认推荐路径",
+        ])
+    if mode == "uvr_deecho":
+        if preferred:
+            return newline.join([
+                "✅ 当前固定优先使用学习型 DeEcho / DeReverb",
+                f"当前命中模型: {preferred}",
+                "流程: 主唱分离 → UVR DeEcho/DeReverb → RVC → 混音",
+            ])
+        return newline.join([
+            "⚠️ 当前设为官方 DeEcho 优先，但本地缺少模型",
+            "当前将回退流程: 主唱分离 → 直接进入 RVC → 混音",
+            "建议: 先在模型管理页下载成熟 DeEcho 模型",
+        ])
+
+    if preferred:
+        return newline.join([
+            "✅ 自动模式当前会优先使用学习型 DeEcho / DeReverb",
+            f"当前命中模型: {preferred}",
+            "流程: 主唱分离 → UVR DeEcho/DeReverb → RVC → 混音",
+        ])
+    return newline.join([
+        "ℹ️ 自动模式当前会回退为主唱直通 RVC",
+        "原因: 本地未检测到成熟 DeEcho / DeReverb 模型",
+        "流程: 主唱分离 → 直接进入 RVC → 混音",
+    ])
 
 
 def check_models_status() -> str:
@@ -1154,6 +1324,28 @@ def create_ui() -> gr.Blocks:
                 )
 
                 gr.Markdown("---")
+                gr.Markdown(f"### 🎛️ {t('mature_deecho_models', 'models')}")
+                gr.Markdown(t("mature_deecho_models_desc", "models"))
+
+                with gr.Row():
+                    mature_deecho_check_btn = gr.Button(
+                        f"🔍 {t('mature_deecho_check', 'models')}",
+                        variant="secondary"
+                    )
+                    mature_deecho_download_btn = gr.Button(
+                        f"⬇️ {t('download_mature_deecho', 'models')}",
+                        variant="primary"
+                    )
+
+                mature_deecho_status = gr.Textbox(
+                    label=t("mature_deecho_status", "models"),
+                    interactive=False,
+                    lines=7,
+                    value=check_mature_deecho_status(),
+                    elem_classes=["status-box"]
+                )
+
+                gr.Markdown("---")
 
                 gr.Markdown(f"### 🎤 {t('voice_models', 'models')}")
                 gr.Markdown(t("voice_models_desc", "models"))
@@ -1334,6 +1526,48 @@ def create_ui() -> gr.Blocks:
                                 )
                             ),
                             info=t("karaoke_merge_backing_info", "cover")
+                        )
+
+                        vc_label_to_value, vc_value_to_label = get_vc_preprocess_option_maps()
+                        source_label_to_value, source_value_to_label = get_source_constraint_option_maps()
+                        pipeline_label_to_value, pipeline_value_to_label = get_vc_pipeline_mode_option_maps()
+
+                        cover_vc_preprocess_mode = gr.Dropdown(
+                            label=t("vc_preprocess_mode", "cover"),
+                            choices=list(vc_label_to_value.keys()),
+                            value=vc_value_to_label.get(str(cover_cfg.get("vc_preprocess_mode", "auto")), list(vc_label_to_value.keys())[0]),
+                            info=t("vc_preprocess_mode_info", "cover"),
+                        )
+
+                        cover_source_constraint_mode = gr.Dropdown(
+                            label=t("source_constraint_mode", "cover"),
+                            choices=list(source_label_to_value.keys()),
+                            value=source_value_to_label.get(str(cover_cfg.get("source_constraint_mode", "auto")), list(source_label_to_value.keys())[0]),
+                            info=t("source_constraint_mode_info", "cover"),
+                        )
+                        cover_vc_pipeline_mode = gr.Dropdown(
+                            label=t("vc_pipeline_mode", "cover"),
+                            choices=list(pipeline_label_to_value.keys()),
+                            value=pipeline_value_to_label.get(str(cover_cfg.get("vc_pipeline_mode", "current")), list(pipeline_label_to_value.keys())[0]),
+                            info=t("vc_pipeline_mode_info", "cover"),
+                        )
+                        cover_singing_repair = gr.Checkbox(
+                            label=t("singing_repair", "cover"),
+                            value=bool(cover_cfg.get("singing_repair", False)),
+                            info=t("singing_repair_info", "cover"),
+                            visible=str(cover_cfg.get("vc_pipeline_mode", "current")).strip().lower() == "official",
+                        )
+
+                        cover_vc_route_status = gr.Textbox(
+                            label=t("vc_preprocess_status", "cover"),
+                            value=get_cover_vc_route_status(
+                                cover_cfg.get("vc_preprocess_mode", "auto"),
+                                cover_cfg.get("vc_pipeline_mode", "current"),
+                            ),
+                            info=t("vc_preprocess_status_info", "cover"),
+                            interactive=False,
+                            lines=3,
+                            elem_classes=["status-box"]
                         )
 
                         mix_presets, default_mix_preset = get_cover_mix_presets()
@@ -1520,6 +1754,43 @@ def create_ui() -> gr.Blocks:
                     ]
                 )
 
+                mature_deecho_check_btn.click(
+                    fn=check_mature_deecho_status,
+                    outputs=[mature_deecho_status]
+                )
+                mature_deecho_check_btn.click(
+                    fn=get_cover_vc_route_status,
+                    inputs=[cover_vc_preprocess_mode, cover_vc_pipeline_mode],
+                    outputs=[cover_vc_route_status]
+                )
+
+                mature_deecho_download_btn.click(
+                    fn=download_mature_deecho_models_ui,
+                    outputs=[mature_deecho_status]
+                )
+                mature_deecho_download_btn.click(
+                    fn=get_cover_vc_route_status,
+                    inputs=[cover_vc_preprocess_mode, cover_vc_pipeline_mode],
+                    outputs=[cover_vc_route_status]
+                )
+
+                cover_vc_preprocess_mode.change(
+                    fn=get_cover_vc_route_status,
+                    inputs=[cover_vc_preprocess_mode, cover_vc_pipeline_mode],
+                    outputs=[cover_vc_route_status]
+                )
+
+                cover_vc_pipeline_mode.change(
+                    fn=get_cover_vc_route_status,
+                    inputs=[cover_vc_preprocess_mode, cover_vc_pipeline_mode],
+                    outputs=[cover_vc_route_status]
+                )
+                cover_vc_pipeline_mode.change(
+                    fn=update_singing_repair_visibility,
+                    inputs=[cover_vc_pipeline_mode],
+                    outputs=[cover_singing_repair]
+                )
+
                 cover_btn.click(
                     fn=process_cover,
                     inputs=[
@@ -1530,6 +1801,10 @@ def create_ui() -> gr.Blocks:
                         cover_speaker_id,
                         cover_karaoke,
                         cover_karaoke_merge_backing,
+                        cover_vc_preprocess_mode,
+                        cover_source_constraint_mode,
+                        cover_vc_pipeline_mode,
+                        cover_singing_repair,
                         cover_vocals_volume,
                         cover_accompaniment_volume,
                         cover_reverb,

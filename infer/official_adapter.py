@@ -8,6 +8,8 @@ import json
 import os
 import re
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -263,6 +265,7 @@ def convert_vocals_official(
     rms_mix_rate: float,
     protect: float,
     speaker_id: int = 0,
+    repair_profile: bool = False,
 ) -> str:
     """Run official VC pipeline on vocals."""
     rms_mix_rate = float(max(0.0, min(1.0, rms_mix_rate)))
@@ -282,6 +285,8 @@ def convert_vocals_official(
     log.config(f"滤波半径: {filter_radius}")
     log.config(f"RMS混合率: {rms_mix_rate}")
     log.config(f"保护系数: {protect}")
+    if repair_profile:
+        log.config("唱歌修复: 开启")
 
     root_dir = Path(__file__).parent.parent
     env_paths = setup_official_env(root_dir)
@@ -343,6 +348,19 @@ def convert_vocals_official(
     config.f0_rate_limit_semitones = _to_float(
         _get_cfg_value(app_cfg, "f0_rate_limit_semitones", 8.0), 8.0
     )
+    if repair_profile:
+        config.is_half = False
+        config.f0_hybrid_mode = "fallback"
+        config.f0_energy_threshold_db = -42.0
+        config.f0_fallback_context_radius = 12
+        config.f0_fallback_repair_gap = 6
+        config.f0_fallback_post_gap = 4
+        config.f0_fallback_use_crepe = True
+        config.f0_fallback_crepe_max_ratio = 0.006
+        config.f0_fallback_crepe_max_frames = 160
+        config.f0_stabilize = True
+        config.f0_rate_limit = True
+        log.detail("唱歌修复配置已应用: FP32, 更保守F0兜底, F0稳定器, F0限速")
     log.detail(f"设备: {config.device}, 半精度: {config.is_half}")
     log.config(f"F0范围: {config.f0_min}-{config.f0_max}Hz")
     log.config(f"RMVPE阈值: {config.rmvpe_threshold}")
@@ -413,3 +431,248 @@ def convert_vocals_official(
 
 
 
+
+
+
+def _sync_upstream_reference_asset(src: Path, dst: Path, label: str) -> None:
+    """Ensure vendored official tree has the same runtime asset expected upstream."""
+    if not src.exists():
+        raise FileNotFoundError(f"{label} not found: {src}")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if not dst.exists() or dst.stat().st_size != src.stat().st_size:
+        shutil.copy2(src, dst)
+        log.detail(f"同步官方资源: {src.name} -> {dst}")
+
+
+
+def setup_upstream_official_env(root_dir: Path) -> dict:
+    """Prepare vendored upstream RVC layout and environment."""
+    log.detail("准备内置官方 RVC 环境...")
+    official_root = root_dir / "_official_rvc"
+    if not official_root.exists():
+        raise FileNotFoundError(f"Upstream RVC directory not found: {official_root}")
+
+    official_models = official_root / "assets" / "weights"
+    official_indexes = official_root / "assets" / "indices"
+    official_rmvpe_root = official_root / "assets" / "rmvpe"
+    official_hubert_root = official_root / "assets" / "hubert"
+    official_uvr5_root = official_root / "assets" / "uvr5_weights"
+    official_models.mkdir(parents=True, exist_ok=True)
+    official_indexes.mkdir(parents=True, exist_ok=True)
+    official_rmvpe_root.mkdir(parents=True, exist_ok=True)
+    official_hubert_root.mkdir(parents=True, exist_ok=True)
+    official_uvr5_root.mkdir(parents=True, exist_ok=True)
+
+    _sync_upstream_reference_asset(
+        root_dir / "assets" / "hubert" / "hubert_base.pt",
+        official_hubert_root / "hubert_base.pt",
+        "HuBERT model",
+    )
+    _sync_upstream_reference_asset(
+        root_dir / "assets" / "rmvpe" / "rmvpe.pt",
+        official_rmvpe_root / "rmvpe.pt",
+        "RMVPE model",
+    )
+
+    os.environ["weight_root"] = str(official_models)
+    os.environ["index_root"] = str(official_indexes)
+    os.environ["outside_index_root"] = str(official_indexes)
+    os.environ["rmvpe_root"] = str(official_rmvpe_root)
+    os.environ["weight_uvr5_root"] = str(official_uvr5_root)
+
+    log.detail(f"官方根目录: {official_root}")
+    log.detail(f"官方模型目录: {official_models}")
+    log.detail(f"官方索引目录: {official_indexes}")
+    log.detail(f"官方RMVPE目录: {official_rmvpe_root}")
+    log.detail(f"官方HuBERT目录: {official_hubert_root}")
+    log.detail(f"官方UVR5目录: {official_uvr5_root}")
+
+    return {
+        "official_root": official_root,
+        "official_models": official_models,
+        "official_indexes": official_indexes,
+        "official_rmvpe_root": official_rmvpe_root,
+        "official_hubert_root": official_hubert_root,
+        "official_uvr5_root": official_uvr5_root,
+    }
+
+
+
+def convert_vocals_official_upstream(
+    vocals_path: str,
+    output_path: str,
+    model_path: str,
+    index_path: Optional[str],
+    f0_method: str,
+    pitch_shift: int,
+    index_rate: float,
+    filter_radius: int,
+    rms_mix_rate: float,
+    protect: float,
+    speaker_id: int = 0,
+) -> str:
+    """Run vendored upstream official RVC in an isolated subprocess."""
+    root_dir = Path(__file__).parent.parent
+    env_paths = setup_upstream_official_env(root_dir)
+
+    sid, official_index = export_model_to_official(
+        env_paths["official_models"],
+        env_paths["official_indexes"],
+        model_path,
+        index_path,
+    )
+
+    official_rms_mix_rate = 1.0 - float(rms_mix_rate)
+    runner_path = root_dir / "infer" / "official_upstream_runner.py"
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+
+    command = [
+        sys.executable,
+        str(runner_path),
+        "--sid",
+        sid,
+        "--vocals-path",
+        str(vocals_path),
+        "--output-path",
+        str(output_path),
+        "--f0-method",
+        str(f0_method),
+        "--pitch-shift",
+        str(int(pitch_shift)),
+        "--index-path",
+        str(official_index or ""),
+        "--index-rate",
+        str(float(index_rate)),
+        "--filter-radius",
+        str(int(filter_radius)),
+        "--rms-mix-rate",
+        str(float(official_rms_mix_rate)),
+        "--protect",
+        str(float(protect)),
+        "--speaker-id",
+        str(int(speaker_id)),
+    ]
+
+    log.progress("开始内置官方VC转换...")
+    log.detail(f"官方模型SID: {sid}")
+    if official_index:
+        log.detail(f"官方索引路径: {official_index}")
+    log.detail(f"官方RMS混合率: {official_rms_mix_rate}")
+
+    try:
+        subprocess.run(
+            command,
+            cwd=env_paths["official_root"],
+            env=env,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"内置官方VC转换失败，退出码: {exc.returncode}") from exc
+
+    output_file = Path(output_path)
+    if not output_file.exists():
+        raise RuntimeError(f"内置官方VC未生成输出文件: {output_path}")
+
+    output_size = output_file.stat().st_size
+    log.success(f"内置官方VC转换完成: {output_path}")
+    log.audio(f"输出文件大小: {output_size / 1024 / 1024:.2f} MB")
+    return output_path
+
+
+
+def _sync_upstream_uvr5_model(root_dir: Path, official_uvr5_root: Path, model_name: Optional[str]) -> str:
+    """Copy the selected UVR5 model into vendored official layout and return the stem."""
+    source_root = root_dir / "assets" / "uvr5_weights"
+    if not source_root.exists():
+        raise FileNotFoundError(f"UVR5 模型目录未找到: {source_root}")
+
+    candidates = []
+    if model_name:
+        stem = model_name.replace('.pth', '').replace('.onnx', '')
+        candidates.extend([source_root / f"{stem}.pth", source_root / f"{stem}.onnx", source_root / stem])
+    else:
+        candidates.extend(sorted(source_root.glob('*.pth')))
+        candidates.extend(sorted(source_root.glob('*.onnx')))
+
+    source_model = next((candidate for candidate in candidates if candidate.exists()), None)
+    if source_model is None:
+        raise FileNotFoundError(f"未找到可用的 UVR5 模型: {model_name or '自动选择'}")
+
+    target_model = official_uvr5_root / source_model.name
+    if not target_model.exists() or target_model.stat().st_size != source_model.stat().st_size:
+        shutil.copy2(source_model, target_model)
+        log.detail(f"同步官方UVR5模型: {source_model.name} -> {target_model}")
+    return source_model.stem
+
+
+
+def separate_uvr5_official_upstream(
+    input_audio: str,
+    temp_dir: Path,
+    model_name: Optional[str],
+    agg: int = 10,
+    fmt: str = "wav",
+) -> Tuple[str, str]:
+    """Run vendored upstream UVR5 separation in an isolated subprocess."""
+    root_dir = Path(__file__).parent.parent
+    env_paths = setup_upstream_official_env(root_dir)
+    resolved_model_name = _sync_upstream_uvr5_model(root_dir, env_paths["official_uvr5_root"], model_name)
+
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    input_dir = temp_dir / "input"
+    vocals_dir = temp_dir / "vocal"
+    ins_dir = temp_dir / "ins"
+    if input_dir.exists():
+        shutil.rmtree(input_dir)
+    input_dir.mkdir(parents=True, exist_ok=True)
+    vocals_dir.mkdir(parents=True, exist_ok=True)
+    ins_dir.mkdir(parents=True, exist_ok=True)
+    input_file = input_dir / Path(input_audio).name
+    shutil.copy2(input_audio, input_file)
+
+    runner_path = root_dir / "infer" / "official_upstream_uvr_runner.py"
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    command = [
+        sys.executable,
+        str(runner_path),
+        "--model-name",
+        resolved_model_name,
+        "--input-dir",
+        str(input_dir),
+        "--save-root-vocal",
+        str(vocals_dir),
+        "--save-root-ins",
+        str(ins_dir),
+        "--agg",
+        str(int(agg)),
+        "--format",
+        str(fmt),
+    ]
+
+    log.progress("开始内置官方UVR5分离...")
+    log.detail(f"官方UVR5模型: {resolved_model_name}")
+    log.detail(f"官方UVR5输入目录: {input_dir}")
+    log.detail(f"官方UVR5人声输出: {vocals_dir}")
+    log.detail(f"官方UVR5伴奏输出: {ins_dir}")
+
+    try:
+        subprocess.run(
+            command,
+            cwd=env_paths["official_root"],
+            env=env,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"内置官方UVR5分离失败，退出码: {exc.returncode}") from exc
+
+    vocal_files = sorted(vocals_dir.glob(f"*.{fmt}"), key=lambda p: p.stat().st_mtime)
+    ins_files = sorted(ins_dir.glob(f"*.{fmt}"), key=lambda p: p.stat().st_mtime)
+    if not vocal_files or not ins_files:
+        raise RuntimeError("内置官方UVR5分离失败，未生成输出文件")
+
+    log.success("内置官方UVR5分离完成")
+    log.audio(f"人声文件: {vocal_files[-1].name}")
+    log.audio(f"伴奏文件: {ins_files[-1].name}")
+    return str(vocal_files[-1]), str(ins_files[-1])
