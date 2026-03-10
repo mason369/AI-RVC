@@ -70,7 +70,7 @@ def reduce_sibilance(audio: np.ndarray, sr: int, reduction_db: float = 6.0) -> n
     减少齿音 (De-essing)
 
     参考: "Advanced Sibilance Control" - Mike's Mix Master
-    使用多频段压缩技术
+    使用多频段动态压缩技术
 
     Args:
         audio: 音频数据
@@ -86,18 +86,7 @@ def reduce_sibilance(audio: np.ndarray, sr: int, reduction_db: float = 6.0) -> n
     if not np.any(sibilance_frames):
         return audio
 
-    # 提取高频成分
-    nyquist = sr / 2
-    low_freq = 4000 / nyquist
-    high_freq = min(10000 / nyquist, 0.99)
-
-    sos_high = signal.butter(4, [low_freq, high_freq], btype='band', output='sos')
-    sos_low = signal.butter(4, low_freq, btype='low', output='sos')
-
-    high_freq_audio = signal.sosfilt(sos_high, audio)
-    low_freq_audio = signal.sosfilt(sos_low, audio)
-
-    # 计算衰减增益曲线
+    # 计算衰减增益曲线（在时域应用，避免频段分离的相位问题）
     frame_length = int(0.02 * sr)
     hop_length = int(0.01 * sr)
 
@@ -123,11 +112,8 @@ def reduce_sibilance(audio: np.ndarray, sr: int, reduction_db: float = 6.0) -> n
                 envelope
             )
 
-    # 只衰减高频部分
-    high_freq_audio = high_freq_audio * gain_curve
-
-    # 重建音频
-    result = low_freq_audio + high_freq_audio
+    # 直接在时域应用增益（避免频段分离）
+    result = audio * gain_curve
 
     return result
 
