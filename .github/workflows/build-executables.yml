@@ -39,8 +39,6 @@ jobs:
       run: |
         pyinstaller --name AI-RVC-Windows `
           --onefile `
-          --windowed `
-          --icon=assets/icon.ico `
           --add-data "ui;ui" `
           --add-data "infer;infer" `
           --add-data "lib;lib" `
