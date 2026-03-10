@@ -567,7 +567,8 @@ class VoiceConversionPipeline:
         log.debug(f"[_process_chunk] 2x上采样后特征: shape={features_tensor.shape}")
 
         # F0 对齐到上采样后的特征长度
-        target_len = features_tensor.shape[2]
+        # features_tensor 形状是 [B, T, C]，所以时间维度是 shape[1]
+        target_len = features_tensor.shape[1]
         original_f0_len = len(f0)
         if len(f0) > target_len:
             f0 = f0[:target_len]
