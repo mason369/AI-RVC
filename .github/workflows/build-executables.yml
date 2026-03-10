@@ -78,7 +78,8 @@ jobs:
 
     - name: Compress Windows package
       run: |
-        Compress-Archive -Path AI-RVC-Windows-Portable -DestinationPath AI-RVC-Windows-Portable.zip
+        7z a -tzip AI-RVC-Windows-Portable.zip AI-RVC-Windows-Portable
+      shell: pwsh
 
     - name: Upload Windows artifact
       uses: actions/upload-artifact@v4
