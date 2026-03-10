@@ -21,12 +21,13 @@ jobs:
 
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
+        python -m pip install --upgrade "pip<24.1"
         pip install pyinstaller
         pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
-        pip install fairseq==0.12.2
-        pip install -r requirements.txt --no-deps
-        pip install gradio==3.50.2 librosa soundfile scipy numpy praat-parselmouth pyworld torchcrepe faiss-cpu tqdm requests python-dotenv colorama mcp demucs audio-separator huggingface_hub pedalboard ffmpeg-python
+        pip install omegaconf==2.0.6 --no-deps
+        pip install PyYAML antlr4-python3-runtime hydra-core
+        pip install fairseq==0.12.2 --no-deps
+        pip install gradio==3.50.2 librosa soundfile scipy numpy praat-parselmouth pyworld torchcrepe faiss-cpu tqdm requests python-dotenv colorama demucs huggingface_hub pedalboard ffmpeg-python av
 
     - name: Download base models
       run: |
@@ -107,12 +108,13 @@ jobs:
 
     - name: Install Python dependencies
       run: |
-        python -m pip install --upgrade pip
+        python -m pip install --upgrade "pip<24.1"
         pip install pyinstaller
         pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
-        pip install fairseq==0.12.2
-        pip install -r requirements.txt --no-deps
-        pip install gradio==3.50.2 librosa soundfile scipy numpy praat-parselmouth pyworld torchcrepe faiss-cpu tqdm requests python-dotenv colorama mcp demucs audio-separator huggingface_hub pedalboard ffmpeg-python
+        pip install omegaconf==2.0.6 --no-deps
+        pip install PyYAML antlr4-python3-runtime hydra-core
+        pip install fairseq==0.12.2 --no-deps
+        pip install gradio==3.50.2 librosa soundfile scipy numpy praat-parselmouth pyworld torchcrepe faiss-cpu tqdm requests python-dotenv colorama demucs huggingface_hub pedalboard ffmpeg-python av
 
     - name: Download base models
       run: |
