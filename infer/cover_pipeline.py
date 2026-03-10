@@ -1280,10 +1280,10 @@ class CoverPipeline:
         gate_pipe = VoiceConversionPipeline(device=self.device)
         root_dir = Path(__file__).parent.parent
         rmvpe_path = root_dir / "assets" / "rmvpe" / "rmvpe.pt"
-        if f0_method == "rmvpe":
+        if f0_method in ("rmvpe", "hybrid"):
             if not rmvpe_path.exists():
                 raise FileNotFoundError(f"RMVPE 模型未找到: {rmvpe_path}")
-            gate_pipe.load_f0_extractor("rmvpe", str(rmvpe_path))
+            gate_pipe.load_f0_extractor(f0_method, str(rmvpe_path))
         else:
             gate_pipe.load_f0_extractor(f0_method, None)
         f0 = gate_pipe.f0_extractor.extract(audio_in)
@@ -1997,11 +1997,11 @@ class CoverPipeline:
                         raise FileNotFoundError(f"HuBERT 模型未找到: {hubert_path}")
 
                 if self.rvc_pipeline.f0_extractor is None:
-                    if f0_method == "rmvpe":
+                    if f0_method in ("rmvpe", "hybrid"):
                         if rmvpe_path.exists():
                             log.model(f"加载RMVPE模型: {rmvpe_path}")
-                            self.rvc_pipeline.load_f0_extractor("rmvpe", str(rmvpe_path))
-                            log.success("RMVPE模型加载完成")
+                            self.rvc_pipeline.load_f0_extractor(f0_method, str(rmvpe_path))
+                            log.success(f"{f0_method.upper()}模型加载完成")
                         else:
                             raise FileNotFoundError(f"RMVPE 模型未找到: {rmvpe_path}")
                     else:
