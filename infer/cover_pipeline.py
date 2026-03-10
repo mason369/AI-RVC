@@ -29,6 +29,7 @@ from infer.official_adapter import (
     convert_vocals_official,
     convert_vocals_official_upstream,
 )
+from infer.advanced_dereverb import advanced_dereverb, apply_reverb_to_converted
 from lib.audio import soft_clip
 from lib.mixer import mix_vocals_and_accompaniment
 from lib.logger import log
@@ -1050,19 +1051,41 @@ class CoverPipeline:
         Prepare vocals for VC using a mature-project-friendly routing strategy.
 
         Modes:
-        - auto: prefer learned UVR DeEcho/DeReverb, otherwise direct lead -> RVC
+        - auto: prefer learned UVR DeEcho/DeReverb, otherwise advanced dereverb -> RVC
         - direct: pass separated lead directly to RVC
-        - uvr_deecho: require learned UVR DeEcho if available, else fallback to direct
+        - uvr_deecho: require learned UVR DeEcho if available, else fallback to advanced dereverb
+        - advanced_dereverb: use binary residual masking to separate dry/wet, convert dry only
         - legacy: old hand-crafted dereverb + tail gating chain
         """
         import librosa
         import soundfile as sf
 
         preprocess_mode = str(preprocess_mode or "auto").strip().lower()
-        if preprocess_mode not in {"auto", "direct", "uvr_deecho", "legacy"}:
+        if preprocess_mode not in {"auto", "direct", "uvr_deecho", "advanced_dereverb", "legacy"}:
             preprocess_mode = "auto"
 
-        if preprocess_mode == "legacy":
+        # 保存原始混响用于后处理
+        self._original_reverb_path = None
+
+        if preprocess_mode == "advanced_dereverb":
+            # 使用高级去混响：分离干声和混响
+            audio, sr = librosa.load(vocals_path, sr=None, mono=False)
+            audio = self._ensure_2d(audio).astype(np.float32)
+            mono = self._select_mono_for_vc(audio, sr)
+
+            log.detail("VC preprocess: advanced dereverb (binary residual masking)")
+            dry_signal, reverb_tail = advanced_dereverb(mono, sr)
+
+            # 保存混响用于后处理
+            reverb_path = session_dir / "original_reverb.wav"
+            sf.write(str(reverb_path), reverb_tail, sr)
+            self._original_reverb_path = str(reverb_path)
+
+            mono = dry_signal
+            self._last_vc_preprocess_mode = "advanced_dereverb"
+            log.detail(f"Dry/Wet separation: dry RMS={np.sqrt(np.mean(dry_signal**2)):.4f}, reverb RMS={np.sqrt(np.mean(reverb_tail**2)):.4f}")
+
+        elif preprocess_mode == "legacy":
             audio, sr = librosa.load(vocals_path, sr=None, mono=False)
             audio = self._ensure_2d(audio).astype(np.float32)
             mono = self._select_mono_for_vc(audio, sr)
@@ -1077,10 +1100,31 @@ class CoverPipeline:
                 preprocess_input = self._apply_uvr_deecho_for_vc(vocals_path, session_dir) or vocals_path
 
             if preprocess_input == vocals_path:
-                self._last_vc_preprocess_mode = "direct"
-                if preprocess_mode == "uvr_deecho":
-                    log.warning("Official DeEcho model not found, falling back to direct lead input")
-                log.detail("VC preprocess: direct lead -> mono select")
+                # 如果UVR DeEcho不可用，在auto模式下使用advanced dereverb
+                if preprocess_mode == "auto":
+                    audio, sr = librosa.load(vocals_path, sr=None, mono=False)
+                    audio = self._ensure_2d(audio).astype(np.float32)
+                    mono = self._select_mono_for_vc(audio, sr)
+
+                    log.detail("VC preprocess: UVR DeEcho not available, using advanced dereverb")
+                    dry_signal, reverb_tail = advanced_dereverb(mono, sr)
+
+                    # 保存混响用于后处理
+                    reverb_path = session_dir / "original_reverb.wav"
+                    sf.write(str(reverb_path), reverb_tail, sr)
+                    self._original_reverb_path = str(reverb_path)
+
+                    mono = dry_signal
+                    self._last_vc_preprocess_mode = "advanced_dereverb"
+                    log.detail(f"Dry/Wet separation: dry RMS={np.sqrt(np.mean(dry_signal**2)):.4f}, reverb RMS={np.sqrt(np.mean(reverb_tail**2)):.4f}")
+                else:
+                    self._last_vc_preprocess_mode = "direct"
+                    if preprocess_mode == "uvr_deecho":
+                        log.warning("Official DeEcho model not found, falling back to direct lead input")
+                    log.detail("VC preprocess: direct lead -> mono select")
+                    audio, sr = librosa.load(preprocess_input, sr=None, mono=False)
+                    audio = self._ensure_2d(audio).astype(np.float32)
+                    mono = self._select_mono_for_vc(audio, sr)
             else:
                 self._last_vc_preprocess_mode = "uvr_deecho"
                 log.detail("VC preprocess: UVR learned DeEcho/DeReverb -> mono select")
@@ -1914,6 +1958,26 @@ class CoverPipeline:
                 else:
                     log.warning("VC preprocess unavailable, skipping source-guided reconstruction")
                 log.success("官方VC转换完成")
+
+            # 如果使用了advanced dereverb，重新应用原始混响
+            if hasattr(self, '_original_reverb_path') and self._original_reverb_path and Path(self._original_reverb_path).exists():
+                log.detail("重新应用原始混响到转换后的干声...")
+                import librosa
+                import soundfile as sf
+
+                converted_dry, sr = librosa.load(converted_vocals_path, sr=None, mono=True)
+                original_reverb, reverb_sr = librosa.load(self._original_reverb_path, sr=None, mono=True)
+
+                if reverb_sr != sr:
+                    original_reverb = librosa.resample(original_reverb, orig_sr=reverb_sr, target_sr=sr).astype(np.float32)
+
+                # 重新应用混响（80%强度）
+                wet_signal = apply_reverb_to_converted(converted_dry, original_reverb, mix_ratio=0.8)
+
+                # 保存带混响的版本
+                sf.write(converted_vocals_path, wet_signal, sr)
+                log.detail(f"混响重应用完成: mix_ratio=0.8")
+
             else:
                 log.detail("使用自定义VC管道进行转换")
                 self._init_rvc_pipeline()

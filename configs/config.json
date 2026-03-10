@@ -73,7 +73,9 @@
         "vc_preprocess_mode": "auto",
         "source_constraint_mode": "auto",
         "vc_pipeline_mode": "current",
-        "singing_repair": false
+        "singing_repair": false,
+        "reverb_reapply": true,
+        "reverb_reapply_ratio": 0.8
     },
     "rmvpe_threshold": 0.02,
     "f0_min": 50,
