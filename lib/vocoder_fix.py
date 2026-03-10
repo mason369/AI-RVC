@@ -75,6 +75,19 @@ def reduce_breath_electric_noise(audio: np.ndarray, sr: int, f0: Optional[np.nda
     Returns:
         处理后的音频
     """
+    # 第一步：去除DC偏移和极低频噪声（0-80Hz）
+    # 这是vocoder常见的低频泄漏问题
+    from scipy import signal as scipy_signal
+
+    # 设计高通滤波器：80Hz截止
+    nyquist = sr / 2
+    cutoff = 80 / nyquist
+
+    # 使用4阶Butterworth高通滤波器
+    sos = scipy_signal.butter(4, cutoff, btype='highpass', output='sos')
+    audio = scipy_signal.sosfilt(sos, audio)
+
+    # 第二步：检测和清理宽频噪声（原有逻辑）
     # 检测低能量区域（可能是呼吸音）
     frame_length = int(0.02 * sr)  # 20ms
     hop_length = int(0.01 * sr)    # 10ms
@@ -84,6 +97,7 @@ def reduce_breath_electric_noise(audio: np.ndarray, sr: int, f0: Optional[np.nda
     # 计算每帧的能量和频谱平坦度
     energy = np.zeros(n_frames)
     spectral_flatness = np.zeros(n_frames)
+    high_freq_ratio = np.zeros(n_frames)  # 新增：高频能量占比
 
     for i in range(n_frames):
         start = i * hop_length
@@ -103,29 +117,75 @@ def reduce_breath_electric_noise(audio: np.ndarray, sr: int, f0: Optional[np.nda
             arithmetic_mean = np.mean(fft)
             spectral_flatness[i] = geometric_mean / (arithmetic_mean + 1e-10)
 
+            # 计算高频能量占比（4kHz以上）
+            freqs = np.fft.rfftfreq(len(frame), 1/sr)
+            high_freq_mask = freqs >= 4000
+            high_freq_energy = np.sum(fft[high_freq_mask] ** 2)
+            total_freq_energy = np.sum(fft ** 2)
+            high_freq_ratio[i] = high_freq_energy / (total_freq_energy + 1e-10)
+
     # 归一化能量
     energy_db = 10 * np.log10(energy + 1e-10)
-    energy_threshold = np.percentile(energy_db, 10)  # 只处理最低10%能量的帧
 
-    # 检测呼吸音：极低能量 + 高频谱平坦度（噪声特征）
-    is_breath = (energy_db < energy_threshold) & (spectral_flatness > 0.7)
+    # 自适应底噪检测：
+    # 1. 计算能量分布的统计特征
+    # 2. 使用最低5%作为候选底噪区域
+    # 3. 在候选区域中,根据频谱特征进一步筛选
 
-    # 如果提供了F0，使用F0=0来辅助判断，但需要排除辅音
-    # 辅音特征：F0=0 但能量不是极低，且频谱平坦度不高
+    # 候选底噪区域：最低5%能量
+    candidate_threshold = np.percentile(energy_db, 5)
+
+    # 在候选区域中,检测真正的底噪
+    # 底噪类型1：宽频噪声（频谱平坦度 > 0.35）
+    # 底噪类型2：高频电流声（高频占比 > 0.15）
+    is_candidate = energy_db < candidate_threshold
+    is_wideband_noise = is_candidate & (spectral_flatness > 0.35)
+    is_highfreq_noise = is_candidate & (high_freq_ratio > 0.15)
+
+    # 合并两种类型的底噪
+    is_noise = is_wideband_noise | is_highfreq_noise
+
+    # 如果检测到的底噪帧数太少(<1%),说明音频本身很纯净,不需要处理
+    noise_ratio = is_noise.sum() / len(is_noise)
+    if noise_ratio < 0.01:
+        return audio
+
+    # 如果提供了F0，使用F0=0来辅助判断
     if f0 is not None and len(f0) > 0:
         # F0对齐到音频帧
         f0_per_audio_frame = len(f0) / n_frames
         for i in range(n_frames):
-            f0_idx = int(i * f0_per_audio_frame)
-            if f0_idx < len(f0) and f0[f0_idx] == 0:
-                # F0=0 但能量较高或频谱平坦度低 -> 可能是辅音，不处理
-                if energy_db[i] > energy_threshold + 15 or spectral_flatness[i] < 0.5:
-                    is_breath[i] = False
-                # 能量不是极低 -> 不是呼吸音
-                elif energy_db[i] > energy_threshold + 5:
-                    is_breath[i] = False
+            if not is_noise[i]:
+                continue
 
-    # 对呼吸音区域应用温和的降噪
+            f0_idx = int(i * f0_per_audio_frame)
+            if f0_idx < len(f0):
+                # 如果F0>0，说明有音高，不是底噪
+                if f0[f0_idx] > 0:
+                    is_noise[i] = False
+
+    # 使用is_noise替代is_breath，更准确地描述我们要处理的内容
+    is_breath = is_noise
+
+    # 根据底噪比例动态调整清理强度
+    # 底噪越多，说明vocoder质量越差，需要更激进的清理
+    if noise_ratio < 0.05:
+        # 底噪很少(1-5%)，温和清理
+        spectral_threshold_percentile = 85  # 保留15%
+        magnitude_attenuation = 0.2  # 衰减到20%
+        mix_ratio = 0.5  # 50%清理
+    elif noise_ratio < 0.15:
+        # 底噪中等(5-15%)，中等清理
+        spectral_threshold_percentile = 90  # 保留10%
+        magnitude_attenuation = 0.1  # 衰减到10%
+        mix_ratio = 0.7  # 70%清理
+    else:
+        # 底噪很多(>15%)，激进清理
+        spectral_threshold_percentile = 95  # 保留5%
+        magnitude_attenuation = 0.05  # 衰减到5%
+        mix_ratio = 0.85  # 85%清理
+
+    # 对底噪区域应用降噪
     result = audio.copy()
 
     for i in range(n_frames):
@@ -142,10 +202,24 @@ def reduce_breath_electric_noise(audio: np.ndarray, sr: int, f0: Optional[np.nda
             fft = np.fft.rfft(frame)
             magnitude = np.abs(fft)
             phase = np.angle(fft)
+            freqs = np.fft.rfftfreq(len(frame), 1/sr)
 
-            # 频谱门限：去除低于阈值的频率成分
-            threshold = np.percentile(magnitude, 80)  # 保留20%的能量（更温和）
-            magnitude = np.where(magnitude > threshold, magnitude, magnitude * 0.3)
+            # 检测这一帧是高频噪声还是宽频噪声
+            high_freq_mask = freqs >= 4000
+            high_freq_energy = np.sum(magnitude[high_freq_mask] ** 2)
+            total_freq_energy = np.sum(magnitude ** 2)
+            frame_high_ratio = high_freq_energy / (total_freq_energy + 1e-10)
+
+            if frame_high_ratio > 0.15:
+                # 高频电流声：专门衰减高频部分
+                magnitude[high_freq_mask] *= 0.05  # 高频衰减到5%
+                # 中频(1-4kHz)温和衰减
+                mid_freq_mask = (freqs >= 1000) & (freqs < 4000)
+                magnitude[mid_freq_mask] *= 0.3
+            else:
+                # 宽频噪声：使用原有的频谱门限
+                threshold = np.percentile(magnitude, spectral_threshold_percentile)
+                magnitude = np.where(magnitude > threshold, magnitude, magnitude * magnitude_attenuation)
 
             # 重建
             fft_cleaned = magnitude * np.exp(1j * phase)
@@ -160,8 +234,8 @@ def reduce_breath_electric_noise(audio: np.ndarray, sr: int, f0: Optional[np.nda
                 frame_cleaned[:fade_length] *= fade_in
                 frame_cleaned[-fade_length:] *= fade_out
 
-            # 温和混合（保留更多原始信号，避免音量损失）
-            result[start:end] = frame * 0.7 + frame_cleaned * 0.3
+            # 动态混合比例
+            result[start:end] = frame * (1 - mix_ratio) + frame_cleaned * mix_ratio
 
     return result
 
