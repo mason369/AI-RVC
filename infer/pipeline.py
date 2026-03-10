@@ -240,7 +240,8 @@ class VoiceConversionPipeline:
             upsample_kernel_sizes=model_config.get("upsample_kernel_sizes", [16, 16, 4, 4]),
             spk_embed_dim=model_config.get("spk_embed_dim", 109),
             gin_channels=model_config.get("gin_channels", 256),
-            sr=self.output_sr
+            sr=self.output_sr,
+            is_half=supports_fp16(self.device)  # 根据设备能力决定是否使用半精度
         )
         self.spk_count = int(model_config.get("spk_embed_dim", 1) or 1)
 
