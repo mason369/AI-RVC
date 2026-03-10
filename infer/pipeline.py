@@ -702,11 +702,17 @@ class VoiceConversionPipeline:
             # 应用滤波
             f0_filtered = median_filter(f0, size=filter_radius)
 
-            # 高音区域 (>500Hz) 保留原始值，避免高音被平滑掉
+            # 高音区域 (>500Hz) 使用更温和的滤波，避免高音被过度平滑
+            # 参考: RMVPE论文建议高频区域使用自适应平滑
             high_pitch_mask = f0 > 500
 
+            # 对高音区域使用更小的滤波半径
+            if np.any(high_pitch_mask):
+                f0_filtered_high = median_filter(f0, size=max(1, filter_radius // 2))
+                f0_filtered = np.where(high_pitch_mask, f0_filtered_high, f0_filtered)
+
             # 混合：只在需要的地方滤波，其他保留原始
-            f0 = np.where(need_filter & ~high_pitch_mask, f0_filtered, f0)
+            f0 = np.where(need_filter, f0_filtered, f0)
 
         # 释放 F0 提取器显存
         self.unload_f0_extractor()
@@ -724,7 +730,26 @@ class VoiceConversionPipeline:
         if self.index is not None and index_ratio > 0:
             features_before_index = features.copy()
             retrieved = self.search_index(features)
-            features = features * (1 - index_ratio) + retrieved * index_ratio
+
+            # 高音区域使用更高的索引率来减少音色泄漏
+            # 参考: "Mitigating Timbre Leakage" 论文建议在高频区域增强特征替换
+            adaptive_index_ratio = np.ones(len(features)) * index_ratio
+
+            # 检测高音帧 (F0 > 400Hz)
+            f0_per_feat = 2  # 每个特征帧对应 2 个 F0 帧
+            for fi in range(len(features)):
+                f0_start = fi * f0_per_feat
+                f0_end = min(f0_start + f0_per_feat, len(f0))
+                if f0_end > f0_start:
+                    f0_segment = f0[f0_start:f0_end]
+                    avg_f0 = np.mean(f0_segment[f0_segment > 0]) if np.any(f0_segment > 0) else 0
+                    # 高音区域提升索引率 20%
+                    if avg_f0 > 400:
+                        adaptive_index_ratio[fi] = min(1.0, index_ratio * 1.2)
+
+            # 应用自适应索引混合
+            adaptive_index_ratio = adaptive_index_ratio[:, np.newaxis]  # [T, 1] 广播到 [T, C]
+            features = features * (1 - adaptive_index_ratio) + retrieved * adaptive_index_ratio
 
             # 动态辅音保护：基于F0置信度和能量调整protect强度
             # 避免索引检索破坏辅音清晰度，与官方管道行为一致
@@ -736,19 +761,27 @@ class VoiceConversionPipeline:
                 n_feat = features.shape[0]
                 protect_mask = np.ones(n_feat, dtype=np.float32)
 
-                # 计算每个特征帧的F0稳定性
+                # 计算每个特征帧的F0稳定性和能量
                 for fi in range(n_feat):
                     f0_start = fi * f0_per_feat
                     f0_end = min(f0_start + f0_per_feat, len(f0))
                     if f0_end > f0_start:
                         f0_segment = f0[f0_start:f0_end]
-                        # 无声段（F0=0）：强保护
+                        # 无声段（F0=0）：强保护，保留更多原始特征
+                        # 参考: "Voice Conversion for Articulation Disorders" 建议保护辅音
                         if np.all(f0_segment <= 0):
-                            protect_mask[fi] = protect
+                            # 提高无声段保护强度，从 protect 提升到 protect * 1.5
+                            protect_mask[fi] = min(0.8, protect * 1.5)
                         # F0不稳定段（方差大）：中等保护
                         elif len(f0_segment) > 1 and np.std(f0_segment) > 50:
                             protect_mask[fi] = protect + (1.0 - protect) * 0.3
+                        # 低能量段（可能是呼吸音）：增强保护
+                        # 使用特征的L2范数作为能量指标
+                        feat_energy = np.linalg.norm(features_before_index[fi])
+                        if feat_energy < 0.5:  # 低能量阈值
+                            protect_mask[fi] = min(0.8, protect * 1.3)
 
+                # 平滑保护掩码，避免突变
                 smooth_kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
                 smooth_kernel /= np.sum(smooth_kernel)
                 protect_mask = np.convolve(protect_mask, smooth_kernel, mode="same")
@@ -792,9 +825,9 @@ class VoiceConversionPipeline:
         f0 = f0 * _f0_gate
 
         # 步骤3: 语音合成 (voice_model 推理) - 分块处理
-        # 分块参数
+        # 分块参数 - 增加重叠以减少边界伪影
         CHUNK_SECONDS = 30  # 每块 30 秒
-        OVERLAP_SECONDS = 1.0  # 重叠 1.0 秒（增加安全边际）
+        OVERLAP_SECONDS = 2.0  # 重叠 2.0 秒（从1.0增加到2.0，减少破音）
         HOP_LENGTH = 320  # HuBERT hop length
 
         # 计算分块大小（以特征帧为单位）
@@ -879,6 +912,22 @@ class VoiceConversionPipeline:
                 min_silence_ms=silence_min_duration_ms,
                 protect=protect
             )
+
+        # 应用人声清理后处理（减少齿音和呼吸音）
+        # 参考: "Managing Sibilance" 和 "How to REALLY Clean Vocals"
+        try:
+            from lib.vocal_cleanup import apply_vocal_cleanup
+            audio_out = apply_vocal_cleanup(
+                audio_out,
+                sr=save_sr,
+                reduce_sibilance_enabled=True,
+                reduce_breath_enabled=True,
+                sibilance_reduction_db=4.0,  # 温和的齿音衰减
+                breath_reduction_db=8.0      # 中等的呼吸音衰减
+            )
+            log.detail("已应用人声清理后处理")
+        except Exception as e:
+            log.warning(f"人声清理后处理失败: {e}")
 
         # 峰值限幅（不改变整体响度，后续由 cover_pipeline 控制音量）
         audio_out = soft_clip(audio_out, threshold=0.9, ceiling=0.99)
