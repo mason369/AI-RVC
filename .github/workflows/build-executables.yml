@@ -1,0 +1,221 @@
+name: Build Executables
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller
+        pip install -r requirements.txt
+
+    - name: Download base models
+      run: |
+        python tools/download_models.py
+
+    - name: Build Windows executable
+      run: |
+        pyinstaller --name AI-RVC-Windows ^
+          --onefile ^
+          --windowed ^
+          --icon=assets/icon.ico ^
+          --add-data "ui;ui" ^
+          --add-data "infer;infer" ^
+          --add-data "lib;lib" ^
+          --add-data "models;models" ^
+          --add-data "tools;tools" ^
+          --add-data "i18n;i18n" ^
+          --add-data "configs;configs" ^
+          --add-data "assets/hubert;assets/hubert" ^
+          --add-data "assets/rmvpe;assets/rmvpe" ^
+          --hidden-import=torch ^
+          --hidden-import=torchaudio ^
+          --hidden-import=gradio ^
+          --hidden-import=librosa ^
+          --hidden-import=soundfile ^
+          --hidden-import=fairseq ^
+          --hidden-import=audio_separator ^
+          --hidden-import=demucs ^
+          --hidden-import=pedalboard ^
+          --collect-all torch ^
+          --collect-all torchaudio ^
+          --collect-all gradio ^
+          run.py
+
+    - name: Create portable package
+      run: |
+        mkdir AI-RVC-Windows-Portable
+        copy dist\AI-RVC-Windows.exe AI-RVC-Windows-Portable\
+        copy README.md AI-RVC-Windows-Portable\
+        copy LICENSE AI-RVC-Windows-Portable\
+        echo "AI-RVC Windows Portable Version" > AI-RVC-Windows-Portable\README.txt
+        echo "" >> AI-RVC-Windows-Portable\README.txt
+        echo "Double click AI-RVC-Windows.exe to start" >> AI-RVC-Windows-Portable\README.txt
+        echo "First launch will download required models (may take 5-10 minutes)" >> AI-RVC-Windows-Portable\README.txt
+        echo "" >> AI-RVC-Windows-Portable\README.txt
+        echo "Visit http://127.0.0.1:7860 in your browser after launch" >> AI-RVC-Windows-Portable\README.txt
+
+    - name: Compress Windows package
+      run: |
+        Compress-Archive -Path AI-RVC-Windows-Portable -DestinationPath AI-RVC-Windows-Portable.zip
+
+    - name: Upload Windows artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: AI-RVC-Windows
+        path: AI-RVC-Windows-Portable.zip
+
+  build-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          libsndfile1 \
+          ffmpeg \
+          portaudio19-dev
+
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller
+        pip install -r requirements.txt
+
+    - name: Download base models
+      run: |
+        python tools/download_models.py
+
+    - name: Build Linux executable
+      run: |
+        pyinstaller --name AI-RVC-Linux \
+          --onefile \
+          --add-data "ui:ui" \
+          --add-data "infer:infer" \
+          --add-data "lib:lib" \
+          --add-data "models:models" \
+          --add-data "tools:tools" \
+          --add-data "i18n:i18n" \
+          --add-data "configs:configs" \
+          --add-data "assets/hubert:assets/hubert" \
+          --add-data "assets/rmvpe:assets/rmvpe" \
+          --hidden-import=torch \
+          --hidden-import=torchaudio \
+          --hidden-import=gradio \
+          --hidden-import=librosa \
+          --hidden-import=soundfile \
+          --hidden-import=fairseq \
+          --hidden-import=audio_separator \
+          --hidden-import=demucs \
+          --hidden-import=pedalboard \
+          --collect-all torch \
+          --collect-all torchaudio \
+          --collect-all gradio \
+          run.py
+
+    - name: Create portable package
+      run: |
+        mkdir AI-RVC-Linux-Portable
+        cp dist/AI-RVC-Linux AI-RVC-Linux-Portable/
+        cp README.md AI-RVC-Linux-Portable/
+        cp LICENSE AI-RVC-Linux-Portable/
+        cat > AI-RVC-Linux-Portable/README.txt << EOF
+        AI-RVC Linux Portable Version
+
+        Run: ./AI-RVC-Linux
+        First launch will download required models (may take 5-10 minutes)
+
+        Visit http://127.0.0.1:7860 in your browser after launch
+
+        Make executable: chmod +x AI-RVC-Linux
+        EOF
+        chmod +x AI-RVC-Linux-Portable/AI-RVC-Linux
+
+    - name: Compress Linux package
+      run: |
+        tar -czf AI-RVC-Linux-Portable.tar.gz AI-RVC-Linux-Portable
+
+    - name: Upload Linux artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: AI-RVC-Linux
+        path: AI-RVC-Linux-Portable.tar.gz
+
+  create-release:
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+    - name: Download Windows artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: AI-RVC-Windows
+
+    - name: Download Linux artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: AI-RVC-Linux
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          AI-RVC-Windows-Portable.zip
+          AI-RVC-Linux-Portable.tar.gz
+        body: |
+          ## AI-RVC Portable Executables
+
+          ### Windows
+          - Download `AI-RVC-Windows-Portable.zip`
+          - Extract the zip file
+          - Double click `AI-RVC-Windows.exe` to start
+          - Visit http://127.0.0.1:7860 in your browser
+
+          ### Linux
+          - Download `AI-RVC-Linux-Portable.tar.gz`
+          - Extract: `tar -xzf AI-RVC-Linux-Portable.tar.gz`
+          - Make executable: `chmod +x AI-RVC-Linux-Portable/AI-RVC-Linux`
+          - Run: `./AI-RVC-Linux-Portable/AI-RVC-Linux`
+          - Visit http://127.0.0.1:7860 in your browser
+
+          ### Notes
+          - First launch will download required models (5-10 minutes)
+          - No Python installation required
+          - GPU acceleration supported (CUDA/ROCm)
+          - All features included (翻唱、角色模型、混音预设等)
+
+          ### System Requirements
+          - **Windows**: Windows 10/11 (x64)
+          - **Linux**: Ubuntu 20.04+ / Debian 11+ (x64)
+          - **RAM**: 8GB+ recommended
+          - **GPU**: NVIDIA GPU with 4GB+ VRAM (optional, for faster processing)
+          - **Disk**: 5GB+ free space
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
