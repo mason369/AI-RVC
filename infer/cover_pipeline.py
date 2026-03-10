@@ -435,7 +435,7 @@ class CoverPipeline:
     @staticmethod
     def _dereverb_for_vc(audio: np.ndarray, sr: int) -> np.ndarray:
         """
-        Reduce late reverberation before VC so HuBERT/RMVPE track the direct lead.
+        智能去混响：区分自然混响和真实回声，动态调整抑制强度
         """
         import librosa
 
@@ -454,6 +454,16 @@ class CoverPipeline:
         if mag.shape[1] < 4:
             return x
 
+        # 计算RMS能量曲线，用于区分高能量段和低能量段
+        rms = librosa.feature.rms(y=x, frame_length=win, hop_length=hop, center=True)[0]
+        rms_db = 20.0 * np.log10(rms + eps)
+        ref_db = float(np.percentile(rms_db, 90))
+
+        # 高能量段（主唱强的地方）：vocal_strength接近1
+        # 低能量段（回声尾巴）：vocal_strength接近0
+        vocal_strength = np.clip((rms_db - (ref_db - 35.0)) / 25.0, 0.0, 1.0)
+        vocal_strength = np.pad(vocal_strength, (0, mag.shape[1] - len(vocal_strength)), mode='edge')
+
         late = np.zeros_like(mag, dtype=np.float32)
         # Recursive late-reverb estimate: decayed history + delayed observation.
         for t in range(2, mag.shape[1]):
@@ -462,11 +472,15 @@ class CoverPipeline:
                 mag[:, t - 2] * 0.86,
             )
 
-        direct = np.maximum(mag - 0.82 * late, 0.0)
+        # 动态抑制系数：高能量段保守（0.65），低能量段激进（0.82）
+        suppress_coef = 0.65 + 0.17 * (1.0 - vocal_strength)
+        direct = np.maximum(mag - suppress_coef[np.newaxis, :] * late, 0.0)
 
-        # Dynamic floor: pure-echo frames get floor≈0, direct-voice frames keep 0.12*mag
+        # Dynamic floor: pure-echo frames get floor≈0, direct-voice frames keep more
         echo_ratio = np.clip(late / (mag + eps), 0.0, 1.0)
-        floor = (1.0 - echo_ratio) * 0.18 * mag
+        # 高能量段保留更多原始信号（floor系数0.22），低能量段少保留（0.12）
+        floor_coef = 0.12 + 0.10 * vocal_strength
+        floor = (1.0 - echo_ratio) * floor_coef[np.newaxis, :] * mag
         direct = np.maximum(direct, floor)
 
         # Smooth in time to avoid musical noise.
@@ -479,9 +493,9 @@ class CoverPipeline:
         )
         direct = np.clip(direct, 0.0, mag + eps)
 
-        # Dynamic dry blend: echo-heavy frames blend less original signal
+        # Dynamic dry blend: 高能量段混合更多原始信号（0.30），低能量段少混合（0.10）
         frame_echo = np.mean(echo_ratio, axis=0, keepdims=True)  # [1, T]
-        blend = (1.0 - frame_echo) * 0.20  # pure echo → blend≈0
+        blend = (1.0 - frame_echo) * (0.10 + 0.20 * vocal_strength[np.newaxis, :])
         out_spec = direct * phase
         dry_spec = mag * phase
         blended_spec = (1.0 - blend) * out_spec + blend * dry_spec

@@ -658,20 +658,36 @@ class VoiceConversionPipeline:
         # 高通滤波去除低频隆隆声（与官方管道一致）
         audio = sp_signal.filtfilt(_bh, _ah, audio).astype(np.float32)
 
-        # 步骤1: 提取 F0 (使用 RMVPE)
+        # 步骤1: 提取 F0 (使用 RMVPE 或 Hybrid)
         f0 = self.f0_extractor.extract(audio)
 
         # 音调偏移
         if pitch_shift != 0:
             f0 = shift_f0(f0, pitch_shift)
 
-        # 中值滤波 - 只对低频部分应用，保护高音
+        # 智能中值滤波 - 仅在F0跳变过大时应用，保留自然颤音
         if filter_radius > 0:
             from scipy.ndimage import median_filter
+
+            # 计算F0跳变（半音）
+            f0_semitone_diff = np.abs(12 * np.log2((f0 + 1e-6) / (np.roll(f0, 1) + 1e-6)))
+            f0_semitone_diff[0] = 0
+
+            # 只对跳变超过2个半音的区域应用滤波
+            need_filter = f0_semitone_diff > 2.0
+
+            # 扩展需要滤波的区域（前后各1帧）
+            kernel = np.ones(3, dtype=bool)
+            need_filter = np.convolve(need_filter, kernel, mode='same')
+
+            # 应用滤波
             f0_filtered = median_filter(f0, size=filter_radius)
+
             # 高音区域 (>500Hz) 保留原始值，避免高音被平滑掉
             high_pitch_mask = f0 > 500
-            f0 = np.where(high_pitch_mask, f0, f0_filtered)
+
+            # 混合：只在需要的地方滤波，其他保留原始
+            f0 = np.where(need_filter & ~high_pitch_mask, f0_filtered, f0)
 
         # 释放 F0 提取器显存
         self.unload_f0_extractor()
@@ -689,7 +705,7 @@ class VoiceConversionPipeline:
             retrieved = self.search_index(features)
             features = features * (1 - index_ratio) + retrieved * index_ratio
 
-            # 辅音保护：F0=0 的帧（清辅音 k/t/s/p 等）保留原始特征
+            # 动态辅音保护：基于F0置信度和能量调整protect强度
             # 避免索引检索破坏辅音清晰度，与官方管道行为一致
             if protect < 0.5:
                 # 构建逐帧保护掩码：F0>0 的帧用 1.0（完全使用索引混合后特征），
@@ -698,11 +714,20 @@ class VoiceConversionPipeline:
                 f0_per_feat = 2  # 每个特征帧对应 2 个 F0 帧
                 n_feat = features.shape[0]
                 protect_mask = np.ones(n_feat, dtype=np.float32)
+
+                # 计算每个特征帧的F0稳定性
                 for fi in range(n_feat):
                     f0_start = fi * f0_per_feat
                     f0_end = min(f0_start + f0_per_feat, len(f0))
-                    if f0_end > f0_start and np.all(f0[f0_start:f0_end] <= 0):
-                        protect_mask[fi] = protect
+                    if f0_end > f0_start:
+                        f0_segment = f0[f0_start:f0_end]
+                        # 无声段（F0=0）：强保护
+                        if np.all(f0_segment <= 0):
+                            protect_mask[fi] = protect
+                        # F0不稳定段（方差大）：中等保护
+                        elif len(f0_segment) > 1 and np.std(f0_segment) > 50:
+                            protect_mask[fi] = protect + (1.0 - protect) * 0.3
+
                 smooth_kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
                 smooth_kernel /= np.sum(smooth_kernel)
                 protect_mask = np.convolve(protect_mask, smooth_kernel, mode="same")
