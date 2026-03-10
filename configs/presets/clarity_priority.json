@@ -1,0 +1,20 @@
+{
+  "name": "清晰度优先配置",
+  "description": "减少伪影和失真，保留更多源音频特征，适合复杂歌曲和高音多的情况",
+  "cover": {
+    "index_rate": 0.30,
+    "filter_radius": 1,
+    "rms_mix_rate": 0.75,
+    "protect": 0.55,
+    "f0_method": "hybrid",
+    "rmvpe_threshold": 0.008,
+    "f0_min": 60,
+    "f0_max": 1400,
+    "f0_stabilize": false,
+    "f0_stabilize_window": 2,
+    "f0_stabilize_max_semitones": 2.0,
+    "vc_preprocess_mode": "uvr_deecho",
+    "source_constraint_mode": "on",
+    "uvr5_agg": 8
+  }
+}
