@@ -591,17 +591,17 @@ class VoiceConversionPipeline:
         log.debug(f"[_process_chunk] 开始推理, use_fp16={use_fp16}, device={self.device.type}")
         if use_fp16 and supports_fp16(self.device):
             with torch.amp.autocast(str(self.device.type)):
-                audio_out, x_mask = self.voice_model.infer(
+                audio_out, x_mask, _ = self.voice_model.infer(
                     features_tensor,
-                    torch.tensor([features_tensor.shape[2]], device=self.device),
+                    torch.tensor([features_tensor.shape[1]], device=self.device),
                     f0_coarse,
                     f0_tensor,
                     sid
                 )
         else:
-            audio_out, x_mask = self.voice_model.infer(
+            audio_out, x_mask, _ = self.voice_model.infer(
                 features_tensor,
-                torch.tensor([features_tensor.shape[2]], device=self.device),
+                torch.tensor([features_tensor.shape[1]], device=self.device),
                 f0_coarse,
                 f0_tensor,
                 sid
