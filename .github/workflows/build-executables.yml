@@ -37,32 +37,33 @@ jobs:
 
     - name: Build Windows executable
       run: |
-        pyinstaller --name AI-RVC-Windows ^
-          --onefile ^
-          --windowed ^
-          --icon=assets/icon.ico ^
-          --add-data "ui;ui" ^
-          --add-data "infer;infer" ^
-          --add-data "lib;lib" ^
-          --add-data "models;models" ^
-          --add-data "tools;tools" ^
-          --add-data "i18n;i18n" ^
-          --add-data "configs;configs" ^
-          --add-data "assets/hubert;assets/hubert" ^
-          --add-data "assets/rmvpe;assets/rmvpe" ^
-          --hidden-import=torch ^
-          --hidden-import=torchaudio ^
-          --hidden-import=gradio ^
-          --hidden-import=librosa ^
-          --hidden-import=soundfile ^
-          --hidden-import=fairseq ^
-          --hidden-import=audio_separator ^
-          --hidden-import=demucs ^
-          --hidden-import=pedalboard ^
-          --collect-all torch ^
-          --collect-all torchaudio ^
-          --collect-all gradio ^
+        pyinstaller --name AI-RVC-Windows `
+          --onefile `
+          --windowed `
+          --icon=assets/icon.ico `
+          --add-data "ui;ui" `
+          --add-data "infer;infer" `
+          --add-data "lib;lib" `
+          --add-data "models;models" `
+          --add-data "tools;tools" `
+          --add-data "i18n;i18n" `
+          --add-data "configs;configs" `
+          --add-data "assets/hubert;assets/hubert" `
+          --add-data "assets/rmvpe;assets/rmvpe" `
+          --hidden-import=torch `
+          --hidden-import=torchaudio `
+          --hidden-import=gradio `
+          --hidden-import=librosa `
+          --hidden-import=soundfile `
+          --hidden-import=fairseq `
+          --hidden-import=audio_separator `
+          --hidden-import=demucs `
+          --hidden-import=pedalboard `
+          --collect-all torch `
+          --collect-all torchaudio `
+          --collect-all gradio `
           run.py
+      shell: pwsh
 
     - name: Create portable package
       run: |
