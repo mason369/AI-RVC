@@ -21,23 +21,49 @@
 
 ## 平台支持
 
-| 平台 | 状态 | 说明 |
-|------|------|------|
-| Windows 10/11 (x64) | ✅ 已支持 | PowerShell 激活虚拟环境后 `python run.py` |
-| Linux (Ubuntu/Debian) | ✅ 已支持 | 推荐 Ubuntu 22.04+，Python 3.10+，完全兼容 |
-| WSL2 (Windows 11) | ✅ 已支持 | 可直接通过浏览器访问 `http://127.0.0.1:7860` |
-| Google Colab | ✅ 已支持 | 使用 `AI_RVC_Colab.ipynb`，免费 GPU 加速 |
-| macOS | ⚠️ 未充分验证 | 可尝试 CPU 模式；MPS 路径尚未在本仓库适配 |
+| 平台 | 状态 | 安装方式 | 说明 |
+|------|------|---------|------|
+| Windows 10/11 (x64) | ✅ 已支持 | 可执行文件 / 本地安装 | 推荐使用可执行文件，无需安装 Python |
+| Linux (Ubuntu/Debian) | ✅ 已支持 | 可执行文件 / 本地安装 | 推荐 Ubuntu 22.04+，完全兼容 |
+| WSL2 (Windows 11) | ✅ 已支持 | 本地安装 | 可直接通过浏览器访问 `http://127.0.0.1:7860` |
+| Google Colab | ✅ 已支持 | 在线使用 | 免费 GPU 加速（T4/V100） |
+| Hugging Face Spaces | ✅ 已支持 | 在线使用 | 免费 CPU / 付费 GPU |
+| macOS | ⚠️ 未充分验证 | 本地安装 | 可尝试 CPU 模式；MPS 路径尚未适配 |
 
 ## 快速开始
 
-### Google Colab（推荐新手）
+### 方式 1：可执行文件（推荐新手，无需安装 Python）
 
-1. 打开 Colab notebook：[AI_RVC_Colab.ipynb](./AI_RVC_Colab.ipynb)
-2. 点击「在 Colab 中打开」
-3. 确保运行时类型设置为 **GPU**（菜单栏 → 代码执行程序 → 更改运行时类型 → T4 GPU）
-4. 按顺序执行每个单元格
-5. 启动 Gradio 界面后，点击生成的公共链接访问
+#### Windows
+
+1. 从 [Releases](https://github.com/mason369/AI-RVC/releases/latest) 下载 `AI-RVC-Windows-Portable.zip`
+2. 解压到任意目录
+3. 双击 `AI-RVC-Windows.exe` 启动
+4. 浏览器自动打开 http://127.0.0.1:7860
+
+#### Linux
+
+1. 从 [Releases](https://github.com/mason369/AI-RVC/releases/latest) 下载 `AI-RVC-Linux-Portable.tar.gz`
+2. 解压：`tar -xzf AI-RVC-Linux-Portable.tar.gz`
+3. 添加执行权限：`chmod +x AI-RVC-Linux-Portable/AI-RVC-Linux`
+4. 运行：`./AI-RVC-Linux-Portable/AI-RVC-Linux`
+5. 浏览器访问 http://127.0.0.1:7860
+
+**优势**：
+- ✅ 无需安装 Python 和依赖
+- ✅ 开箱即用，双击启动
+- ✅ 包含所有必需模型
+- ✅ 支持 GPU 加速（CUDA/ROCm）
+- ⚠️ 首次启动需要 5-10 分钟下载模型
+
+### 方式 2：Google Colab（推荐临时使用）
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/mason369/AI-RVC/blob/master/AI_RVC_Colab.ipynb)
+
+1. 点击上方按钮在 Colab 中打开
+2. 确保运行时类型设置为 **GPU**（菜单栏 → 代码执行程序 → 更改运行时类型 → T4 GPU）
+3. 按顺序执行每个单元格
+4. 启动 Gradio 界面后，点击生成的公共链接访问
 
 **优势**：
 - 无需本地安装，开箱即用
@@ -45,7 +71,22 @@
 - 自动配置环境和依赖
 - 支持所有功能（翻唱、角色模型下载、混音预设等）
 
-### Windows
+### 方式 3：Hugging Face Spaces（在线体验）
+
+访问：https://huggingface.co/spaces/mason369/AI-RVC
+
+**优势**：
+- 无需安装，直接使用
+- 随时随地访问
+- 易于分享
+
+**限制**：
+- 免费版使用 CPU（处理较慢）
+- 可升级到 GPU（付费）
+
+### 方式 4：本地安装（推荐开发者和频繁使用）
+
+#### Windows
 
 ```powershell
 # 1. 克隆仓库
