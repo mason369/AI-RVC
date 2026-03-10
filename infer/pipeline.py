@@ -212,12 +212,12 @@ class VoiceConversionPipeline:
         hidden_channels = model_config.get("hidden_channels", 192)
         if hidden_channels == 256 or hidden_channels >= 512:
             # v2模型：768维
-            from models.synthesizer import SynthesizerTrnMs768NSFsid
+            from infer.lib.infer_pack.models import SynthesizerTrnMs768NSFsid
             synthesizer_class = SynthesizerTrnMs768NSFsid
             log.debug(f"使用v2合成器 (768维): hidden_channels={hidden_channels}")
         else:
             # v1模型：256维
-            from models.synthesizer import SynthesizerTrnMs256NSFsid
+            from infer.lib.infer_pack.models import SynthesizerTrnMs256NSFsid
             synthesizer_class = SynthesizerTrnMs256NSFsid
             log.debug(f"使用v1合成器 (256维): hidden_channels={hidden_channels}")
 
