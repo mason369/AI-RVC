@@ -31,7 +31,9 @@ jobs:
 
     - name: Download base models
       run: |
+        $env:PYTHONIOENCODING="utf-8"
         python tools/download_models.py
+      shell: pwsh
 
     - name: Build Windows executable
       run: |
