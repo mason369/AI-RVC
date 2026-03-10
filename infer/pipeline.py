@@ -215,19 +215,41 @@ class VoiceConversionPipeline:
         # 判断依据：检查模型文件中是否有'version'字段，或根据实际权重形状判断
         gin_channels = model_config.get("gin_channels", 256)
 
-        # 优先使用模型文件中的version字段
-        if "version" in cpt and cpt["version"] == "v1":
+        # 判断模型版本的优先级：
+        # 1. 检查'version'字段
+        # 2. 检查权重形状 enc_p.emb_phone.weight
+        # 3. 默认v2
+        model_version = None
+
+        if "version" in cpt:
+            model_version = cpt["version"]
+            log.debug(f"从version字段检测到: {model_version}")
+        elif "weight" in cpt and "enc_p.emb_phone.weight" in cpt["weight"]:
+            # 检查 enc_p.emb_phone.weight 的形状
+            # v1: [hidden_channels, 256]
+            # v2: [hidden_channels, 768]
+            emb_shape = cpt["weight"]["enc_p.emb_phone.weight"].shape
+            log.debug(f"enc_p.emb_phone.weight 形状: {emb_shape}")
+            if emb_shape[1] == 256:
+                model_version = "v1"
+                log.debug("从权重形状检测到: v1 (256维)")
+            elif emb_shape[1] == 768:
+                model_version = "v2"
+                log.debug("从权重形状检测到: v2 (768维)")
+
+        # 根据检测结果选择合成器
+        if model_version == "v1":
             # v1模型：256维
             from infer.lib.infer_pack.models import SynthesizerTrnMs256NSFsid
             synthesizer_class = SynthesizerTrnMs256NSFsid
             self.model_version = "v1"
-            log.debug(f"使用v1合成器 (256维): version={cpt['version']}")
+            log.debug(f"使用v1合成器 (256维)")
         else:
             # v2模型：768维（默认）
             from infer.lib.infer_pack.models import SynthesizerTrnMs768NSFsid
             synthesizer_class = SynthesizerTrnMs768NSFsid
             self.model_version = "v2"
-            log.debug(f"使用v2合成器 (768维): version={cpt.get('version', 'v2')}")
+            log.debug(f"使用v2合成器 (768维)")
 
         # 加载模型权重
         self.voice_model = synthesizer_class(
@@ -980,10 +1002,10 @@ class VoiceConversionPipeline:
                 f0=f0_resampled,
                 chunk_boundaries=None,
                 fix_phase=True,        # 保留相位修复（修复长音撕裂）
-                fix_breath=False,      # 禁用呼吸音处理，避免音量损失
+                fix_breath=True,       # 启用底噪清理（使用优化后的精准检测）
                 fix_sustained=False    # 禁用长音稳定，避免音质损失
             )
-            log.detail("已应用vocoder伪影修复（仅相位）")
+            log.detail("已应用vocoder伪影修复（相位+底噪清理）")
         except Exception as e:
             log.warning(f"Vocoder伪影修复失败: {e}")
 
