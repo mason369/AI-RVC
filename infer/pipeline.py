@@ -314,8 +314,9 @@ class VoiceConversionPipeline:
                 padding_mask=None,
                 output_layer=self.hubert_layer
             )[0]
-            if hasattr(self.hubert_model, "final_proj") and self.hubert_model.final_proj is not None:
-                feats = self.hubert_model.final_proj(feats)
+            # 注意：不使用final_proj，因为它会输出256维
+            # 而v1模型需要768维（会在模型内部投影到192维）
+            # v2模型也需要768维
             return feats
 
         if self.hubert_model_type == "torchaudio":
