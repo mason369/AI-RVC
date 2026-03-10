@@ -7,6 +7,7 @@ import gc
 import shutil
 import torch
 import numpy as np
+import soundfile as sf
 from pathlib import Path
 from typing import Tuple, Optional, Callable
 
@@ -60,6 +61,19 @@ def _safe_move(src_path: str, dst_path: str) -> None:
     if dst.exists():
         dst.unlink()
     shutil.move(src_path, dst_path)
+
+
+def _get_audio_activity_stats(audio_path: str) -> tuple[float, float, int]:
+    """Return simple activity stats for validating separator outputs."""
+    audio, _ = sf.read(audio_path, dtype="float32", always_2d=True)
+    if audio.size == 0:
+        return 0.0, 0.0, 0
+
+    mono = np.mean(audio, axis=1, dtype=np.float32)
+    rms = float(np.sqrt(np.mean(np.square(mono), dtype=np.float64) + 1e-12))
+    peak = float(np.max(np.abs(mono)))
+    nonzero = int(np.count_nonzero(np.abs(mono) > 1e-6))
+    return rms, peak, nonzero
 
 
 class RoformerSeparator:
@@ -332,11 +346,17 @@ class KaraokeSeparator:
         self.separator.output_dir = str(output_path)
         output_files = self.separator.separate(audio_path)
         resolved_files = _resolve_output_files(output_files, output_path)
+        log.detail(
+            f"Karaoke分离器输出文件: {[Path(file_path).name for file_path in resolved_files]}"
+        )
 
         lead_vocals_path = None
         backing_vocals_path = None
         for file_path in resolved_files:
             stem_role = self._classify_stem(Path(file_path).name)
+            log.detail(
+                f"  {Path(file_path).name} -> 分类为: {stem_role or 'unknown'}"
+            )
             if stem_role == "lead" and lead_vocals_path is None:
                 lead_vocals_path = file_path
             elif stem_role == "backing" and backing_vocals_path is None:
@@ -358,6 +378,20 @@ class KaraokeSeparator:
             raise FileNotFoundError(
                 f"Karaoke和声轨未找到，输出文件: {[Path(p).name for p in resolved_files]}"
             )
+
+        lead_rms, lead_peak, lead_nonzero = _get_audio_activity_stats(lead_vocals_path)
+        backing_rms, backing_peak, backing_nonzero = _get_audio_activity_stats(backing_vocals_path)
+        log.detail(
+            "Karaoke输出能量检测: "
+            f"lead_rms={lead_rms:.6f}, lead_peak={lead_peak:.6f}, lead_nonzero={lead_nonzero}; "
+            f"backing_rms={backing_rms:.6f}, backing_peak={backing_peak:.6f}, backing_nonzero={backing_nonzero}"
+        )
+
+        lead_is_nearly_silent = lead_nonzero == 0 or (lead_rms < 1e-5 and lead_peak < 1e-4)
+        backing_has_content = backing_nonzero > 0 and (backing_rms >= 5e-5 or backing_peak >= 5e-4)
+        if lead_is_nearly_silent and backing_has_content:
+            log.warning("Karaoke主唱轨几乎静音，检测到输出疑似反转，已自动交换主唱/和声")
+            lead_vocals_path, backing_vocals_path = backing_vocals_path, lead_vocals_path
 
         final_lead = str(output_path / "lead_vocals.wav")
         final_backing = str(output_path / "backing_vocals.wav")
