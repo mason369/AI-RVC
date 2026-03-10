@@ -38,6 +38,7 @@ class VoiceConversionPipeline:
         self.index = None
         self.f0_extractor = None
         self.spk_count = 1
+        self.model_version = "v2"  # 默认 v2（768 维）
 
         # 默认参数
         self.sample_rate = 16000  # HuBERT 输入采样率
@@ -208,10 +209,50 @@ class VoiceConversionPipeline:
 
         log.debug(f"解析后的配置: {model_config}")
 
-        # 加载模型权重
-        from models.synthesizer import SynthesizerTrnMs768NSFsid
+        # 根据gin_channels选择正确的合成器
+        # v1模型: gin_channels=256, 使用256维HuBERT特征
+        # v2模型: gin_channels=256, 使用768维HuBERT特征
+        # 判断依据：检查模型文件中是否有'version'字段，或根据实际权重形状判断
+        gin_channels = model_config.get("gin_channels", 256)
 
-        self.voice_model = SynthesizerTrnMs768NSFsid(
+        # 判断模型版本的优先级：
+        # 1. 检查'version'字段
+        # 2. 检查权重形状 enc_p.emb_phone.weight
+        # 3. 默认v2
+        model_version = None
+
+        if "version" in cpt:
+            model_version = cpt["version"]
+            log.debug(f"从version字段检测到: {model_version}")
+        elif "weight" in cpt and "enc_p.emb_phone.weight" in cpt["weight"]:
+            # 检查 enc_p.emb_phone.weight 的形状
+            # v1: [hidden_channels, 256]
+            # v2: [hidden_channels, 768]
+            emb_shape = cpt["weight"]["enc_p.emb_phone.weight"].shape
+            log.debug(f"enc_p.emb_phone.weight 形状: {emb_shape}")
+            if emb_shape[1] == 256:
+                model_version = "v1"
+                log.debug("从权重形状检测到: v1 (256维)")
+            elif emb_shape[1] == 768:
+                model_version = "v2"
+                log.debug("从权重形状检测到: v2 (768维)")
+
+        # 根据检测结果选择合成器
+        if model_version == "v1":
+            # v1模型：256维
+            from infer.lib.infer_pack.models import SynthesizerTrnMs256NSFsid
+            synthesizer_class = SynthesizerTrnMs256NSFsid
+            self.model_version = "v1"
+            log.debug(f"使用v1合成器 (256维)")
+        else:
+            # v2模型：768维（默认）
+            from infer.lib.infer_pack.models import SynthesizerTrnMs768NSFsid
+            synthesizer_class = SynthesizerTrnMs768NSFsid
+            self.model_version = "v2"
+            log.debug(f"使用v2合成器 (768维)")
+
+        # 加载模型权重
+        self.voice_model = synthesizer_class(
             spec_channels=model_config.get("spec_channels", 1025),
             segment_size=model_config.get("segment_size", 32),
             inter_channels=model_config.get("inter_channels", 192),
@@ -229,7 +270,8 @@ class VoiceConversionPipeline:
             upsample_kernel_sizes=model_config.get("upsample_kernel_sizes", [16, 16, 4, 4]),
             spk_embed_dim=model_config.get("spk_embed_dim", 109),
             gin_channels=model_config.get("gin_channels", 256),
-            sr=self.output_sr
+            sr=self.output_sr,
+            is_half=supports_fp16(self.device)  # 根据设备能力决定是否使用半精度
         )
         self.spk_count = int(model_config.get("spk_embed_dim", 1) or 1)
 
@@ -278,12 +320,13 @@ class VoiceConversionPipeline:
         log.info(f"F0 提取器已加载: {method}")
 
     @torch.no_grad()
-    def extract_features(self, audio: np.ndarray) -> torch.Tensor:
+    def extract_features(self, audio: np.ndarray, use_final_proj: bool = False) -> torch.Tensor:
         """
         使用 HuBERT 提取特征
 
         Args:
             audio: 16kHz 音频数据
+            use_final_proj: 是否使用 final_proj 将 768 维降到 256 维（v1 模型需要）
 
         Returns:
             torch.Tensor: HuBERT 特征
@@ -297,12 +340,16 @@ class VoiceConversionPipeline:
             audio_tensor = audio_tensor.unsqueeze(0)
 
         if self.hubert_model_type == "fairseq":
+            # v1 模型使用第 9 层，v2 模型使用第 12 层
+            output_layer = 9 if use_final_proj else 12
             feats = self.hubert_model.extract_features(
                 audio_tensor,
                 padding_mask=None,
-                output_layer=self.hubert_layer
+                output_layer=output_layer
             )[0]
-            if hasattr(self.hubert_model, "final_proj") and self.hubert_model.final_proj is not None:
+            # v1 模型需要 256 维特征，使用 final_proj 投影
+            # v2 模型需要 768 维特征，不使用 final_proj
+            if use_final_proj and hasattr(self.hubert_model, 'final_proj'):
                 feats = self.hubert_model.final_proj(feats)
             return feats
 
@@ -540,16 +587,15 @@ class VoiceConversionPipeline:
 
         # 转换为张量
         features_tensor = torch.from_numpy(features).float().to(self.device).unsqueeze(0)
-        features_tensor = features_tensor.transpose(1, 2)  # [B, C, T]
-        log.debug(f"[_process_chunk] 转置后特征: shape={features_tensor.shape}")
-
         # HuBERT 输出帧率是 50fps (hop=320 @ 16kHz)，但 RVC 模型期望 100fps
         # 需要 2x 上采样特征
-        features_tensor = F.interpolate(features_tensor, scale_factor=2, mode='nearest')
+        # 注意：interpolate 需要 [B, C, T] 格式，但模型需要 [B, T, C] 格式
+        features_tensor = F.interpolate(features_tensor.transpose(1, 2), scale_factor=2, mode='nearest').transpose(1, 2)
         log.debug(f"[_process_chunk] 2x上采样后特征: shape={features_tensor.shape}")
 
         # F0 对齐到上采样后的特征长度
-        target_len = features_tensor.shape[2]
+        # features_tensor 形状是 [B, T, C]，所以时间维度是 shape[1]
+        target_len = features_tensor.shape[1]
         original_f0_len = len(f0)
         if len(f0) > target_len:
             f0 = f0[:target_len]
@@ -572,17 +618,17 @@ class VoiceConversionPipeline:
         log.debug(f"[_process_chunk] 开始推理, use_fp16={use_fp16}, device={self.device.type}")
         if use_fp16 and supports_fp16(self.device):
             with torch.amp.autocast(str(self.device.type)):
-                audio_out, x_mask = self.voice_model.infer(
+                audio_out, x_mask, _ = self.voice_model.infer(
                     features_tensor,
-                    torch.tensor([features_tensor.shape[2]], device=self.device),
+                    torch.tensor([features_tensor.shape[1]], device=self.device),
                     f0_coarse,
                     f0_tensor,
                     sid
                 )
         else:
-            audio_out, x_mask = self.voice_model.infer(
+            audio_out, x_mask, _ = self.voice_model.infer(
                 features_tensor,
-                torch.tensor([features_tensor.shape[2]], device=self.device),
+                torch.tensor([features_tensor.shape[1]], device=self.device),
                 f0_coarse,
                 f0_tensor,
                 sid
@@ -615,8 +661,8 @@ class VoiceConversionPipeline:
         rms_mix_rate: float = 0.25,
         protect: float = 0.33,
         speaker_id: int = 0,
-        silence_gate: bool = False,
-        silence_threshold_db: float = -40.0,
+        silence_gate: bool = True,
+        silence_threshold_db: float = -45.0,
         silence_smoothing_ms: float = 50.0,
         silence_min_duration_ms: float = 200.0
     ) -> str:
@@ -633,7 +679,7 @@ class VoiceConversionPipeline:
             rms_mix_rate: RMS 混合比率
             protect: 保护清辅音
             speaker_id: 说话人 ID（多说话人模型可调）
-            silence_gate: 启用静音门限
+            silence_gate: 启用静音门限（默认开启以消除静音段底噪）
             silence_threshold_db: 静音阈值 (dB, 相对峰值)
             silence_smoothing_ms: 门限平滑时长 (ms)
             silence_min_duration_ms: 最短静音时长 (ms)
@@ -658,26 +704,50 @@ class VoiceConversionPipeline:
         # 高通滤波去除低频隆隆声（与官方管道一致）
         audio = sp_signal.filtfilt(_bh, _ah, audio).astype(np.float32)
 
-        # 步骤1: 提取 F0 (使用 RMVPE)
+        # 步骤1: 提取 F0 (使用 RMVPE 或 Hybrid)
         f0 = self.f0_extractor.extract(audio)
 
         # 音调偏移
         if pitch_shift != 0:
             f0 = shift_f0(f0, pitch_shift)
 
-        # 中值滤波 - 只对低频部分应用，保护高音
+        # 智能中值滤波 - 仅在F0跳变过大时应用，保留自然颤音
         if filter_radius > 0:
             from scipy.ndimage import median_filter
+
+            # 计算F0跳变（半音）
+            f0_semitone_diff = np.abs(12 * np.log2((f0 + 1e-6) / (np.roll(f0, 1) + 1e-6)))
+            f0_semitone_diff[0] = 0
+
+            # 只对跳变超过2个半音的区域应用滤波
+            need_filter = f0_semitone_diff > 2.0
+
+            # 扩展需要滤波的区域（前后各1帧）
+            kernel = np.ones(3, dtype=bool)
+            need_filter = np.convolve(need_filter, kernel, mode='same')
+
+            # 应用滤波
             f0_filtered = median_filter(f0, size=filter_radius)
-            # 高音区域 (>500Hz) 保留原始值，避免高音被平滑掉
+
+            # 高音区域 (>500Hz) 使用更温和的滤波，避免高音被过度平滑
+            # 参考: RMVPE论文建议高频区域使用自适应平滑
             high_pitch_mask = f0 > 500
-            f0 = np.where(high_pitch_mask, f0, f0_filtered)
+
+            # 对高音区域使用更小的滤波半径
+            if np.any(high_pitch_mask):
+                f0_filtered_high = median_filter(f0, size=max(1, filter_radius // 2))
+                f0_filtered = np.where(high_pitch_mask, f0_filtered_high, f0_filtered)
+
+            # 混合：只在需要的地方滤波，其他保留原始
+            f0 = np.where(need_filter, f0_filtered, f0)
 
         # 释放 F0 提取器显存
         self.unload_f0_extractor()
 
         # 步骤2: 提取 HuBERT 特征
-        features = self.extract_features(audio)
+        # v1 模型需要 256 维特征（使用 final_proj），v2 模型需要 768 维
+        use_final_proj = (self.model_version == "v1")
+        features = self.extract_features(audio, use_final_proj=use_final_proj)
         features = features.squeeze(0).cpu().numpy()
 
         # 释放 HuBERT 显存
@@ -687,9 +757,26 @@ class VoiceConversionPipeline:
         if self.index is not None and index_ratio > 0:
             features_before_index = features.copy()
             retrieved = self.search_index(features)
-            features = features * (1 - index_ratio) + retrieved * index_ratio
 
-            # 辅音保护：F0=0 的帧（清辅音 k/t/s/p 等）保留原始特征
+            # 简单的自适应索引混合（不使用白化和残差去除）
+            # 高音区域使用稍高的索引率
+            adaptive_index_ratio = np.ones(len(features)) * index_ratio
+
+            f0_per_feat = 2
+            for fi in range(len(features)):
+                f0_start = fi * f0_per_feat
+                f0_end = min(f0_start + f0_per_feat, len(f0))
+                if f0_end > f0_start:
+                    f0_segment = f0[f0_start:f0_end]
+                    avg_f0 = np.mean(f0_segment[f0_segment > 0]) if np.any(f0_segment > 0) else 0
+                    # 高音区域提升索引率
+                    if avg_f0 > 450:
+                        adaptive_index_ratio[fi] = min(0.75, index_ratio * 1.3)
+
+            adaptive_index_ratio = adaptive_index_ratio[:, np.newaxis]
+            features = features * (1 - adaptive_index_ratio) + retrieved * adaptive_index_ratio
+
+            # 动态辅音保护：基于F0置信度和能量调整protect强度
             # 避免索引检索破坏辅音清晰度，与官方管道行为一致
             if protect < 0.5:
                 # 构建逐帧保护掩码：F0>0 的帧用 1.0（完全使用索引混合后特征），
@@ -698,15 +785,38 @@ class VoiceConversionPipeline:
                 f0_per_feat = 2  # 每个特征帧对应 2 个 F0 帧
                 n_feat = features.shape[0]
                 protect_mask = np.ones(n_feat, dtype=np.float32)
+
+                # 计算每个特征帧的F0稳定性和能量
                 for fi in range(n_feat):
                     f0_start = fi * f0_per_feat
                     f0_end = min(f0_start + f0_per_feat, len(f0))
-                    if f0_end > f0_start and np.all(f0[f0_start:f0_end] <= 0):
-                        protect_mask[fi] = protect
+                    if f0_end > f0_start:
+                        f0_segment = f0[f0_start:f0_end]
+                        # 无声段（F0=0）：强保护，保留更多原始特征
+                        # 参考: "Voice Conversion for Articulation Disorders" 建议保护辅音
+                        if np.all(f0_segment <= 0):
+                            # 提高无声段保护强度，从 protect 提升到 protect * 1.5
+                            protect_mask[fi] = min(0.8, protect * 1.5)
+                        # F0不稳定段（方差大）：中等保护
+                        elif len(f0_segment) > 1 and np.std(f0_segment) > 50:
+                            protect_mask[fi] = protect + (1.0 - protect) * 0.3
+                        # 低能量段（可能是呼吸音）：增强保护
+                        # 使用特征的L2范数作为能量指标
+                        feat_energy = np.linalg.norm(features_before_index[fi])
+                        if feat_energy < 0.5:  # 低能量阈值
+                            protect_mask[fi] = min(0.8, protect * 1.3)
+
+                # 平滑保护掩码，避免突变
+                smooth_kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
+                smooth_kernel /= np.sum(smooth_kernel)
+                protect_mask = np.convolve(protect_mask, smooth_kernel, mode="same")
+                protect_mask = np.convolve(protect_mask, smooth_kernel, mode="same")
+                protect_mask = np.clip(protect_mask, protect, 1.0)
                 protect_mask = protect_mask[:, np.newaxis]  # [T, 1] 广播到 [T, C]
                 features = features * protect_mask + features_before_index * (1 - protect_mask)
 
-        # --- 能量感知硬门控（索引+protect 之后、分块推理之前）---
+        # --- 能量感知软门控（索引+protect 之后、分块推理之前）---
+        # 注意：使用软门控而非硬清零，避免音量损失
         import librosa as _librosa_local
         _hop_feat = 320  # HuBERT hop
         _n_feat = features.shape[0]
@@ -721,18 +831,42 @@ class VoiceConversionPipeline:
             _frame_rms = np.pad(_frame_rms, (0, _n_feat - len(_frame_rms)), mode='edge')
         _energy_db = 20.0 * np.log10(_frame_rms + 1e-8)
         _ref_db = float(np.percentile(_energy_db, 95)) if _frame_rms.size > 0 else -20.0
-        # 硬门控：只有低于 ref-45dB 的真正静默帧被清零
-        _silence_threshold = _ref_db - 45.0
-        _energy_gate = (_energy_db > _silence_threshold).astype(np.float32)
+
+        # 改进的软门控：使用渐变衰减而非硬清零，保留低能量内容
+        _silence_threshold = _ref_db - 65.0  # 进一步放宽到-65dB（只处理极端静音）
+        _is_very_quiet = (_energy_db < _silence_threshold).astype(np.float32)
+
+        # 检查F0：F0=0的帧更可能是静音（但也可能是辅音）
+        _f0_50fps = f0[::2] if len(f0) >= _n_feat * 2 else np.pad(f0[::2], (0, _n_feat - len(f0[::2])), mode='edge')
+        _f0_50fps = _f0_50fps[:_n_feat]
+        _is_unvoiced = (_f0_50fps <= 0).astype(np.float32)
+
+        # 组合判断：极低能量 + 无声 = 可能静音
+        _is_silence = _is_very_quiet * _is_unvoiced
+
+        # 平滑门控曲线
         _sm = np.array([1, 2, 3, 2, 1], dtype=np.float32)
         _sm /= _sm.sum()
-        _energy_gate = np.convolve(_energy_gate, _sm, mode='same')[:_n_feat]
-        _energy_gate = (_energy_gate > 0.5).astype(np.float32)  # 重新二值化
+        _is_silence = np.convolve(_is_silence, _sm, mode='same')[:_n_feat]
 
-        # 特征硬门控（50fps）
+        # 最小静音时长过滤（避免误判短暂的低能量辅音）
+        _min_silence_frames = 10  # 约200ms @ 50fps（更保守）
+        _silence_binary = (_is_silence > 0.7).astype(int)  # 提高阈值到0.7
+        _changes = np.diff(np.concatenate(([0], _silence_binary, [0])))
+        _starts = np.where(_changes == 1)[0]
+        _ends = np.where(_changes == -1)[0]
+        _keep_silence = np.zeros_like(_silence_binary, dtype=bool)
+        for _s, _e in zip(_starts, _ends):
+            if _e - _s >= _min_silence_frames:
+                _keep_silence[_s:_e] = True
+
+        # 软门控：使用渐变衰减而非硬清零（0.3-1.0 而非 0-1）
+        _energy_gate = np.where(_keep_silence, 0.3, 1.0).astype(np.float32)
+
+        # 特征软门控（50fps）- 保留30%而非完全清零
         features = features * _energy_gate[:, np.newaxis]
 
-        # F0 硬清零（100fps = 特征帧率 × 2）
+        # F0 软清零（100fps = 特征帧率 × 2）- 保留30%而非完全清零
         _f0_gate = np.repeat(_energy_gate, 2)
         if len(_f0_gate) > len(f0):
             _f0_gate = _f0_gate[:len(f0)]
@@ -741,9 +875,9 @@ class VoiceConversionPipeline:
         f0 = f0 * _f0_gate
 
         # 步骤3: 语音合成 (voice_model 推理) - 分块处理
-        # 分块参数
+        # 分块参数 - 增加重叠以减少边界伪影
         CHUNK_SECONDS = 30  # 每块 30 秒
-        OVERLAP_SECONDS = 1.0  # 重叠 1.0 秒（增加安全边际）
+        OVERLAP_SECONDS = 2.0  # 重叠 2.0 秒（从1.0增加到2.0，减少破音）
         HOP_LENGTH = 320  # HuBERT hop length
 
         # 计算分块大小（以特征帧为单位）
@@ -829,6 +963,52 @@ class VoiceConversionPipeline:
                 protect=protect
             )
 
+        # 应用人声清理后处理（减少齿音和呼吸音）
+        # 注意：为避免过度处理导致音质下降，默认禁用
+        try:
+            from lib.vocal_cleanup import apply_vocal_cleanup
+            audio_out = apply_vocal_cleanup(
+                audio_out,
+                sr=save_sr,
+                reduce_sibilance_enabled=False,  # 禁用齿音处理，避免音质损失
+                reduce_breath_enabled=False,
+                sibilance_reduction_db=2.0,
+                breath_reduction_db=0.0
+            )
+            log.detail("已应用人声清理")
+        except Exception as e:
+            log.warning(f"人声清理失败: {e}")
+
+        # 应用vocoder伪影修复（呼吸音电音和长音撕裂）
+        # 注意：只保留相位修复，禁用其他处理避免音量损失
+        try:
+            from lib.vocoder_fix import apply_vocoder_artifact_fix
+
+            # 将F0重采样到音频帧率
+            if len(f0) > 0:
+                import librosa
+                # F0是100fps，需要对齐到音频帧率
+                f0_resampled = librosa.resample(
+                    f0.astype(np.float32),
+                    orig_sr=100,  # F0帧率
+                    target_sr=save_sr / (save_sr / 16000 * 160)  # 音频帧率
+                )
+            else:
+                f0_resampled = None
+
+            audio_out = apply_vocoder_artifact_fix(
+                audio_out,
+                sr=save_sr,
+                f0=f0_resampled,
+                chunk_boundaries=None,
+                fix_phase=True,        # 保留相位修复（修复长音撕裂）
+                fix_breath=True,       # 启用底噪清理（使用优化后的精准检测）
+                fix_sustained=False    # 禁用长音稳定，避免音质损失
+            )
+            log.detail("已应用vocoder伪影修复（相位+底噪清理）")
+        except Exception as e:
+            log.warning(f"Vocoder伪影修复失败: {e}")
+
         # 峰值限幅（不改变整体响度，后续由 cover_pipeline 控制音量）
         audio_out = soft_clip(audio_out, threshold=0.9, ceiling=0.99)
 
@@ -839,7 +1019,10 @@ class VoiceConversionPipeline:
 
     def _crossfade_chunks(self, chunks: list, overlap_frames: int) -> np.ndarray:
         """
-        使用交叉淡入淡出拼接音频块
+        使用 SOLA (Synchronized Overlap-Add) 拼接音频块
+
+        SOLA 通过在重叠区域搜索最佳相位对齐点来避免分块边界的撕裂伪影。
+        参考: w-okada/voice-changer Issue #163, DDSP-SVC 实现
 
         Args:
             chunks: 音频块列表
@@ -859,10 +1042,10 @@ class VoiceConversionPipeline:
         output_sr = getattr(self, 'output_sr', 40000)
 
         # 每个特征帧对应的输出样本数
-        samples_per_frame = int(HOP_LENGTH * output_sr / INPUT_SR)  # 16kHz->40kHz: 800, 16kHz->48kHz: 960
+        samples_per_frame = int(HOP_LENGTH * output_sr / INPUT_SR)
         overlap_samples = overlap_frames * samples_per_frame
 
-        log.debug(f"Crossfade: overlap_frames={overlap_frames}, samples_per_frame={samples_per_frame}, overlap_samples={overlap_samples}")
+        log.debug(f"SOLA Crossfade: overlap_frames={overlap_frames}, samples_per_frame={samples_per_frame}, overlap_samples={overlap_samples}")
 
         result = chunks[0]
 
@@ -873,20 +1056,85 @@ class VoiceConversionPipeline:
             actual_overlap = min(overlap_samples, len(result), len(chunk))
 
             if actual_overlap > 0:
-                # 创建淡入淡出曲线
-                fade_out = np.linspace(1, 0, actual_overlap)
-                fade_in = np.linspace(0, 1, actual_overlap)
+                # SOLA: 在重叠区域搜索最佳相位对齐点
+                # 搜索范围：不超过一个基频周期（约 100-200 样本 @ 48kHz）
+                search_range = min(int(output_sr * 0.005), actual_overlap // 4)  # 5ms 或 1/4 重叠
 
-                # 应用交叉淡入淡出
-                result_end = result[-actual_overlap:] * fade_out
-                chunk_start = chunk[:actual_overlap] * fade_in
+                # 提取前一块的尾部作为参考
+                reference = result[-actual_overlap:]
 
-                # 拼接
-                result = np.concatenate([
-                    result[:-actual_overlap],
-                    result_end + chunk_start,
-                    chunk[actual_overlap:]
-                ])
+                # 在新块的开头搜索最佳对齐位置
+                best_offset = 0
+                max_correlation = -1.0
+
+                for offset in range(max(0, -search_range), min(search_range + 1, len(chunk) - actual_overlap + 1)):
+                    # 提取候选区域
+                    candidate_start = max(0, offset)
+                    candidate_end = candidate_start + actual_overlap
+
+                    if candidate_end > len(chunk):
+                        continue
+
+                    candidate = chunk[candidate_start:candidate_end]
+
+                    # 计算归一化互相关
+                    ref_norm = np.linalg.norm(reference)
+                    cand_norm = np.linalg.norm(candidate)
+
+                    if ref_norm > 1e-6 and cand_norm > 1e-6:
+                        correlation = np.dot(reference, candidate) / (ref_norm * cand_norm)
+
+                        if correlation > max_correlation:
+                            max_correlation = correlation
+                            best_offset = offset
+
+                log.debug(f"SOLA chunk {i}: best_offset={best_offset}, correlation={max_correlation:.4f}")
+
+                # 如果相关性太低（<0.3），说明信号不连续，使用简单crossfade避免伪影
+                if max_correlation < 0.3:
+                    log.debug(f"SOLA chunk {i}: low correlation, using simple crossfade")
+                    fade_out = np.linspace(1, 0, actual_overlap)
+                    fade_in = np.linspace(0, 1, actual_overlap)
+                    result_end = result[-actual_overlap:] * fade_out
+                    chunk_start = chunk[:actual_overlap] * fade_in
+                    result = np.concatenate([
+                        result[:-actual_overlap],
+                        result_end + chunk_start,
+                        chunk[actual_overlap:]
+                    ])
+                    continue
+
+                # 在最佳对齐点应用交叉淡入淡出
+                aligned_start = max(0, best_offset)
+                aligned_end = aligned_start + actual_overlap
+
+                if aligned_end <= len(chunk):
+                    # 创建淡入淡出曲线（使用余弦窗以获得更平滑的过渡）
+                    fade_out = np.cos(np.linspace(0, np.pi / 2, actual_overlap)) ** 2
+                    fade_in = np.sin(np.linspace(0, np.pi / 2, actual_overlap)) ** 2
+
+                    # 应用交叉淡入淡出
+                    result_end = result[-actual_overlap:] * fade_out
+                    chunk_aligned = chunk[aligned_start:aligned_end] * fade_in
+
+                    # 拼接
+                    result = np.concatenate([
+                        result[:-actual_overlap],
+                        result_end + chunk_aligned,
+                        chunk[aligned_end:]
+                    ])
+                else:
+                    # 对齐失败，回退到简单拼接
+                    log.warning(f"SOLA alignment failed for chunk {i}, using simple crossfade")
+                    fade_out = np.linspace(1, 0, actual_overlap)
+                    fade_in = np.linspace(0, 1, actual_overlap)
+                    result_end = result[-actual_overlap:] * fade_out
+                    chunk_start = chunk[:actual_overlap] * fade_in
+                    result = np.concatenate([
+                        result[:-actual_overlap],
+                        result_end + chunk_start,
+                        chunk[actual_overlap:]
+                    ])
             else:
                 # 无重叠，直接拼接
                 result = np.concatenate([result, chunk])

@@ -1,0 +1,20 @@
+{
+  "name": "平衡型配置",
+  "description": "适合大多数歌曲，在音色转换和清晰度之间取得平衡",
+  "cover": {
+    "index_rate": 0.50,
+    "filter_radius": 3,
+    "rms_mix_rate": 0.50,
+    "protect": 0.40,
+    "f0_method": "hybrid",
+    "rmvpe_threshold": 0.005,
+    "f0_min": 80,
+    "f0_max": 1600,
+    "f0_stabilize": true,
+    "f0_stabilize_window": 3,
+    "f0_stabilize_max_semitones": 3.0,
+    "vc_preprocess_mode": "uvr_deecho",
+    "source_constraint_mode": "on",
+    "uvr5_agg": 10
+  }
+}

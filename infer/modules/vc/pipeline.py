@@ -50,7 +50,6 @@ def cache_harvest_f0(input_audio_path, fs, f0max, f0min, frame_period):
 
 
 def change_rms(data1, sr1, data2, sr2, rate):  # 1是输入音频，2是输出音频,rate是2的占比
-    # print(data1.max(),data2.max())
     rms1 = librosa.feature.rms(
         y=data1, frame_length=sr1 // 2 * 2, hop_length=sr1 // 2
     )  # 每半秒一个点
@@ -65,7 +64,9 @@ def change_rms(data1, sr1, data2, sr2, rate):  # 1是输入音频，2是输出�
     ).squeeze()
     rms2 = torch.max(rms2, torch.zeros_like(rms2) + 1e-6)
     gain = torch.pow(rms1, torch.tensor(1 - rate)) * torch.pow(rms2, torch.tensor(rate - 1))
-    gain = torch.clamp(gain, 0.2, 4.0)
+    # Reduced upper clamp: 4.0x over-amplifies noise in quiet sections,
+    # producing buzzy/electronic artifacts. 2.0x is sufficient for RMS matching.
+    gain = torch.clamp(gain, 0.3, 2.0)
     data2 *= gain.numpy()
     return data2
 
@@ -118,6 +119,54 @@ def repair_f0(
             f0[run_start : run_end + 1] = interp[run_start : run_end + 1]
 
     return f0
+
+
+def _normalize_rmvpe_hybrid_mode(mode: Optional[str]) -> str:
+    """Normalize user-facing hybrid mode aliases to internal fallback modes."""
+    normalized = str(mode or "off").strip().lower()
+    if normalized in {"", "off", "none", "strict", "official", "rmvpe_strict", "rmvpe-strict", "raw", "rmvpe"}:
+        return "off"
+    if normalized in {
+        "fallback",
+        "smart",
+        "rmvpe+fallback",
+        "rmvpe_fallback",
+        "rmvpe-fallback",
+        "hybrid_fallback",
+        "hybrid-fallback",
+        "hybrid",
+        "auto",
+        "harvest",
+        "harvest_fallback",
+        "harvest-fallback",
+    }:
+        return "fallback"
+    return normalized
+
+
+def _build_protect_mix_curve(pitchf: torch.Tensor, protect: float) -> torch.Tensor:
+    """Create a smooth protect curve for voiced/unvoiced transitions."""
+    protect = float(np.clip(protect, 0.0, 1.0))
+    if protect >= 1.0:
+        return torch.ones_like(pitchf, dtype=torch.float32)
+
+    voiced = (pitchf > 0).detach().float().cpu().numpy()
+    if voiced.ndim == 2:
+        voiced_curve = voiced[0]
+    else:
+        voiced_curve = voiced.reshape(-1)
+
+    smooth_kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
+    smooth_kernel /= np.sum(smooth_kernel)
+    voiced_curve = np.convolve(voiced_curve, smooth_kernel, mode="same")
+    voiced_curve = np.convolve(voiced_curve, smooth_kernel, mode="same")
+    voiced_curve = np.clip(voiced_curve, 0.0, 1.0)
+
+    mix_curve = protect + (1.0 - protect) * voiced_curve
+    mix_curve = torch.from_numpy(mix_curve.astype(np.float32)).to(pitchf.device)
+    if pitchf.ndim == 2:
+        mix_curve = mix_curve.unsqueeze(0)
+    return mix_curve
 
 
 def _compute_energy_mask(
@@ -299,7 +348,9 @@ class Pipeline(object):
             self.f0_max = max(self.f0_min + 1.0, 1100.0)
         self.rmvpe_threshold = float(getattr(config, "rmvpe_threshold", 0.02))
         self.f0_energy_threshold_db = float(getattr(config, "f0_energy_threshold_db", -50))
-        self.f0_hybrid_mode = str(getattr(config, "f0_hybrid_mode", "off")).strip().lower()
+        self.f0_hybrid_mode = _normalize_rmvpe_hybrid_mode(
+            getattr(config, "f0_hybrid_mode", "off")
+        )
         self.rmvpe_strict_modes = {
             "",
             "off",
@@ -321,6 +372,12 @@ class Pipeline(object):
         self.crepe_pd_threshold = float(getattr(config, "crepe_pd_threshold", 0.1))
         self.crepe_force_ratio = float(getattr(config, "crepe_force_ratio", 0.05))
         self.crepe_replace_semitones = float(getattr(config, "crepe_replace_semitones", 0.0))
+        self.f0_fallback_context_radius = int(getattr(config, "f0_fallback_context_radius", 24))
+        self.f0_fallback_repair_gap = int(getattr(config, "f0_fallback_repair_gap", 12))
+        self.f0_fallback_post_gap = int(getattr(config, "f0_fallback_post_gap", 10))
+        self.f0_fallback_use_crepe = bool(getattr(config, "f0_fallback_use_crepe", True))
+        self.f0_fallback_crepe_max_ratio = float(getattr(config, "f0_fallback_crepe_max_ratio", 0.02))
+        self.f0_fallback_crepe_max_frames = int(getattr(config, "f0_fallback_crepe_max_frames", 320))
         self.f0_stabilize = bool(getattr(config, "f0_stabilize", False))
         self.f0_stabilize_window = int(getattr(config, "f0_stabilize_window", 2))
         self.f0_stabilize_max_semitones = float(
@@ -337,6 +394,16 @@ class Pipeline(object):
             self.crepe_pd_threshold = 0.0
         if self.crepe_replace_semitones < 0:
             self.crepe_replace_semitones = 0.0
+        if self.f0_fallback_context_radius < 1:
+            self.f0_fallback_context_radius = 1
+        if self.f0_fallback_repair_gap < 0:
+            self.f0_fallback_repair_gap = 0
+        if self.f0_fallback_post_gap < 0:
+            self.f0_fallback_post_gap = 0
+        if self.f0_fallback_crepe_max_ratio < 0:
+            self.f0_fallback_crepe_max_ratio = 0.0
+        if self.f0_fallback_crepe_max_frames < 0:
+            self.f0_fallback_crepe_max_frames = 0
         if self.f0_stabilize_window < 1:
             self.f0_stabilize_window = 1
         if self.f0_stabilize_max_semitones < 0:
@@ -353,6 +420,13 @@ class Pipeline(object):
             log.detail(
                 f"F0混合: {self.f0_hybrid_mode}, CREPE阈值: {self.crepe_pd_threshold}, "
                 f"强制比率: {self.crepe_force_ratio}, 替换阈值(半音): {self.crepe_replace_semitones}"
+            )
+            log.detail(
+                f"F0兜底: 上下文半径={self.f0_fallback_context_radius}, "
+                f"预修补长度={self.f0_fallback_repair_gap}, 后修补长度={self.f0_fallback_post_gap}, "
+                f"CREPE兜底={self.f0_fallback_use_crepe}, "
+                f"CREPE最大占比={self.f0_fallback_crepe_max_ratio:.2%}, "
+                f"CREPE最大帧数={self.f0_fallback_crepe_max_frames}"
             )
             log.detail(
                 "RMVPE兜底: "
@@ -391,6 +465,16 @@ class Pipeline(object):
             log.progress(f"提取F0: 方法={f0_method}")
             log.detail(f"时间步长: {time_step:.2f}ms, F0范围: {f0_min}-{f0_max}Hz")
             log.detail(f"音频长度: {len(x)} 样本, p_len: {p_len}")
+
+        # 将hybrid映射到rmvpe+crepe模式
+        if f0_method == "hybrid":
+            f0_method = "rmvpe"
+            # 临时设置hybrid模式
+            original_hybrid_mode = self.f0_hybrid_mode
+            self.f0_hybrid_mode = "rmvpe+crepe"
+            restore_hybrid_mode = True
+        else:
+            restore_hybrid_mode = False
 
         if f0_method == "pm":
             if log:
@@ -582,7 +666,11 @@ class Pipeline(object):
                     energy_mask = None
 
                 # Repair short unvoiced gaps only when fallback mode is explicitly enabled.
-                f0 = repair_f0(f0, max_gap=12, mask=energy_mask)
+                f0 = repair_f0(
+                    f0,
+                    max_gap=self.f0_fallback_repair_gap,
+                    mask=energy_mask,
+                )
 
                 # Conservative F0 fallback:
                 # only fill dropouts that are surrounded by voiced context.
@@ -594,7 +682,7 @@ class Pipeline(object):
                         left_seen = np.maximum.accumulate(left_seen)
                         right_seen = np.where(voiced_seed, idx, 10**9)
                         right_seen = np.minimum.accumulate(right_seen[::-1])[::-1]
-                        context_radius = 24
+                        context_radius = self.f0_fallback_context_radius
                         left_near = (idx - left_seen) <= context_radius
                         right_near = (right_seen - idx) <= context_radius
                         voiced_context = left_near & right_near
@@ -620,7 +708,17 @@ class Pipeline(object):
                         f0[fill_mask] = f0_fb[fill_mask]
 
                         need_fill2 = (f0 <= 0) & energy_mask & voiced_context
-                        if np.any(need_fill2):
+                        need_fill2_count = int(np.sum(need_fill2))
+                        need_fill2_ratio = float(need_fill2_count) / max(len(f0), 1)
+                        if np.any(need_fill2) and self.f0_fallback_use_crepe:
+                            allow_crepe_fallback = (
+                                need_fill2_count <= self.f0_fallback_crepe_max_frames
+                                and need_fill2_ratio <= self.f0_fallback_crepe_max_ratio
+                            )
+                        else:
+                            allow_crepe_fallback = False
+
+                        if np.any(need_fill2) and allow_crepe_fallback:
                             if log:
                                 log.detail(
                                     f"Harvest后仍掉线(主唱上下文): {int(need_fill2.sum())}/{len(f0)}，启用CREPE兜底"
@@ -652,6 +750,11 @@ class Pipeline(object):
                                 ((f0_cr > 0) & (f0_fb <= 0)) | agree_mask
                             )
                             f0[fill_mask2] = f0_cr[fill_mask2]
+                        elif np.any(need_fill2) and log:
+                            log.detail(
+                                f"Harvest后仍掉线(主唱上下文): {need_fill2_count}/{len(f0)}，"
+                                "已跳过CREPE兜底（超出保守阈值）"
+                            )
 
                         final_drop = (f0 <= 0) & energy_mask & voiced_context
                         if np.any(final_drop) and log:
@@ -660,7 +763,11 @@ class Pipeline(object):
                             )
 
                         # Only smooth short, context-consistent gaps.
-                        f0 = repair_f0(f0, max_gap=10, mask=voiced_context)
+                        f0 = repair_f0(
+                            f0,
+                            max_gap=self.f0_fallback_post_gap,
+                            mask=voiced_context,
+                        )
             elif f0_method == "rmvpe" and log:
                 log.detail("RMVPE严格模式: 不启用Harvest/CREPE兜底，仅使用RMVPE原始结果")
 
@@ -696,6 +803,10 @@ class Pipeline(object):
 
         if log:
             log.detail(f"F0处理完成: coarse shape={f0_coarse.shape}, bak shape={f0bak.shape}")
+
+        # 恢复原始hybrid模式设置
+        if restore_hybrid_mode:
+            self.f0_hybrid_mode = original_hybrid_mode
 
         return f0_coarse, f0bak
 
@@ -791,15 +902,13 @@ class Pipeline(object):
         if protect < 0.5 and pitch is not None and pitchf is not None:
             if log:
                 log.detail(f"应用保护: protect={protect}")
-            pitchff = pitchf.clone()
-            pitchff[pitchf > 0] = 1
-            pitchff[pitchf < 1] = protect
-            pitchff = pitchff.unsqueeze(-1)
+            pitchff = _build_protect_mix_curve(pitchf, protect).unsqueeze(-1)
             feats = feats * pitchff + feats0 * (1 - pitchff)
             feats = feats.to(feats0.dtype)
         p_len = torch.tensor([p_len], device=self.device).long()
 
-        # --- 能量感知硬门控（所有特征操作完成后、推理前）---
+        # --- 能量感知软门控（所有特征操作完成后、推理前）---
+        # 使用连续衰减曲线代替硬二值化，避免静音/有声边界的撕裂伪影。
         _p_len_val = p_len.item() if isinstance(p_len, torch.Tensor) else int(p_len)
         _audio_np = audio0.astype(np.float32)
         _frame_rms = librosa.feature.rms(
@@ -807,25 +916,28 @@ class Pipeline(object):
         )[0]
         if _frame_rms.ndim > 1:
             _frame_rms = _frame_rms[0]
-        # 对齐到 _p_len_val
         if len(_frame_rms) > _p_len_val:
             _frame_rms = _frame_rms[:_p_len_val]
         elif len(_frame_rms) < _p_len_val:
             _frame_rms = np.pad(_frame_rms, (0, _p_len_val - len(_frame_rms)), mode='edge')
 
         _energy_db = 20.0 * np.log10(_frame_rms + 1e-8)
-        # 使用全局 ref_db（从 pipeline() 传入），避免分段内相对阈值漂移
         _ref = energy_ref_db if energy_ref_db is not None else float(np.percentile(_energy_db, 95))
-        # 硬门控：只有低于 ref-45dB 的真正静默帧被清零，正常帧完全不衰减
-        _silence_threshold = _ref - 45.0
-        _energy_gate = (_energy_db > _silence_threshold).astype(np.float32)
-        # 平滑边界避免咔嗒声，然后重新二值化
+        # Soft gate: sigmoid curve centered at ref-45dB with 6dB transition width.
+        # Frames well above threshold → gain≈1; frames well below → gain≈0.05
+        # (keep a small floor to avoid zero-feature shock to the network).
+        _silence_center = _ref - 45.0
+        _transition_width = 6.0  # dB for the sigmoid ramp
+        _energy_gate = 1.0 / (1.0 + np.exp(-(_energy_db - _silence_center) / (_transition_width / 4.0)))
+        # Apply floor: never fully zero features (network handles near-zero better than hard zero)
+        _energy_gate = np.clip(_energy_gate, 0.05, 1.0)
+        # Smooth temporally
         _sm = np.array([1, 2, 3, 2, 1], dtype=np.float32)
         _sm /= _sm.sum()
         _energy_gate = np.convolve(_energy_gate, _sm, mode='same')[:_p_len_val]
-        _energy_gate = (_energy_gate > 0.5).astype(np.float32)
+        _energy_gate = np.clip(_energy_gate, 0.05, 1.0)
 
-        # 遮蔽特征（仅静默帧清零）
+        # Apply soft gate to features
         _feat_len = feats.shape[1]
         if len(_energy_gate) > _feat_len:
             _feat_gate = _energy_gate[:_feat_len]
@@ -833,10 +945,10 @@ class Pipeline(object):
             _feat_gate = np.pad(_energy_gate, (0, _feat_len - len(_energy_gate)), mode='constant', constant_values=1.0)
         else:
             _feat_gate = _energy_gate
-        _gate_t = torch.from_numpy(_feat_gate).to(feats.device).float().unsqueeze(0).unsqueeze(-1)
+        _gate_t = torch.from_numpy(_feat_gate.astype(np.float32)).to(feats.device).unsqueeze(0).unsqueeze(-1)
         feats = feats * _gate_t
 
-        # F0 硬清零：静默帧 pitch→1（官方静音 bin），pitchf→0.0
+        # F0 soft gating: consistently soft-attenuate both pitch confidence and pitch value
         if pitch is not None and pitchf is not None:
             _pitch_len = pitch.shape[1]
             if len(_energy_gate) > _pitch_len:
@@ -845,10 +957,12 @@ class Pipeline(object):
                 _f0_gate = np.pad(_energy_gate, (0, _pitch_len - len(_energy_gate)), mode='constant', constant_values=1.0)
             else:
                 _f0_gate = _energy_gate
-            _f0_gate_t = torch.from_numpy(_f0_gate).to(pitch.device).float().unsqueeze(0)
+            _f0_gate_t = torch.from_numpy(_f0_gate.astype(np.float32)).to(pitch.device).unsqueeze(0)
             pitchf = pitchf * _f0_gate_t
+            # Soft-blend pitch toward silence bin (1) instead of hard switch
             _silence_pitch = torch.ones_like(pitch)
-            pitch = torch.where(_f0_gate_t.long() > 0, pitch, _silence_pitch)
+            _blend = _f0_gate_t.unsqueeze(-1) if _f0_gate_t.dim() < pitch.dim() else _f0_gate_t
+            pitch = (pitch.float() * _blend + _silence_pitch.float() * (1.0 - _blend)).long()
 
         if log:
             log.detail("执行神经网络推理...")
@@ -1022,96 +1136,120 @@ class Pipeline(object):
         if log:
             log.detail(f"F0提取耗时: {t2-t1:.3f}s")
 
-        # 分段推理
+        # 分段推理（带交叉淡入淡出消除边界撕裂）
         segment_count = len(opt_ts) + 1
         current_segment = 0
 
-        for t in opt_ts:
+        # Crossfade length at target rate (~12ms). Each boundary segment
+        # keeps this many extra samples from the normally-trimmed padding
+        # region. The overlap between adjacent segments is 2 * _xfade_tgt.
+        _xfade_tgt = min(int(0.012 * tgt_sr), self.t_pad_tgt // 4) if len(opt_ts) > 0 else 0
+
+        def _trim_segment(raw, is_first, is_last):
+            """Trim padding from vc() output, keeping crossfade overlap."""
+            left = self.t_pad_tgt if is_first else (self.t_pad_tgt - _xfade_tgt)
+            right = self.t_pad_tgt if is_last else (self.t_pad_tgt - _xfade_tgt)
+            return raw[left : -right] if right > 0 else raw[left:]
+
+        for idx, t in enumerate(opt_ts):
             current_segment += 1
             if log:
                 log.progress(f"处理分段 {current_segment}/{segment_count}...")
             t = t // self.window * self.window
             if if_f0 == 1:
-                audio_opt.append(
-                    self.vc(
-                        model,
-                        net_g,
-                        sid,
-                        audio_pad[s : t + self.t_pad2 + self.window],
-                        pitch[:, s // self.window : (t + self.t_pad2) // self.window],
-                        pitchf[:, s // self.window : (t + self.t_pad2) // self.window],
-                        times,
-                        index,
-                        big_npy,
-                        index_rate,
-                        version,
-                        protect,
-                        energy_ref_db=_global_ref_db,
-                    )[self.t_pad_tgt : -self.t_pad_tgt]
+                raw = self.vc(
+                    model,
+                    net_g,
+                    sid,
+                    audio_pad[s : t + self.t_pad2 + self.window],
+                    pitch[:, s // self.window : (t + self.t_pad2) // self.window],
+                    pitchf[:, s // self.window : (t + self.t_pad2) // self.window],
+                    times,
+                    index,
+                    big_npy,
+                    index_rate,
+                    version,
+                    protect,
+                    energy_ref_db=_global_ref_db,
                 )
             else:
-                audio_opt.append(
-                    self.vc(
-                        model,
-                        net_g,
-                        sid,
-                        audio_pad[s : t + self.t_pad2 + self.window],
-                        None,
-                        None,
-                        times,
-                        index,
-                        big_npy,
-                        index_rate,
-                        version,
-                        protect,
-                        energy_ref_db=_global_ref_db,
-                    )[self.t_pad_tgt : -self.t_pad_tgt]
+                raw = self.vc(
+                    model,
+                    net_g,
+                    sid,
+                    audio_pad[s : t + self.t_pad2 + self.window],
+                    None,
+                    None,
+                    times,
+                    index,
+                    big_npy,
+                    index_rate,
+                    version,
+                    protect,
+                    energy_ref_db=_global_ref_db,
                 )
+            audio_opt.append(_trim_segment(raw, is_first=(idx == 0), is_last=False))
             s = t
 
         # 最后一段
         if log:
             log.progress(f"处理分段 {segment_count}/{segment_count}...")
         if if_f0 == 1:
-            audio_opt.append(
-                self.vc(
-                    model,
-                    net_g,
-                    sid,
-                    audio_pad[t:],
-                    pitch[:, t // self.window :] if t is not None else pitch,
-                    pitchf[:, t // self.window :] if t is not None else pitchf,
-                    times,
-                    index,
-                    big_npy,
-                    index_rate,
-                    version,
-                    protect,
-                    energy_ref_db=_global_ref_db,
-                )[self.t_pad_tgt : -self.t_pad_tgt]
+            raw = self.vc(
+                model,
+                net_g,
+                sid,
+                audio_pad[t:],
+                pitch[:, t // self.window :] if t is not None else pitch,
+                pitchf[:, t // self.window :] if t is not None else pitchf,
+                times,
+                index,
+                big_npy,
+                index_rate,
+                version,
+                protect,
+                energy_ref_db=_global_ref_db,
             )
         else:
-            audio_opt.append(
-                self.vc(
-                    model,
-                    net_g,
-                    sid,
-                    audio_pad[t:],
-                    None,
-                    None,
-                    times,
-                    index,
-                    big_npy,
-                    index_rate,
-                    version,
-                    protect,
-                    energy_ref_db=_global_ref_db,
-                )[self.t_pad_tgt : -self.t_pad_tgt]
+            raw = self.vc(
+                model,
+                net_g,
+                sid,
+                audio_pad[t:],
+                None,
+                None,
+                times,
+                index,
+                big_npy,
+                index_rate,
+                version,
+                protect,
+                energy_ref_db=_global_ref_db,
             )
+        audio_opt.append(_trim_segment(raw, is_first=(len(opt_ts) == 0), is_last=True))
 
         if log:
             log.detail("合并音频分段...")
-        audio_opt = np.concatenate(audio_opt)
+
+        # Overlap-add crossfade: adjacent segments share 2*_xfade_tgt
+        # samples of overlapping content (same original audio region
+        # processed as part of different chunks). Linear crossfade
+        # ensures amplitude-preserving smooth transition.
+        if len(audio_opt) > 1 and _xfade_tgt > 0:
+            overlap = 2 * _xfade_tgt
+            result = audio_opt[0]
+            for seg in audio_opt[1:]:
+                xf = min(overlap, len(result), len(seg))
+                if xf > 1:
+                    fade_out = np.linspace(1.0, 0.0, xf, dtype=np.float32)
+                    fade_in = 1.0 - fade_out
+                    blended = result[-xf:] * fade_out + seg[:xf] * fade_in
+                    result = np.concatenate([result[:-xf], blended, seg[xf:]])
+                else:
+                    result = np.concatenate([result, seg])
+            audio_opt = result
+        else:
+            audio_opt = np.concatenate(audio_opt) if audio_opt else np.array([], dtype=np.float32)
 
         if rms_mix_rate != 1:
             if log:

@@ -1,0 +1,20 @@
+{
+  "name": "音色优先配置",
+  "description": "彻底的音色转换，适合音色特征明显的角色，可能有轻微口齿模糊",
+  "cover": {
+    "index_rate": 0.80,
+    "filter_radius": 5,
+    "rms_mix_rate": 0.30,
+    "protect": 0.25,
+    "f0_method": "hybrid",
+    "rmvpe_threshold": 0.003,
+    "f0_min": 80,
+    "f0_max": 1800,
+    "f0_stabilize": true,
+    "f0_stabilize_window": 5,
+    "f0_stabilize_max_semitones": 4.0,
+    "vc_preprocess_mode": "uvr_deecho",
+    "source_constraint_mode": "on",
+    "uvr5_agg": 12
+  }
+}

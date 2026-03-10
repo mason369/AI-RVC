@@ -1,13 +1,11 @@
 {
   "app_title": "RVC AI 翻唱",
   "app_description": "基于 RVC v2 的 AI 翻唱系统",
-
   "tabs": {
     "models": "模型管理",
     "cover": "歌曲翻唱",
     "settings": "设置"
   },
-
   "conversion": {
     "model_settings": "模型设置",
     "select_model": "选择模型",
@@ -33,7 +31,6 @@
     "conversion_result": "转换结果",
     "conversion_status": "转换状态"
   },
-
   "cover": {
     "song_cover": "AI 歌曲翻唱",
     "cover_description": "上传歌曲，选择角色，一键生成 AI 翻唱。系统会自动分离人声、转换音色、混合伴奏。",
@@ -76,9 +73,27 @@
     "accompaniment": "伴奏",
     "download_character": "下载角色模型",
     "select_to_download": "选择要下载的角色",
-    "download": "下载"
+    "download": "下载",
+    "vc_preprocess_mode": "VC预处理策略",
+    "vc_preprocess_mode_info": "参考成熟项目：优先学习型 DeEcho/DeReverb，否则主唱直通 RVC",
+    "vc_preprocess_auto": "自动(推荐)",
+    "vc_preprocess_direct": "主唱直通",
+    "vc_preprocess_uvr_deecho": "官方DeEcho优先",
+    "vc_preprocess_legacy": "旧版手工链",
+    "source_constraint_mode": "源约束策略",
+    "source_constraint_mode_info": "自动(推荐)下仅旧版手工链启用；学习型 DeEcho 或主唱直通默认不再追加自定义源约束",
+    "source_constraint_auto": "自动(推荐)",
+    "source_constraint_off": "关闭",
+    "source_constraint_on": "始终开启",
+    "vc_preprocess_status": "当前VC预处理路由",
+    "vc_preprocess_status_info": "显示本机当前自动模式会走的实际路径",
+    "vc_pipeline_mode": "VC管线模式",
+    "vc_pipeline_mode_info": "当前实现保留本项目现有链路；官方实现会直接调用内置官方 RVC，并跳过自定义 VC 前后处理",
+    "vc_pipeline_mode_current": "当前实现（推荐）",
+    "vc_pipeline_mode_official": "官方实现（一比一）",
+    "singing_repair": "唱歌修复",
+    "singing_repair_info": "用于高音断音、撕裂、电音、齿音；开启后会退出严格一比一，改用官方兼容修复链（FP32 + 混合F0 + F0稳定/限速）"
   },
-
   "models": {
     "base_models": "基础模型",
     "base_models_desc": "这些模型是运行 RVC 所必需的，首次使用前需要下载。",
@@ -86,16 +101,19 @@
     "download_required": "下载必需模型",
     "model_status": "模型状态",
     "voice_models": "语音模型",
-    "voice_models_desc": "将 .pth 模型文件放入 assets/weights/ 目录，然后刷新模型列表。"
+    "voice_models_desc": "将 .pth 模型文件放入 assets/weights/ 目录，然后刷新模型列表。",
+    "mature_deecho_models": "成熟 DeEcho 模型",
+    "mature_deecho_models_desc": "用于成熟项目常见的学习型去回声/去混响流程。未下载时，翻唱页的自动模式会回退为主唱直通 RVC。",
+    "download_mature_deecho": "下载成熟 DeEcho 模型",
+    "mature_deecho_status": "成熟 DeEcho 状态",
+    "mature_deecho_check": "检查成熟 DeEcho 状态"
   },
-
   "settings": {
     "device_info": "设备信息",
     "current_device": "当前设备",
     "refresh_device": "刷新设备信息",
     "about": "关于"
   },
-
   "messages": {
     "model_loaded": "模型已加载",
     "model_not_found": "找不到模型",
