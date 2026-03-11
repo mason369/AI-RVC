@@ -26,7 +26,7 @@ jobs:
       run: |
         python -m pip install --upgrade "pip<24.1"
         pip install pyinstaller
-        pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+        pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
         pip install omegaconf==2.0.6 --no-deps
         pip install PyYAML antlr4-python3-runtime hydra-core
         pip install fairseq==0.12.2 --no-deps
@@ -115,7 +115,7 @@ jobs:
       run: |
         python -m pip install --upgrade "pip<24.1"
         pip install pyinstaller
-        pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+        pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
         pip install omegaconf==2.0.6 --no-deps
         pip install PyYAML antlr4-python3-runtime hydra-core
         pip install fairseq==0.12.2 --no-deps
