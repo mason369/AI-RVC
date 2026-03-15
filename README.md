@@ -58,7 +58,8 @@
 - ✅ 无需安装 Python 和依赖
 - ✅ 开箱即用，双击启动
 - ✅ 包含所有必需模型
-- ✅ 支持 GPU 加速（CUDA/ROCm）
+- ⚠️ 仅支持 CPU 推理（构建时使用 CPU 版 PyTorch 以控制包体积）
+- 💡 如需 GPU 加速，请使用方式 4 本地安装（`python install.py`）
 - ⚠️ 首次启动需要 5-10 分钟下载模型
 
 ### 方式 2：Google Colab（推荐临时使用）
