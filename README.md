@@ -33,7 +33,7 @@
 
 ### Google Colab（推荐新手）
 
-1. 打开 Colab notebook：[AI_RVC_Colab.ipynb](./AI_RVC_Colab.ipynb)
+1. 打开 Colab notebook：[AI_RVC_Colab.ipynb](https://colab.research.google.com/github/mason369/AI-RVC/blob/master/AI_RVC_Colab.ipynb)
 2. 点击「在 Colab 中打开」
 3. 确保运行时类型设置为 **GPU**（菜单栏 → 代码执行程序 → 更改运行时类型 → T4 GPU）
 4. 按顺序执行每个单元格
