@@ -134,7 +134,11 @@ python3.10 install.py --cpu
 - 无参数：完整安装 + 自动启动
 - `--check`：仅检查环境和依赖，不安装
 - `--cpu`：安装 CPU 版本 PyTorch（无 GPU 加速）
-- `--no-run`：安装完成后不自动启动（需要手动运行 `python run.py`）
+- `--no-run`：安装完成后不自动启动
+
+> 脚本会自动创建 `venv310` 虚拟环境并在其中安装所有依赖。安装后手动启动请使用虚拟环境中的 Python：
+> - Windows：`venv310\Scripts\python run.py`
+> - Linux：`venv310/bin/python run.py`
 
 访问 http://127.0.0.1:7860 打开界面。
 
