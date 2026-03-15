@@ -1,6 +1,6 @@
-# RVC v2 语音转换 & AI 翻唱
+# AI-RVC 一键 AI 翻唱
 
-基于 RVC v2 + RMVPE 的高质量语音转换系统，支持一键 AI 翻唱功能。
+基于 RVC v2 的一键 AI 翻唱系统，自动完成人声分离、音色转换、混音合成全流程。
 
 **平台支持：Windows / Linux / WSL2**
 
@@ -10,7 +10,7 @@
 
 - **AI 歌曲翻唱**：上传歌曲自动分离人声、转换音色、混合伴奏，一键生成翻唱
 - **人声分离**：默认 Mel-Band Roformer (KimberleyJensen)，在 MVSEP 公开 Multisong 指标中为 Vocals SDR 11.01 / Instrum SDR 17.32；可选 UVR5、Demucs
-- **语音转换**：RVC v2 架构 + 官方 VC 管道，适配角色模型 + FAISS 检索增强流程
+- **音色转换**：RVC v2 架构 + 官方 VC 管道，适配角色模型 + FAISS 检索增强流程
 - **RMVPE 音高提取**：按 RMVPE 论文报告，在公开基准上优于 CREPE / pYIN / SWIPE 等基线并具备更好噪声鲁棒性
 - **角色模型**：内置可下载角色清单 117 项（以 `tools/character_models.py` 为准）
 - **混音效果**：支持人声混响、音量调节、原声混合
@@ -273,13 +273,6 @@ python run.py
 - 自动刷新列表
 - 支持按系列筛选和关键词搜索
 - 点击「刷新」按钮手动更新
-
-### 语音转换
-
-1. 将 RVC 模型（`.pth`）放入 `assets/weights/` 目录
-2. 点击「刷新」加载模型
-3. 上传纯人声音频
-4. 选择模型，调整参数，点击「开始转换」
 
 ## 支持的格式
 
