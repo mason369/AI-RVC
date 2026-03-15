@@ -117,14 +117,49 @@ def check_package(venv_py, import_name):
     return r.returncode == 0
 
 
-def pip_install(venv_py, package, extra=""):
+def detect_cuda_version():
+    """检测系统 CUDA 版本，返回对应的 PyTorch index-url"""
+    try:
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0:
+            # nvidia-smi 存在，尝试获取 CUDA 版本
+            r2 = subprocess.run(
+                ["nvidia-smi"],
+                capture_output=True, text=True, timeout=10,
+            )
+            output = r2.stdout
+            # 从 nvidia-smi 输出中提取 CUDA Version
+            import re
+            match = re.search(r"CUDA Version:\s*(\d+)\.(\d+)", output)
+            if match:
+                major, minor = int(match.group(1)), int(match.group(2))
+                if major >= 12 and minor >= 6:
+                    return "https://download.pytorch.org/whl/cu126"
+                elif major >= 12 and minor >= 4:
+                    return "https://download.pytorch.org/whl/cu124"
+                elif major >= 12 and minor >= 1:
+                    return "https://download.pytorch.org/whl/cu121"
+                elif major >= 11 and minor >= 8:
+                    return "https://download.pytorch.org/whl/cu118"
+                else:
+                    # CUDA 版本太旧，回退 CPU
+                    return None
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def pip_install(venv_py, package, extra="", index_url=None):
     """用虚拟环境的 pip 安装包"""
     target = f"{package}[{extra}]" if extra else package
     print(f"  安装 {target} ...")
-    r = subprocess.run(
-        [venv_py, "-m", "pip", "install", target],
-        capture_output=True, text=True,
-    )
+    cmd = [venv_py, "-m", "pip", "install", target]
+    if index_url:
+        cmd.extend(["--index-url", index_url])
+    r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         print(f"  [失败] {target}")
         lines = r.stderr.strip().splitlines()
@@ -163,11 +198,25 @@ def install_all(venv_py, gpu=True):
         print("\n无需安装，所有依赖已就绪。")
         return True
 
+    # 检测 CUDA 版本
+    cuda_index_url = None
+    if gpu:
+        cuda_index_url = detect_cuda_version()
+        if cuda_index_url:
+            print(f"\n  检测到 CUDA，使用 PyTorch 源: {cuda_index_url}")
+        else:
+            print("\n  未检测到 CUDA，将安装 CPU 版 PyTorch")
+
     print(f"\n开始安装 {len(missing)} 个缺失的依赖...\n")
     failed = []
     for info in missing:
         pip_name = info["pip"]
-        if pip_name == "audio-separator":
+        if pip_name in ("torch", "torchaudio"):
+            if gpu and cuda_index_url:
+                ok = pip_install(venv_py, pip_name, index_url=cuda_index_url)
+            else:
+                ok = pip_install(venv_py, pip_name, index_url="https://download.pytorch.org/whl/cpu")
+        elif pip_name == "audio-separator":
             ok = pip_install(venv_py, pip_name, extra="gpu" if gpu else "cpu")
         else:
             ok = pip_install(venv_py, pip_name)
