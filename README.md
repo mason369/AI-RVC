@@ -4,7 +4,7 @@
 
 **平台支持：Windows / Linux / WSL2**
 
-![Windows 界面](Windows界面.png)
+![Windows 界面](docs/Windows界面.png)
 
 ## 功能特点
 
@@ -65,6 +65,8 @@
 - ⚠️ 首次启动需要 5-10 分钟下载模型
 
 ### 方式 2：Google Colab（推荐临时使用）
+
+![Colab 演示](docs/Colab演示.png)
 
 1. 打开 Colab notebook：[AI_RVC_Colab.ipynb](https://colab.research.google.com/github/mason369/AI-RVC/blob/master/AI_RVC_Colab.ipynb)
 2. 确保运行时类型设置为 **GPU**（菜单栏 → 代码执行程序 → 更改运行时类型 → T4 GPU）
