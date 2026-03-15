@@ -1,5 +1,5 @@
 ---
-title: AI-RVC 语音转换 & AI 翻唱
+title: AI-RVC 一键 AI 翻唱
 emoji: 🎤
 colorFrom: blue
 colorTo: purple
@@ -10,15 +10,15 @@ pinned: false
 license: mit
 ---
 
-# 🎤 AI-RVC 语音转换 & AI 翻唱
+# 🎤 AI-RVC 一键 AI 翻唱
 
-基于 RVC v2 + RMVPE 的高质量语音转换系统，支持一键 AI 翻唱功能。
+基于 RVC v2 的一键 AI 翻唱系统，自动完成人声分离、音色转换、混音合成全流程。
 
 ## 功能特点
 
 - **AI 歌曲翻唱**：上传歌曲自动分离人声、转换音色、混合伴奏，一键生成翻唱
 - **人声分离**：默认 Mel-Band Roformer (KimberleyJensen)，在 MVSEP 公开 Multisong 指标中为 Vocals SDR 11.01 / Instrum SDR 17.32
-- **语音转换**：RVC v2 架构 + FAISS 检索增强流程
+- **音色转换**：RVC v2 架构 + FAISS 检索增强流程
 - **RMVPE 音高提取**：高精度 F0 提取，噪声鲁棒性强
 - **角色模型**：内置 117 个可下载角色模型
 - **混音效果**：支持人声混响、音量调节、4 种混音预设
@@ -88,7 +88,7 @@ license: mit
               ↓
           人声分离 (Mel-Band Roformer)
               ↓
-          RVC 语音转换 (HuBERT + RMVPE + FAISS)
+          RVC 音色转换 (HuBERT + RMVPE + FAISS)
               ↓
           混音 (音量调节 + 混响)
               ↓
@@ -148,4 +148,4 @@ A: 建议选择与原唱性别、音色相近的角色，效果更自然。
 
 **License**: MIT
 **Version**: 2.0
-**Last Updated**: 2026-03-10
+**Last Updated**: 2026-03-15
