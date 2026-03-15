@@ -1667,6 +1667,15 @@ class CoverPipeline:
         effective_karaoke_merge_backing = False if effective_official_mode else karaoke_merge_backing_into_accompaniment
         effective_use_official = True if effective_official_mode else use_official
 
+        # 官方模式：强制使用官方推荐参数，确保1:1纯净推理
+        if effective_official_mode:
+            if f0_method != "rmvpe":
+                log.warning(f"官方模式：F0方法从 {f0_method} 强制切换为 rmvpe（抗噪性最佳）")
+                f0_method = "rmvpe"
+            if protect != 0.33:
+                log.warning(f"官方模式：保护系数从 {protect} 强制设为 0.33（官方推荐值）")
+                protect = 0.33
+
         total_steps = 5 if effective_karaoke_separation else 4
         step_karaoke = 2 if effective_karaoke_separation else None
         step_convert = 3 if effective_karaoke_separation else 2
@@ -1695,7 +1704,7 @@ class CoverPipeline:
         log.config(f"说话人ID: {speaker_id}")
         log.config(f"VC管线模式: {normalized_vc_pipeline_mode}")
         if effective_official_mode:
-            log.config("官方模式: 强制使用官方UVR5分离 + 官方VC，不使用Karaoke二次分离")
+            log.config("官方模式: 强制UVR5分离 + 去混响预处理 + 官方VC (rmvpe, protect=0.33)")
         log.config(f"人声分离器: {effective_separator}")
         if effective_separator == "uvr5":
             log.config(f"UVR5模型: {uvr5_model or '自动选择'}")
@@ -1800,27 +1809,29 @@ class CoverPipeline:
             normalized_source_constraint_mode = str(source_constraint_mode or "auto").strip().lower()
             available_uvr_deecho_model = self._get_available_uvr_deecho_model()
             log.config(f"VC预处理模式: {normalized_vc_preprocess_mode}")
-            if normalized_vc_pipeline_mode == "current" and normalized_vc_preprocess_mode in {"auto", "uvr_deecho"}:
+            if normalized_vc_preprocess_mode in {"auto", "uvr_deecho"}:
                 if available_uvr_deecho_model:
                     log.config(f"Mature DeEcho模型: {available_uvr_deecho_model}")
                 else:
                     log.config("Mature DeEcho模型: 未找到，将回退到主唱直通")
             log.config(f"源约束模式: {normalized_source_constraint_mode}")
 
+            # 官方模式也必须经过去混响预处理，确保输入RVC的是纯净干声
+            # 官方模式下如果用户选了 direct，强制提升为 auto（带混响的人声会破坏F0提取）
+            effective_preprocess_mode = normalized_vc_preprocess_mode
+            if normalized_vc_pipeline_mode == "official" and effective_preprocess_mode == "direct":
+                effective_preprocess_mode = "auto"
+                log.warning("官方模式：direct预处理已提升为auto，确保去混响后再进入RVC推理")
+
             vc_input_path = vocals_path
             vc_preprocessed = False
-            if normalized_vc_pipeline_mode == "official":
-                self._last_vc_preprocess_mode = "direct"
-                log.detail("官方VC模式：跳过自定义VC预处理")
-                log.audio(f"官方VC输入: {Path(vc_input_path).name}")
-            else:
-                try:
-                    prepared_path = self._prepare_vocals_for_vc(vocals_path, session_dir, preprocess_mode=normalized_vc_preprocess_mode)
-                    vc_input_path = prepared_path
-                    vc_preprocessed = True
-                    log.audio(f"VC预处理输入: {Path(vc_input_path).name}")
-                except Exception as e:
-                    log.warning(f"VC预处理失败，回退原始输入: {e}")
+            try:
+                prepared_path = self._prepare_vocals_for_vc(vocals_path, session_dir, preprocess_mode=effective_preprocess_mode)
+                vc_input_path = prepared_path
+                vc_preprocessed = True
+                log.audio(f"VC预处理输入: {Path(vc_input_path).name}")
+            except Exception as e:
+                log.warning(f"VC预处理失败，回退原始输入: {e}")
 
             report_progress("正在转换人声...", step_convert)
             converted_vocals_path = str(session_dir / "converted_vocals.wav")
@@ -1846,7 +1857,7 @@ class CoverPipeline:
                     protect=protect,
                     speaker_id=speaker_id,
                 )
-                log.detail("内置官方模式已跳过自定义VC前后处理")
+                log.detail("内置官方模式：去混响干声 -> 官方RVC推理（纯净管道）")
                 log.success("内置官方VC转换完成")
             elif normalized_vc_pipeline_mode == "official" and singing_repair:
                 log.detail("使用官方兼容唱歌修复链进行转换")
@@ -1959,8 +1970,14 @@ class CoverPipeline:
                     log.warning("VC preprocess unavailable, skipping source-guided reconstruction")
                 log.success("官方VC转换完成")
 
-            # 如果使用了advanced dereverb，重新应用原始混响
-            if hasattr(self, '_original_reverb_path') and self._original_reverb_path and Path(self._original_reverb_path).exists():
+            # 如果使用了advanced dereverb，重新应用原始混响（仅非官方模式）
+            if (
+                not effective_official_mode
+                and not effective_use_official
+                and hasattr(self, '_original_reverb_path')
+                and self._original_reverb_path
+                and Path(self._original_reverb_path).exists()
+            ):
                 log.detail("重新应用原始混响到转换后的干声...")
                 import librosa
                 import soundfile as sf
@@ -1978,7 +1995,7 @@ class CoverPipeline:
                 sf.write(converted_vocals_path, wet_signal, sr)
                 log.detail(f"混响重应用完成: mix_ratio=0.8")
 
-            else:
+            elif not effective_official_mode and not effective_use_official:
                 # 使用自定义VC管道进行转换
                 log.detail("使用自定义VC管道进行转换")
                 self._init_rvc_pipeline()
