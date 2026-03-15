@@ -203,32 +203,32 @@ jobs:
           AI-RVC-Windows-Portable.zip
           AI-RVC-Linux-Portable.tar.gz
         body: |
-          ## AI-RVC Portable Executables
+          ## AI-RVC 便携版可执行文件
 
           ### Windows
-          - Download `AI-RVC-Windows-Portable.zip`
-          - Extract the zip file
-          - Double click `AI-RVC-Windows.exe` to start
-          - Visit http://127.0.0.1:7860 in your browser
+          - 下载 `AI-RVC-Windows-Portable.zip`
+          - 解压 zip 文件
+          - 双击 `AI-RVC-Windows.exe` 启动
+          - 浏览器访问 http://127.0.0.1:7860
 
           ### Linux
-          - Download `AI-RVC-Linux-Portable.tar.gz`
-          - Extract: `tar -xzf AI-RVC-Linux-Portable.tar.gz`
-          - Make executable: `chmod +x AI-RVC-Linux-Portable/AI-RVC-Linux`
-          - Run: `./AI-RVC-Linux-Portable/AI-RVC-Linux`
-          - Visit http://127.0.0.1:7860 in your browser
+          - 下载 `AI-RVC-Linux-Portable.tar.gz`
+          - 解压：`tar -xzf AI-RVC-Linux-Portable.tar.gz`
+          - 添加执行权限：`chmod +x AI-RVC-Linux-Portable/AI-RVC-Linux`
+          - 运行：`./AI-RVC-Linux-Portable/AI-RVC-Linux`
+          - 浏览器访问 http://127.0.0.1:7860
 
-          ### Notes
-          - First launch will download required models (5-10 minutes)
-          - No Python installation required
-          - GPU acceleration supported (CUDA/ROCm)
-          - All features included (翻唱、角色模型、混音预设等)
+          ### 说明
+          - 首次启动需要下载模型文件（约 5-10 分钟）
+          - 无需安装 Python
+          - ⚠️ 便携版仅支持 CPU 推理（构建时使用 CPU 版 PyTorch 以控制包体积），处理速度较慢
+          - 如需 GPU 加速，请使用本地安装方式（`python install.py`）
+          - 包含所有功能（翻唱、角色模型、混音预设等）
 
-          ### System Requirements
-          - **Windows**: Windows 10/11 (x64)
-          - **Linux**: Ubuntu 20.04+ / Debian 11+ (x64)
-          - **RAM**: 8GB+ recommended
-          - **GPU**: NVIDIA GPU with 4GB+ VRAM (optional, for faster processing)
-          - **Disk**: 5GB+ free space
+          ### 系统要求
+          - **Windows**：Windows 10/11 (x64)
+          - **Linux**：Ubuntu 20.04+ / Debian 11+ (x64)
+          - **内存**：建议 8GB+
+          - **磁盘**：需要 5GB+ 可用空间
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
