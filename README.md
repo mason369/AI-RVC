@@ -32,6 +32,11 @@
 
 ## 快速开始
 
+> **💡 推荐方式**：
+> - **新手用户**：使用方式 1（可执行文件），无需安装 Python，开箱即用
+> - **开发者/频繁使用**：使用方式 4（本地安装），运行 `python install.py` 一键完成环境配置
+> - **临时体验**：使用方式 2（Google Colab）或方式 3（Hugging Face Spaces）
+
 ### 方式 1：可执行文件（推荐新手，无需安装 Python）
 
 #### Windows
@@ -86,7 +91,59 @@
 
 ### 方式 4：本地安装（推荐开发者和频繁使用）
 
-#### Windows
+#### 一键安装（推荐）
+
+**Windows**
+
+```powershell
+# 1. 克隆仓库
+git clone https://github.com/mason369/AI-RVC.git
+cd AI-RVC
+
+# 2. 运行一键安装脚本（自动创建虚拟环境、安装依赖）
+python install.py
+
+# 脚本会自动：
+# - 检测并创建 Python 3.10 虚拟环境
+# - 安装 PyTorch（自动检测 CUDA/CPU）
+# - 安装所有项目依赖
+# - 启动 Web 界面（首次运行时会自动下载基础模型）
+```
+
+**Linux / WSL2**
+
+```bash
+# 1. 克隆仓库
+git clone https://github.com/mason369/AI-RVC.git
+cd AI-RVC
+
+# 2. 运行一键安装脚本
+python3.10 install.py
+
+# 或仅检查环境（不安装）
+python3.10 install.py --check
+
+# 或安装 CPU 版本
+python3.10 install.py --cpu
+```
+
+**脚本选项**：
+- 无参数：完整安装 + 自动启动
+- `--check`：仅检查环境和依赖，不安装
+- `--cpu`：安装 CPU 版本 PyTorch（无 GPU 加速）
+- `--no-run`：安装完成后不自动启动（需要手动运行 `python run.py`）
+
+访问 http://127.0.0.1:7860 打开界面。
+
+首次运行翻唱时，audio-separator 会自动下载分离模型并缓存在 `assets/separator_models/`（体积随上游模型版本变化，通常为数百 MB）。
+
+---
+
+#### 手动安装（高级用户）
+
+如果需要自定义安装流程，可以手动执行以下步骤：
+
+**Windows**
 
 ```powershell
 # 1. 克隆仓库
@@ -114,11 +171,7 @@ python tools/download_models.py
 python run.py
 ```
 
-访问 http://127.0.0.1:7860 打开界面。
-
-首次运行翻唱时，audio-separator 会自动下载分离模型并缓存在 `assets/separator_models/`（体积随上游模型版本变化，通常为数百 MB）。
-
-### Linux / WSL2
+**Linux / WSL2**
 
 ```bash
 # 1. 克隆仓库
@@ -139,6 +192,8 @@ python tools/download_models.py
 python run.py
 ```
 
+---
+
 **Linux 兼容性说明**：
 - ✅ 所有核心功能完全兼容 Linux
 - ✅ 路径处理使用 `pathlib.Path`，跨平台兼容
@@ -146,6 +201,17 @@ python run.py
 - ✅ 音频处理库（librosa, soundfile, ffmpeg）在 Linux 上表现更稳定
 - ✅ GPU 加速（CUDA/ROCm）完全支持
 - ⚠️ 部分依赖（如 `fairseq`）在 Linux 上编译更快
+
+**安装脚本说明**：
+- `install.py` 会自动检测系统环境（Windows/Linux）并完成以下步骤：
+  1. **检测 Python 3.10**：Windows 检查常见安装路径 + `py -3.10` 启动器；Linux 使用 `python3.10` 命令
+  2. **创建虚拟环境**：在 `venv310/` 目录创建隔离的 Python 环境
+  3. **安装 PyTorch**：自动检测 CUDA 可用性，安装对应版本（GPU/CPU）
+  4. **安装项目依赖**：从 `requirements.txt` 安装所有必需包（包括 fairseq、audio-separator 等）
+  5. **启动应用**：自动运行 `run.py` 启动 Web 界面（除非使用 `--no-run`）
+- 基础模型（HuBERT、RMVPE）会在首次运行时由 `run.py` 自动下载
+- 支持参数：`--check`（仅检查）、`--cpu`（CPU 版本）、`--no-run`（不自动启动）
+- 如果虚拟环境已存在，会跳过创建步骤，直接检查依赖
 
 ## 依赖版本说明
 
