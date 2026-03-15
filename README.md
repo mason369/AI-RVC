@@ -597,6 +597,10 @@ nvidia-smi
 python -c "import torch; print(torch.cuda.is_available())"
 ```
 
+**Q: torchaudio DLL 加载失败 / 路径相关报错**
+
+项目路径中不能包含中文或特殊字符（如 `C:\新建文件夹\AI-RVC`），否则 PyTorch/torchaudio 的 C++ 库无法正确加载。请将项目放在纯英文路径下，例如 `C:\AI-RVC` 或 `D:\AI-RVC`。
+
 ## 数据核验说明（2026-03-06）
 
 以下外部数据已在 2026-03-06 复核，README 中涉及的关键数字以这些来源为准：
