@@ -152,15 +152,21 @@ def detect_cuda_version():
     return None
 
 
-def pip_install(venv_py, package, extra="", index_url=None):
+def pip_install(venv_py, package, extra="", index_url=None, no_deps=False):
     """用虚拟环境的 pip 安装包"""
     target = f"{package}[{extra}]" if extra else package
     print(f"  安装 {target} ...")
     cmd = [venv_py, "-m", "pip", "install", target]
     if index_url:
         cmd.extend(["--index-url", index_url])
+    if no_deps:
+        cmd.append("--no-deps")
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
+        # fairseq 依赖冲突时尝试 --no-deps 回退
+        if not no_deps and "ResolutionImpossible" in r.stderr:
+            print(f"  [依赖冲突] 尝试 --no-deps 安装 {target} ...")
+            return pip_install(venv_py, package, extra=extra, index_url=index_url, no_deps=True)
         print(f"  [失败] {target}")
         lines = r.stderr.strip().splitlines()
         if lines:
