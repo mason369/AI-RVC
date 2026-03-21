@@ -168,11 +168,18 @@ jobs:
         if [ "${{ matrix.platform }}" = "Windows" ]; then
           # 先压缩成 zip
           7z a -tzip "${PKG}.zip" "${PKG}"
-          # 超过 1.9GB 时删除 zip 改用 7z 分卷
+          # 超过 1.9GB 时删除 zip 改用 7z（压缩率更高）
           FILE_SIZE=$(stat -c%s "${PKG}.zip" 2>/dev/null || wc -c < "${PKG}.zip" | tr -d ' ')
           if [ "$FILE_SIZE" -gt 1900000000 ]; then
             rm "${PKG}.zip"
-            7z a -v1900m "${PKG}.7z" "${PKG}"
+            # 先尝试不分卷的 7z
+            7z a "${PKG}.7z" "${PKG}"
+            SEVENZ_SIZE=$(stat -c%s "${PKG}.7z" 2>/dev/null || wc -c < "${PKG}.7z" | tr -d ' ')
+            if [ "$SEVENZ_SIZE" -gt 1900000000 ]; then
+              # 7z 也超限，改用分卷
+              rm "${PKG}.7z"
+              7z a -v1900m "${PKG}.7z" "${PKG}"
+            fi
           fi
         else
           tar -czf "${PKG}.tar.gz" "${PKG}"
