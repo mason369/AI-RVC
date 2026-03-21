@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: '要上传资源的 Release 标签（如 v1.2.0），留空则上传到最新 Release'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -72,12 +77,19 @@ jobs:
         copy dist\AI-RVC-Windows.exe AI-RVC-Windows-Portable\
         copy README.md AI-RVC-Windows-Portable\
         copy LICENSE AI-RVC-Windows-Portable\
-        echo "AI-RVC Windows Portable Version" > AI-RVC-Windows-Portable\README.txt
-        echo "" >> AI-RVC-Windows-Portable\README.txt
-        echo "Double click AI-RVC-Windows.exe to start" >> AI-RVC-Windows-Portable\README.txt
-        echo "First launch will download required models (may take 5-10 minutes)" >> AI-RVC-Windows-Portable\README.txt
-        echo "" >> AI-RVC-Windows-Portable\README.txt
-        echo "Visit http://127.0.0.1:7860 in your browser after launch" >> AI-RVC-Windows-Portable\README.txt
+        (
+          echo AI-RVC Windows 便携版
+          echo.
+          echo 使用方法：
+          echo   双击 AI-RVC-Windows.exe 启动
+          echo   浏览器访问 http://127.0.0.1:7860
+          echo.
+          echo 首次启动会自动下载所需模型（约 5-10 分钟）
+          echo 无需安装 Python，解压即用
+          echo.
+          echo 注意：便携版仅支持 CPU 推理，处理速度较慢
+          echo 如需 GPU 加速，请使用本地安装方式：python install.py
+        ) > AI-RVC-Windows-Portable\使用说明.txt
 
     - name: Compress Windows package
       run: |
@@ -158,15 +170,19 @@ jobs:
         cp dist/AI-RVC-Linux AI-RVC-Linux-Portable/
         cp README.md AI-RVC-Linux-Portable/
         cp LICENSE AI-RVC-Linux-Portable/
-        cat > AI-RVC-Linux-Portable/README.txt << EOF
-        AI-RVC Linux Portable Version
+        cat > AI-RVC-Linux-Portable/使用说明.txt << 'EOF'
+        AI-RVC Linux 便携版
 
-        Run: ./AI-RVC-Linux
-        First launch will download required models (may take 5-10 minutes)
+        使用方法：
+          chmod +x AI-RVC-Linux
+          ./AI-RVC-Linux
+          浏览器访问 http://127.0.0.1:7860
 
-        Visit http://127.0.0.1:7860 in your browser after launch
+        首次启动会自动下载所需模型（约 5-10 分钟）
+        无需安装 Python，解压即用
 
-        Make executable: chmod +x AI-RVC-Linux
+        注意：便携版仅支持 CPU 推理，处理速度较慢
+        如需 GPU 加速，请使用本地安装方式：python install.py
         EOF
         chmod +x AI-RVC-Linux-Portable/AI-RVC-Linux
 
@@ -180,10 +196,9 @@ jobs:
         name: AI-RVC-Linux
         path: AI-RVC-Linux-Portable.tar.gz
 
-  create-release:
+  upload-release:
     needs: [build-windows, build-linux]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
 
     steps:
     - name: Download Windows artifact
@@ -196,39 +211,31 @@ jobs:
       with:
         name: AI-RVC-Linux
 
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: |
-          AI-RVC-Windows-Portable.zip
-          AI-RVC-Linux-Portable.tar.gz
-        body: |
-          ## AI-RVC 便携版可执行文件
-
-          ### Windows
-          - 下载 `AI-RVC-Windows-Portable.zip`
-          - 解压 zip 文件
-          - 双击 `AI-RVC-Windows.exe` 启动
-          - 浏览器访问 http://127.0.0.1:7860
-
-          ### Linux
-          - 下载 `AI-RVC-Linux-Portable.tar.gz`
-          - 解压：`tar -xzf AI-RVC-Linux-Portable.tar.gz`
-          - 添加执行权限：`chmod +x AI-RVC-Linux-Portable/AI-RVC-Linux`
-          - 运行：`./AI-RVC-Linux-Portable/AI-RVC-Linux`
-          - 浏览器访问 http://127.0.0.1:7860
-
-          ### 说明
-          - 首次启动需要下载模型文件（约 5-10 分钟）
-          - 无需安装 Python
-          - ⚠️ 便携版仅支持 CPU 推理（构建时使用 CPU 版 PyTorch 以控制包体积），处理速度较慢
-          - 如需 GPU 加速，请使用本地安装方式（`python install.py`）
-          - 包含所有功能（翻唱、角色模型、混音预设等）
-
-          ### 系统要求
-          - **Windows**：Windows 10/11 (x64)
-          - **Linux**：Ubuntu 20.04+ / Debian 11+ (x64)
-          - **内存**：建议 8GB+
-          - **磁盘**：需要 5GB+ 可用空间
+    - name: Determine target tag
+      id: tag
+      run: |
+        if [ "${{ github.event_name }}" = "push" ]; then
+          echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        elif [ -n "${{ github.event.inputs.tag }}" ]; then
+          echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+        else
+          # 获取最新的 Release 标签
+          LATEST=$(gh release list --repo ${{ github.repository }} --limit 1 --json tagName -q '.[0].tagName')
+          echo "tag=${LATEST}" >> $GITHUB_OUTPUT
+        fi
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload assets to release
+      run: |
+        TAG="${{ steps.tag.outputs.tag }}"
+        echo "上传资源到 Release: ${TAG}"
+        # 删除已有同名资源（如果存在）再上传
+        gh release upload "${TAG}" \
+          AI-RVC-Windows-Portable.zip \
+          AI-RVC-Linux-Portable.tar.gz \
+          --repo ${{ github.repository }} \
+          --clobber
+        echo "上传完成"
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
