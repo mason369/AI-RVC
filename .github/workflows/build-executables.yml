@@ -166,15 +166,17 @@ jobs:
         PKG="${NAME}-Portable"
 
         if [ "${{ matrix.platform }}" = "Windows" ]; then
-          # 用 7z 压缩，GPU 版分卷（每卷 1900MB）
-          if [ "${{ matrix.variant }}" = "GPU" ]; then
+          # 先压缩成 zip
+          7z a -tzip "${PKG}.zip" "${PKG}"
+          # 超过 1.9GB 时删除 zip 改用 7z 分卷
+          FILE_SIZE=$(stat -c%s "${PKG}.zip" 2>/dev/null || wc -c < "${PKG}.zip" | tr -d ' ')
+          if [ "$FILE_SIZE" -gt 1900000000 ]; then
+            rm "${PKG}.zip"
             7z a -v1900m "${PKG}.7z" "${PKG}"
-          else
-            7z a -tzip "${PKG}.zip" "${PKG}"
           fi
         else
           tar -czf "${PKG}.tar.gz" "${PKG}"
-          # GPU 版超过 2GB 时拆分
+          # 超过 1.9GB 时拆分
           FILE_SIZE=$(stat -c%s "${PKG}.tar.gz" 2>/dev/null || stat -f%z "${PKG}.tar.gz")
           if [ "$FILE_SIZE" -gt 1900000000 ]; then
             split -b 1900M "${PKG}.tar.gz" "${PKG}.tar.gz.part"
