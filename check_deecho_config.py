@@ -63,11 +63,11 @@ def check_config():
 
     # 检查关键配置
     checks = [
-        ("VC 预处理模式", "vc_preprocess_mode", "uvr_deecho", cover_config.get("vc_preprocess_mode")),
-        ("源约束模式", "source_constraint_mode", "on", cover_config.get("source_constraint_mode")),
+        ("VC 预处理模式", "vc_preprocess_mode", "auto", cover_config.get("vc_preprocess_mode")),
+        ("源约束模式", "source_constraint_mode", "auto", cover_config.get("source_constraint_mode")),
         ("Karaoke 分离", "karaoke_separation", True, cover_config.get("karaoke_separation")),
-        ("索引率", "index_rate", 0.30, cover_config.get("index_rate")),
-        ("保护系数", "protect", 0.30, cover_config.get("protect")),
+        ("索引率", "index_rate", 0.50, cover_config.get("index_rate")),
+        ("保护系数", "protect", 0.33, cover_config.get("protect")),
     ]
 
     all_correct = True
@@ -93,25 +93,22 @@ def print_recommendations():
     print("=" * 60)
 
     print("""
-1. 当前配置已启用激进去回声模式：
-   - 强制使用 UVR DeEcho 模型
-   - 总是启用源约束后处理
+1. 当前配置使用自动模式：
+   - 优先使用 UVR DeEcho 模型，缺模型时回退到算法去混响
+   - DeEcho 质量好时跳过 blend 直接使用，避免混回原始回音
+   - 源约束仅在去过回音的预处理下自动启用
 
 2. 如果回声仍然明显，可以尝试：
-   - 在 UI 中调整"索引率"（降低到 0.1-0.2）
+   - 在 UI 中调整"索引率"（降低到 0.2-0.3）
    - 在 UI 中调整"保护系数"（降低到 0.2-0.25）
    - 使用更高质量的输入音频
 
 3. 处理流程：
-   原始音频 → Karaoke 分离 → UVR DeEcho → RVC 转换 → 源约束 → 输出
+   原始音频 → Karaoke 分离 → UVR DeEcho(或算法去混响) → RVC 转换 → 输出
 
-4. 如果需要更激进的处理，可以修改代码中的参数：
-   - infer/cover_pipeline.py 第 1391 行：回声衰减系数 0.92 → 0.85
-   - infer/cover_pipeline.py 第 1402 行：软掩码系数 0.7 → 0.5
-
-5. 测试建议：
+4. 测试建议：
    - 选择一首有明显回声的歌曲
-   - 处理后使用 Audacity 查看频谱图
+   - 查看日志中 DeEcho quality 指标
    - 对比处理前后的回声强度
 """)
 

@@ -646,8 +646,8 @@ def get_cover_vc_route_status(
             ])
         return newline.join([
             "⚠️ 当前设为官方 DeEcho 优先，但本地缺少模型",
-            "当前将回退流程: 主唱分离 → 直接进入 RVC → 混音",
-            "建议: 先在模型管理页下载成熟 DeEcho 模型",
+            "当前将回退流程: 主唱分离 → 算法去混响 → RVC → 混音",
+            "建议: 下载成熟 DeEcho 模型可获得更好效果",
         ])
 
     if preferred:
@@ -657,9 +657,9 @@ def get_cover_vc_route_status(
             "流程: 主唱分离 → UVR DeEcho/DeReverb → RVC → 混音",
         ])
     return newline.join([
-        "ℹ️ 自动模式当前会回退为主唱直通 RVC",
-        "原因: 本地未检测到成熟 DeEcho / DeReverb 模型",
-        "流程: 主唱分离 → 直接进入 RVC → 混音",
+        "ℹ️ 自动模式当前使用算法去混响",
+        "原因: 本地未检测到成熟 DeEcho / DeReverb 模型，已回退到 advanced dereverb",
+        "流程: 主唱分离 → 算法去混响 → RVC → 混音",
     ])
 
 

@@ -225,6 +225,7 @@ class CoverPipeline:
         """Pick the UVR DeEcho branch best suited for VC input."""
         best_path = None
         best_score = None
+        best_metrics = None
 
         for candidate_path in candidate_files:
             scored = self._score_uvr_deecho_candidate(reference_path, candidate_path)
@@ -241,7 +242,10 @@ class CoverPipeline:
             if best_score is None or score > best_score:
                 best_score = score
                 best_path = candidate_path
+                best_metrics = metrics
 
+        # 保存最佳候选的质量指标，供 blend 决策使用
+        self._uvr_deecho_metrics = best_metrics
         return best_path
 
     def _init_separator(
@@ -902,9 +906,12 @@ class CoverPipeline:
         """Decide whether to run source-guided post constraint."""
         normalized_mode = str(source_constraint_mode or "auto").strip().lower()
         if normalized_mode == "on":
+            if self._last_vc_preprocess_mode == "direct":
+                log.detail("源约束跳过: direct 模式下源未去回音，强制约束会放大回音伪影")
+                return False
             return vc_preprocessed
         if normalized_mode == "auto":
-            return vc_preprocessed and self._last_vc_preprocess_mode in {"uvr_deecho", "legacy"}
+            return vc_preprocessed and self._last_vc_preprocess_mode in {"uvr_deecho", "legacy", "advanced_dereverb"}
         return False
 
     def _refine_source_constrained_output(
@@ -1022,14 +1029,17 @@ class CoverPipeline:
         echo_ratio = echo_ratio[:n_blend]
 
         # --- Blending weight ---
-        # Base: original low-activity weight (for silent gaps)
-        base_weight = 0.65 * np.square(1.0 - activity[:n_blend])
-        # Echo boost: even during active singing, apply DeEcho proportional
-        # to detected echo. Max additional contribution capped at 0.55.
-        echo_boost = 0.55 * echo_ratio * activity[:n_blend]
+        # 全局回音水平驱动系数自适应
+        global_echo = float(np.mean(echo_ratio))
+        # 沉默段基权: 轻回音0.65, 重回音0.85
+        base_coef = 0.65 + 0.20 * global_echo
+        base_weight = base_coef * np.square(1.0 - activity[:n_blend])
+        # 活跃唱段 echo_boost: 轻回音0.55, 重回音0.90
+        echo_boost_coef = 0.55 + 0.35 * global_echo
+        echo_boost = echo_boost_coef * echo_ratio * activity[:n_blend]
         deecho_weight = base_weight + echo_boost
         deecho_weight = np.convolve(deecho_weight, smooth_kernel, mode="same")
-        deecho_weight = np.clip(deecho_weight, 0.0, 0.80)
+        deecho_weight = np.clip(deecho_weight, 0.0, 0.95)
         deecho_weight = CoverPipeline._frame_curve_to_sample_gain(
             deecho_weight,
             aligned_len,
@@ -1066,6 +1076,7 @@ class CoverPipeline:
 
         # 保存原始混响用于后处理
         self._original_reverb_path = None
+        self._uvr_deecho_metrics = None
 
         if preprocess_mode == "advanced_dereverb":
             # 使用高级去混响：分离干声和混响
@@ -1096,17 +1107,20 @@ class CoverPipeline:
             log.detail("VC preprocess: legacy dereverb chain -> mono select")
         else:
             preprocess_input = vocals_path
+            mono_resolved = False
+
             if preprocess_mode in {"auto", "uvr_deecho"}:
                 preprocess_input = self._apply_uvr_deecho_for_vc(vocals_path, session_dir) or vocals_path
 
             if preprocess_input == vocals_path:
-                # 如果UVR DeEcho不可用，在auto模式下使用advanced dereverb
-                if preprocess_mode == "auto":
+                if preprocess_mode in {"auto", "uvr_deecho"}:
+                    # auto / uvr_deecho 模式在 UVR 模型缺失时都回退到 advanced_dereverb
                     audio, sr = librosa.load(vocals_path, sr=None, mono=False)
                     audio = self._ensure_2d(audio).astype(np.float32)
                     mono = self._select_mono_for_vc(audio, sr)
 
-                    log.detail("VC preprocess: UVR DeEcho not available, using advanced dereverb")
+                    fallback_name = "auto" if preprocess_mode == "auto" else "uvr_deecho"
+                    log.detail(f"VC preprocess ({fallback_name}): UVR DeEcho not available, using advanced dereverb")
                     dry_signal, reverb_tail = advanced_dereverb(mono, sr)
 
                     # 保存混响用于后处理
@@ -1116,38 +1130,55 @@ class CoverPipeline:
 
                     mono = dry_signal
                     self._last_vc_preprocess_mode = "advanced_dereverb"
+                    mono_resolved = True
                     log.detail(f"Dry/Wet separation: dry RMS={np.sqrt(np.mean(dry_signal**2)):.4f}, reverb RMS={np.sqrt(np.mean(reverb_tail**2)):.4f}")
                 else:
+                    # direct 模式
                     self._last_vc_preprocess_mode = "direct"
-                    if preprocess_mode == "uvr_deecho":
-                        log.warning("Official DeEcho model not found, falling back to direct lead input")
                     log.detail("VC preprocess: direct lead -> mono select")
-                    audio, sr = librosa.load(preprocess_input, sr=None, mono=False)
-                    audio = self._ensure_2d(audio).astype(np.float32)
-                    mono = self._select_mono_for_vc(audio, sr)
             else:
                 self._last_vc_preprocess_mode = "uvr_deecho"
                 log.detail("VC preprocess: UVR learned DeEcho/DeReverb -> mono select")
 
-            if preprocess_input == vocals_path:
-                audio, sr = librosa.load(preprocess_input, sr=None, mono=False)
-                audio = self._ensure_2d(audio).astype(np.float32)
-                mono = self._select_mono_for_vc(audio, sr)
-            else:
-                direct_audio, sr = librosa.load(vocals_path, sr=None, mono=False)
-                deecho_audio, deecho_sr = librosa.load(preprocess_input, sr=None, mono=False)
-                direct_audio = self._ensure_2d(direct_audio).astype(np.float32)
-                deecho_audio = self._ensure_2d(deecho_audio).astype(np.float32)
-                direct_mono = self._select_mono_for_vc(direct_audio, sr)
-                deecho_mono = self._select_mono_for_vc(deecho_audio, deecho_sr)
-                if deecho_sr != sr:
-                    deecho_mono = librosa.resample(
-                        deecho_mono,
-                        orig_sr=deecho_sr,
-                        target_sr=sr,
-                    ).astype(np.float32)
-                mono = self._blend_direct_with_deecho(direct_mono, deecho_mono, sr)
-                log.detail("VC preprocess: blended direct lead with UVR DeEcho")
+            # 最终 mono 确定（仅在 mono 未被上面解决时执行）
+            if not mono_resolved:
+                if preprocess_input == vocals_path:
+                    audio, sr = librosa.load(preprocess_input, sr=None, mono=False)
+                    audio = self._ensure_2d(audio).astype(np.float32)
+                    mono = self._select_mono_for_vc(audio, sr)
+                else:
+                    direct_audio, sr = librosa.load(vocals_path, sr=None, mono=False)
+                    deecho_audio, deecho_sr = librosa.load(preprocess_input, sr=None, mono=False)
+                    direct_audio = self._ensure_2d(direct_audio).astype(np.float32)
+                    deecho_audio = self._ensure_2d(deecho_audio).astype(np.float32)
+                    direct_mono = self._select_mono_for_vc(direct_audio, sr)
+                    deecho_mono = self._select_mono_for_vc(deecho_audio, deecho_sr)
+                    if deecho_sr != sr:
+                        deecho_mono = librosa.resample(
+                            deecho_mono,
+                            orig_sr=deecho_sr,
+                            target_sr=sr,
+                        ).astype(np.float32)
+
+                    # DeEcho 质量检测：用 UVR 候选打分指标判断是否跳过 blend
+                    uvr_metrics = getattr(self, '_uvr_deecho_metrics', None)
+                    skip_blend = False
+                    if uvr_metrics:
+                        sep_db = uvr_metrics.get('separation_db', 0.0)
+                        corr = uvr_metrics.get('corr', 0.0)
+                        log.detail(
+                            f"DeEcho quality: sep={sep_db:.2f}dB, corr={corr:.3f}"
+                        )
+                        # sep > 30dB 且 corr > 0.9 说明 DeEcho 质量好
+                        if sep_db > 30.0 and corr > 0.9:
+                            skip_blend = True
+
+                    if skip_blend:
+                        mono = deecho_mono
+                        log.detail("VC preprocess: UVR DeEcho quality sufficient, using deecho directly (skip blend)")
+                    else:
+                        mono = CoverPipeline._blend_direct_with_deecho(direct_mono, deecho_mono, sr)
+                        log.detail("VC preprocess: blended direct lead with UVR DeEcho (enhanced)")
 
         mono = soft_clip(mono, threshold=0.9, ceiling=0.99)
 

@@ -13,8 +13,8 @@
     "f0_stabilize": true,
     "f0_stabilize_window": 3,
     "f0_stabilize_max_semitones": 3.0,
-    "vc_preprocess_mode": "uvr_deecho",
-    "source_constraint_mode": "on",
+    "vc_preprocess_mode": "auto",
+    "source_constraint_mode": "auto",
     "uvr5_agg": 10
   }
 }
