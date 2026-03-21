@@ -159,24 +159,34 @@ jobs:
         HEREDOC
         fi
 
-    - name: Compress package (Windows)
-      if: runner.os == 'Windows'
-      shell: pwsh
-      run: |
-        $name = "AI-RVC-${{ matrix.platform }}-${{ matrix.variant }}"
-        7z a -tzip "${name}-Portable.zip" "${name}-Portable"
-
-    - name: Compress package (Linux)
-      if: runner.os == 'Linux'
+    - name: Compress package
+      shell: bash
       run: |
         NAME="AI-RVC-${{ matrix.platform }}-${{ matrix.variant }}"
-        tar -czf "${NAME}-Portable.tar.gz" "${NAME}-Portable"
+        PKG="${NAME}-Portable"
+
+        if [ "${{ matrix.platform }}" = "Windows" ]; then
+          # 用 7z 压缩，GPU 版分卷（每卷 1900MB）
+          if [ "${{ matrix.variant }}" = "GPU" ]; then
+            7z a -v1900m "${PKG}.7z" "${PKG}"
+          else
+            7z a -tzip "${PKG}.zip" "${PKG}"
+          fi
+        else
+          tar -czf "${PKG}.tar.gz" "${PKG}"
+          # GPU 版超过 2GB 时拆分
+          FILE_SIZE=$(stat -c%s "${PKG}.tar.gz" 2>/dev/null || stat -f%z "${PKG}.tar.gz")
+          if [ "$FILE_SIZE" -gt 1900000000 ]; then
+            split -b 1900M "${PKG}.tar.gz" "${PKG}.tar.gz.part"
+            rm "${PKG}.tar.gz"
+          fi
+        fi
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: AI-RVC-${{ matrix.platform }}-${{ matrix.variant }}
-        path: AI-RVC-${{ matrix.platform }}-${{ matrix.variant }}-Portable.*
+        path: AI-RVC-${{ matrix.platform }}-${{ matrix.variant }}-Portable*
 
   upload-release:
     needs: [build]
@@ -209,13 +219,20 @@ jobs:
       run: |
         TAG="${{ steps.tag.outputs.tag }}"
         echo "上传资源到 Release: ${TAG}"
-        gh release upload "${TAG}" \
-          AI-RVC-Windows-CPU-Portable.zip \
-          AI-RVC-Windows-GPU-Portable.zip \
-          AI-RVC-Linux-CPU-Portable.tar.gz \
-          AI-RVC-Linux-GPU-Portable.tar.gz \
-          --repo ${{ github.repository }} \
-          --clobber
-        echo "上传完成"
+        # 收集所有构建产物（含分卷文件）
+        FILES=$(find . -maxdepth 1 -name "AI-RVC-*-Portable*" -type f | sort)
+        echo "找到以下文件："
+        echo "$FILES" | while read f; do
+          SIZE=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f")
+          echo "  $f ($(( SIZE / 1048576 )) MB)"
+        done
+        # 逐个上传
+        echo "$FILES" | while read f; do
+          echo "上传: $f"
+          gh release upload "${TAG}" "$f" \
+            --repo ${{ github.repository }} \
+            --clobber
+        done
+        echo "全部上传完成"
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
