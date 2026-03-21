@@ -15,8 +15,38 @@ permissions:
   contents: write
 
 jobs:
-  build-windows:
-    runs-on: windows-latest
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            variant: CPU
+            platform: Windows
+            pytorch_url: https://download.pytorch.org/whl/cpu
+            sep: ";"
+            shell: pwsh
+          - os: windows-latest
+            variant: GPU
+            platform: Windows
+            pytorch_url: https://download.pytorch.org/whl/cu121
+            sep: ";"
+            shell: pwsh
+          - os: ubuntu-latest
+            variant: CPU
+            platform: Linux
+            pytorch_url: https://download.pytorch.org/whl/cpu
+            sep: ":"
+            shell: bash
+          - os: ubuntu-latest
+            variant: GPU
+            platform: Linux
+            pytorch_url: https://download.pytorch.org/whl/cu121
+            sep: ":"
+            shell: bash
+
+    runs-on: ${{ matrix.os }}
+    name: Build ${{ matrix.platform }}-${{ matrix.variant }}
 
     steps:
     - name: Checkout code
@@ -27,130 +57,43 @@ jobs:
       with:
         python-version: '3.10'
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade "pip<24.1"
-        pip install pyinstaller
-        pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-        pip install omegaconf==2.0.6 --no-deps
-        pip install PyYAML antlr4-python3-runtime hydra-core
-        pip install fairseq==0.12.2 --no-deps
-        pip install gradio==3.50.2 librosa soundfile scipy numpy praat-parselmouth pyworld torchcrepe faiss-cpu tqdm requests python-dotenv colorama demucs huggingface_hub pedalboard ffmpeg-python av
-
-    - name: Download base models
-      run: |
-        $env:PYTHONIOENCODING="utf-8"
-        python tools/download_models.py
-      shell: pwsh
-
-    - name: Build Windows executable
-      run: |
-        pyinstaller --name AI-RVC-Windows `
-          --onefile `
-          --add-data "ui;ui" `
-          --add-data "infer;infer" `
-          --add-data "lib;lib" `
-          --add-data "models;models" `
-          --add-data "tools;tools" `
-          --add-data "i18n;i18n" `
-          --add-data "configs;configs" `
-          --add-data "assets/hubert;assets/hubert" `
-          --add-data "assets/rmvpe;assets/rmvpe" `
-          --hidden-import=torch `
-          --hidden-import=torchaudio `
-          --hidden-import=gradio `
-          --hidden-import=librosa `
-          --hidden-import=soundfile `
-          --hidden-import=fairseq `
-          --hidden-import=audio_separator `
-          --hidden-import=demucs `
-          --hidden-import=pedalboard `
-          --collect-all torch `
-          --collect-all torchaudio `
-          --collect-all gradio `
-          run.py
-      shell: pwsh
-
-    - name: Create portable package
-      run: |
-        mkdir AI-RVC-Windows-Portable
-        copy dist\AI-RVC-Windows.exe AI-RVC-Windows-Portable\
-        copy README.md AI-RVC-Windows-Portable\
-        copy LICENSE AI-RVC-Windows-Portable\
-        @"
-        AI-RVC Windows 便携版
-
-        使用方法：
-          双击 AI-RVC-Windows.exe 启动
-          浏览器访问 http://127.0.0.1:7860
-
-        首次启动会自动下载所需模型（约 5-10 分钟）
-        无需安装 Python，解压即用
-
-        注意：便携版仅支持 CPU 推理，处理速度较慢
-        如需 GPU 加速，请使用本地安装方式：python install.py
-        "@ | Out-File -Encoding utf8 "AI-RVC-Windows-Portable\使用说明.txt"
-      shell: pwsh
-
-    - name: Compress Windows package
-      run: |
-        7z a -tzip AI-RVC-Windows-Portable.zip AI-RVC-Windows-Portable
-      shell: pwsh
-
-    - name: Upload Windows artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: AI-RVC-Windows
-        path: AI-RVC-Windows-Portable.zip
-
-  build-linux:
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
-
-    - name: Install system dependencies
+    - name: Install system dependencies (Linux)
+      if: runner.os == 'Linux'
       run: |
         sudo apt-get update
-        sudo apt-get install -y \
-          build-essential \
-          libsndfile1 \
-          ffmpeg \
-          portaudio19-dev
+        sudo apt-get install -y build-essential libsndfile1 ffmpeg portaudio19-dev
 
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade "pip<24.1"
         pip install pyinstaller
-        pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+        pip install torch torchaudio --index-url ${{ matrix.pytorch_url }}
         pip install omegaconf==2.0.6 --no-deps
         pip install PyYAML antlr4-python3-runtime hydra-core
         pip install fairseq==0.12.2 --no-deps
         pip install gradio==3.50.2 librosa soundfile scipy numpy praat-parselmouth pyworld torchcrepe faiss-cpu tqdm requests python-dotenv colorama demucs huggingface_hub pedalboard ffmpeg-python av
 
     - name: Download base models
-      run: |
-        python tools/download_models.py
+      run: python tools/download_models.py
+      env:
+        PYTHONIOENCODING: utf-8
 
-    - name: Build Linux executable
+    - name: Build executable
+      shell: bash
       run: |
-        pyinstaller --name AI-RVC-Linux \
-          --onefile \
-          --add-data "ui:ui" \
-          --add-data "infer:infer" \
-          --add-data "lib:lib" \
-          --add-data "models:models" \
-          --add-data "tools:tools" \
-          --add-data "i18n:i18n" \
-          --add-data "configs:configs" \
-          --add-data "assets/hubert:assets/hubert" \
-          --add-data "assets/rmvpe:assets/rmvpe" \
+        SEP="${{ matrix.sep }}"
+        NAME="AI-RVC-${{ matrix.platform }}-${{ matrix.variant }}"
+        pyinstaller --name "${NAME}" \
+          --onedir \
+          --add-data "ui${SEP}ui" \
+          --add-data "infer${SEP}infer" \
+          --add-data "lib${SEP}lib" \
+          --add-data "models${SEP}models" \
+          --add-data "tools${SEP}tools" \
+          --add-data "i18n${SEP}i18n" \
+          --add-data "configs${SEP}configs" \
+          --add-data "assets/hubert${SEP}assets/hubert" \
+          --add-data "assets/rmvpe${SEP}assets/rmvpe" \
           --hidden-import=torch \
           --hidden-import=torchaudio \
           --hidden-import=gradio \
@@ -166,51 +109,87 @@ jobs:
           run.py
 
     - name: Create portable package
+      shell: bash
       run: |
-        mkdir AI-RVC-Linux-Portable
-        cp dist/AI-RVC-Linux AI-RVC-Linux-Portable/
-        cp README.md AI-RVC-Linux-Portable/
-        cp LICENSE AI-RVC-Linux-Portable/
-        cat > AI-RVC-Linux-Portable/使用说明.txt << 'EOF'
-        AI-RVC Linux 便携版
+        NAME="AI-RVC-${{ matrix.platform }}-${{ matrix.variant }}"
+        PKG="${NAME}-Portable"
+        mkdir -p "${PKG}"
+        # onedir 输出在 dist/NAME/ 目录下，复制全部内容
+        cp -r dist/${NAME}/* "${PKG}/"
+        cp README.md "${PKG}/"
+        [ -f LICENSE ] && cp LICENSE "${PKG}/"
+
+        if [ "${{ matrix.variant }}" = "GPU" ]; then
+          VARIANT_NOTE="GPU 版（CUDA 12.1），支持 NVIDIA 显卡加速
+        如果没有 NVIDIA 显卡，程序会自动回退到 CPU 推理"
+        else
+          VARIANT_NOTE="CPU 版，无需显卡即可运行
+        如需 GPU 加速，请下载 GPU 版本或使用本地安装方式：python install.py"
+        fi
+
+        if [ "${{ matrix.platform }}" = "Windows" ]; then
+          EXE_NAME="${NAME}.exe"
+          cat > "${PKG}/使用说明.txt" << HEREDOC
+        AI-RVC ${{ matrix.platform }} 便携版（${{ matrix.variant }}）
 
         使用方法：
-          chmod +x AI-RVC-Linux
-          ./AI-RVC-Linux
+          双击 ${EXE_NAME} 启动
           浏览器访问 http://127.0.0.1:7860
+
+        ${VARIANT_NOTE}
 
         首次启动会自动下载所需模型（约 5-10 分钟）
         无需安装 Python，解压即用
+        HEREDOC
+        else
+          EXE_NAME="${NAME}"
+          chmod +x "${PKG}/${EXE_NAME}"
+          cat > "${PKG}/使用说明.txt" << HEREDOC
+        AI-RVC ${{ matrix.platform }} 便携版（${{ matrix.variant }}）
 
-        注意：便携版仅支持 CPU 推理，处理速度较慢
-        如需 GPU 加速，请使用本地安装方式：python install.py
-        EOF
-        chmod +x AI-RVC-Linux-Portable/AI-RVC-Linux
+        使用方法：
+          chmod +x ${EXE_NAME}
+          ./${EXE_NAME}
+          浏览器访问 http://127.0.0.1:7860
 
-    - name: Compress Linux package
+        ${VARIANT_NOTE}
+
+        首次启动会自动下载所需模型（约 5-10 分钟）
+        无需安装 Python，解压即用
+        HEREDOC
+        fi
+
+    - name: Compress package (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
       run: |
-        tar -czf AI-RVC-Linux-Portable.tar.gz AI-RVC-Linux-Portable
+        $name = "AI-RVC-${{ matrix.platform }}-${{ matrix.variant }}"
+        7z a -tzip "${name}-Portable.zip" "${name}-Portable"
 
-    - name: Upload Linux artifact
+    - name: Compress package (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        NAME="AI-RVC-${{ matrix.platform }}-${{ matrix.variant }}"
+        tar -czf "${NAME}-Portable.tar.gz" "${NAME}-Portable"
+
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: AI-RVC-Linux
-        path: AI-RVC-Linux-Portable.tar.gz
+        name: AI-RVC-${{ matrix.platform }}-${{ matrix.variant }}
+        path: AI-RVC-${{ matrix.platform }}-${{ matrix.variant }}-Portable.*
 
   upload-release:
-    needs: [build-windows, build-linux]
+    needs: [build]
     runs-on: ubuntu-latest
 
     steps:
-    - name: Download Windows artifact
+    - name: Download all artifacts
       uses: actions/download-artifact@v4
       with:
-        name: AI-RVC-Windows
+        merge-multiple: true
 
-    - name: Download Linux artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: AI-RVC-Linux
+    - name: List artifacts
+      run: ls -lh AI-RVC-*
 
     - name: Determine target tag
       id: tag
@@ -220,7 +199,6 @@ jobs:
         elif [ -n "${{ github.event.inputs.tag }}" ]; then
           echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
         else
-          # 获取最新的 Release 标签
           LATEST=$(gh release list --repo ${{ github.repository }} --limit 1 --json tagName -q '.[0].tagName')
           echo "tag=${LATEST}" >> $GITHUB_OUTPUT
         fi
@@ -231,10 +209,11 @@ jobs:
       run: |
         TAG="${{ steps.tag.outputs.tag }}"
         echo "上传资源到 Release: ${TAG}"
-        # 删除已有同名资源（如果存在）再上传
         gh release upload "${TAG}" \
-          AI-RVC-Windows-Portable.zip \
-          AI-RVC-Linux-Portable.tar.gz \
+          AI-RVC-Windows-CPU-Portable.zip \
+          AI-RVC-Windows-GPU-Portable.zip \
+          AI-RVC-Linux-CPU-Portable.tar.gz \
+          AI-RVC-Linux-GPU-Portable.tar.gz \
           --repo ${{ github.repository }} \
           --clobber
         echo "上传完成"
