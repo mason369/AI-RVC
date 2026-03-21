@@ -106,6 +106,7 @@ jobs:
           --collect-all torch \
           --collect-all torchaudio \
           --collect-all gradio \
+          --collect-all gradio_client \
           run.py
 
     - name: Create portable package
