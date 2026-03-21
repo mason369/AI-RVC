@@ -77,19 +77,20 @@ jobs:
         copy dist\AI-RVC-Windows.exe AI-RVC-Windows-Portable\
         copy README.md AI-RVC-Windows-Portable\
         copy LICENSE AI-RVC-Windows-Portable\
-        (
-          echo AI-RVC Windows 便携版
-          echo.
-          echo 使用方法：
-          echo   双击 AI-RVC-Windows.exe 启动
-          echo   浏览器访问 http://127.0.0.1:7860
-          echo.
-          echo 首次启动会自动下载所需模型（约 5-10 分钟）
-          echo 无需安装 Python，解压即用
-          echo.
-          echo 注意：便携版仅支持 CPU 推理，处理速度较慢
-          echo 如需 GPU 加速，请使用本地安装方式：python install.py
-        ) > AI-RVC-Windows-Portable\使用说明.txt
+        @"
+        AI-RVC Windows 便携版
+
+        使用方法：
+          双击 AI-RVC-Windows.exe 启动
+          浏览器访问 http://127.0.0.1:7860
+
+        首次启动会自动下载所需模型（约 5-10 分钟）
+        无需安装 Python，解压即用
+
+        注意：便携版仅支持 CPU 推理，处理速度较慢
+        如需 GPU 加速，请使用本地安装方式：python install.py
+        "@ | Out-File -Encoding utf8 "AI-RVC-Windows-Portable\使用说明.txt"
+      shell: pwsh
 
     - name: Compress Windows package
       run: |
