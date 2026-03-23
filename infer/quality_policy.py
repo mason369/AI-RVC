@@ -119,6 +119,60 @@ def build_conservative_crepe_fill_mask(
     return fill_mask
 
 
+def should_allow_crepe_fallback(
+    dropout_mask: np.ndarray,
+    total_frames: int,
+    max_ratio: float,
+    max_frames: int,
+    fragmented_max_run: int = 12,
+    relaxed_ratio: float = 0.02,
+    relaxed_frames: int = 512,
+    min_fragmented_runs: int = 6,
+) -> bool:
+    dropout_mask = np.asarray(dropout_mask, dtype=bool).reshape(-1)
+    total_frames = int(max(total_frames, 0))
+    if total_frames <= 0:
+        total_frames = int(dropout_mask.size)
+    if dropout_mask.size == 0 or total_frames <= 0:
+        return False
+
+    if dropout_mask.size < total_frames:
+        dropout_mask = np.pad(dropout_mask, (0, total_frames - dropout_mask.size), mode="constant")
+    else:
+        dropout_mask = dropout_mask[:total_frames]
+
+    dropout_count = int(np.sum(dropout_mask))
+    if dropout_count <= 0:
+        return False
+
+    dropout_ratio = float(dropout_count) / float(total_frames)
+    if dropout_count <= int(max_frames) and dropout_ratio <= float(max_ratio):
+        return True
+
+    fragmented_max_run = max(1, int(fragmented_max_run))
+    relaxed_ratio = max(float(max_ratio), float(relaxed_ratio))
+    relaxed_frames = max(int(max_frames), int(relaxed_frames))
+    min_fragmented_runs = max(1, int(min_fragmented_runs))
+
+    padded = np.pad(dropout_mask.astype(np.int8), (1, 1), mode="constant")
+    edges = np.diff(padded)
+    starts = np.where(edges == 1)[0]
+    ends = np.where(edges == -1)[0]
+    if starts.size == 0 or ends.size == 0:
+        return False
+
+    run_lengths = ends - starts
+    max_run = int(np.max(run_lengths))
+    run_count = int(run_lengths.size)
+    if max_run > fragmented_max_run:
+        return False
+    if run_count < min_fragmented_runs:
+        return False
+    if dropout_count > relaxed_frames or dropout_ratio > relaxed_ratio:
+        return False
+    return True
+
+
 def compute_active_source_replace(
     activity: np.ndarray,
     soft_mask: np.ndarray,
