@@ -16,6 +16,7 @@ from typing import Optional, Tuple
 import soundfile as sf
 
 from configs.config import Config as OfficialConfig
+from infer.quality_policy import resolve_cover_f0_policy
 from lib.logger import log
 
 
@@ -271,6 +272,14 @@ def convert_vocals_official(
     rms_mix_rate = float(max(0.0, min(1.0, rms_mix_rate)))
     # Official vc pipeline uses the opposite convention: 1=off, 0=strongest.
     official_rms_mix_rate = 1.0 - rms_mix_rate
+    root_dir = Path(__file__).parent.parent
+    app_cfg = _load_app_config(root_dir)
+    f0_policy = resolve_cover_f0_policy(
+        requested_method=f0_method,
+        configured_hybrid_mode=str(_get_cfg_value(app_cfg, "f0_hybrid_mode", "off")),
+        repair_profile=repair_profile,
+    )
+    effective_f0_method = f0_policy.vc_method
 
     log.progress("开始官方VC人声转换...")
     log.detail(f"输入人声: {vocals_path}")
@@ -280,6 +289,14 @@ def convert_vocals_official(
         log.model(f"索引文件: {Path(index_path).name}")
 
     log.config(f"F0方法: {f0_method}")
+    if effective_f0_method != str(f0_method).strip().lower():
+        log.detail(
+            "F0路由解析: "
+            f"requested={f0_policy.requested_method}, "
+            f"vc={f0_policy.vc_method}, "
+            f"hybrid_mode={f0_policy.hybrid_mode}, "
+            f"gate={f0_policy.gate_method}"
+        )
     log.config(f"音调偏移: {pitch_shift} 半音")
     log.config(f"索引率: {index_rate}")
     log.config(f"滤波半径: {filter_radius}")
@@ -287,8 +304,6 @@ def convert_vocals_official(
     log.config(f"保护系数: {protect}")
     if repair_profile:
         log.config("唱歌修复: 开启")
-
-    root_dir = Path(__file__).parent.parent
     env_paths = setup_official_env(root_dir)
 
     log.detail("导入官方VC模块...")
@@ -306,7 +321,6 @@ def convert_vocals_official(
 
     log.detail("初始化官方配置...")
     config = OfficialConfig()
-    app_cfg = _load_app_config(root_dir)
     config.disable_chunking = bool(app_cfg.get("disable_chunking", False))
     if "cover" in app_cfg and isinstance(app_cfg["cover"], dict):
         config.disable_chunking = bool(app_cfg["cover"].get("disable_chunking", config.disable_chunking))
@@ -317,7 +331,7 @@ def convert_vocals_official(
     # Keep RMVPE extraction aligned with RVC training pitch embedding range.
     # Allowing much wider ranges (e.g. 1600Hz) often tracks higher harmonics
     # instead of the fundamental and introduces synthetic buzzing artifacts.
-    if f0_method == "rmvpe":
+    if effective_f0_method == "rmvpe":
         if config.f0_min != 50.0 or config.f0_max != 1100.0:
             log.warning(
                 "检测到RMVPE F0范围偏离RVC训练范围，已强制使用 50-1100Hz 以避免误跟踪高次谐波"
@@ -328,7 +342,7 @@ def convert_vocals_official(
     config.f0_energy_threshold_db = _to_float(
         _get_cfg_value(app_cfg, "f0_energy_threshold_db", -50), -50
     )
-    config.f0_hybrid_mode = str(_get_cfg_value(app_cfg, "f0_hybrid_mode", "off"))
+    config.f0_hybrid_mode = f0_policy.hybrid_mode
     config.crepe_pd_threshold = _to_float(
         _get_cfg_value(app_cfg, "crepe_pd_threshold", 0.1), 0.1
     )
@@ -348,6 +362,13 @@ def convert_vocals_official(
     config.f0_rate_limit_semitones = _to_float(
         _get_cfg_value(app_cfg, "f0_rate_limit_semitones", 8.0), 8.0
     )
+    if f0_policy.requested_method == "hybrid":
+        config.f0_fallback_context_radius = 12
+        config.f0_fallback_repair_gap = 6
+        config.f0_fallback_post_gap = 4
+        config.f0_fallback_use_crepe = True
+        config.f0_fallback_crepe_max_ratio = 0.006
+        config.f0_fallback_crepe_max_frames = 160
     if repair_profile:
         config.is_half = False
         config.f0_hybrid_mode = "fallback"
@@ -402,7 +423,7 @@ def convert_vocals_official(
         vocals_path,
         pitch_shift,
         None,
-        f0_method,
+        effective_f0_method,
         official_index or "",
         "",
         index_rate,

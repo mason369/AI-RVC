@@ -466,12 +466,12 @@ class Pipeline(object):
             log.detail(f"时间步长: {time_step:.2f}ms, F0范围: {f0_min}-{f0_max}Hz")
             log.detail(f"音频长度: {len(x)} 样本, p_len: {p_len}")
 
-        # 将hybrid映射到rmvpe+crepe模式
+        # Normalize direct hybrid requests to the conservative RMVPE fallback path.
         if f0_method == "hybrid":
             f0_method = "rmvpe"
-            # 临时设置hybrid模式
             original_hybrid_mode = self.f0_hybrid_mode
-            self.f0_hybrid_mode = "rmvpe+crepe"
+            if self.f0_hybrid_mode not in self.rmvpe_fallback_modes:
+                self.f0_hybrid_mode = "fallback"
             restore_hybrid_mode = True
         else:
             restore_hybrid_mode = False

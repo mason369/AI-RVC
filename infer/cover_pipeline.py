@@ -30,6 +30,11 @@ from infer.official_adapter import (
     convert_vocals_official_upstream,
 )
 from infer.advanced_dereverb import advanced_dereverb, apply_reverb_to_converted
+from infer.quality_policy import (
+    compute_active_source_replace,
+    compute_source_cleanup_budget,
+    resolve_cover_f0_policy,
+)
 from lib.audio import soft_clip
 from lib.mixer import mix_vocals_and_accompaniment
 from lib.logger import log
@@ -743,7 +748,7 @@ class CoverPipeline:
         gain = np.clip(gain[:aligned_len], 0.0, 1.0).astype(np.float32)
         suppressed = converted_main * gain
 
-        attenuated_samples = int(np.sum(gain < 0.08))
+        attenuated_samples = int(np.sum(gain < 0.50))
         if attenuated_samples > 0:
             log.detail(
                 f"Source gap suppression: attenuated {attenuated_samples}/{aligned_len} samples in no-vocal regions"
@@ -799,11 +804,11 @@ class CoverPipeline:
         )
 
         quiet_mask = (
-            (frame_db < (ref_db - 36.0))
-            & (activity < 0.12)
+            (frame_db < (ref_db - 42.0))
+            & (activity < 0.08)
         )
 
-        min_frames = max(1, int(0.12 * sr / hop_length))
+        min_frames = max(1, int(0.16 * sr / hop_length))
         gate = quiet_mask.astype(np.float32)
         filtered = np.zeros_like(gate)
         run_start = 0
@@ -821,12 +826,12 @@ class CoverPipeline:
         if in_run and (len(gate) - run_start) >= min_frames:
             filtered[run_start:len(gate)] = 1.0
 
-        transition_frames = max(1, int(0.04 * sr / hop_length))
+        transition_frames = max(1, int(0.05 * sr / hop_length))
         smooth_kernel = np.ones(transition_frames, dtype=np.float32) / transition_frames
         filtered = np.convolve(filtered, smooth_kernel, mode="same")
         filtered = np.clip(filtered, 0.0, 1.0)
 
-        gain_curve = 1.0 - filtered * 0.92
+        gain_curve = 1.0 - filtered * 0.55
         sample_gain = CoverPipeline._frame_curve_to_sample_gain(
             gain_curve,
             len(reference_audio),
@@ -932,10 +937,10 @@ class CoverPipeline:
             vocals_path=source_vocals_path,
             converted_path=converted_vocals_path,
             f0_method=f0_method,
-            silence_threshold_db=-42.0,
+            silence_threshold_db=-48.0,
             silence_smoothing_ms=35.0,
-            silence_min_duration_ms=80.0,
-            protect=0.0,
+            silence_min_duration_ms=120.0,
+            protect=0.35,
         )
         log.detail("Low-energy unvoiced cleanup: applied after source-guided reconstruction")
 
@@ -1311,12 +1316,14 @@ class CoverPipeline:
         gate_pipe = VoiceConversionPipeline(device=self.device)
         root_dir = Path(__file__).parent.parent
         rmvpe_path = root_dir / "assets" / "rmvpe" / "rmvpe.pt"
-        if f0_method in ("rmvpe", "hybrid"):
+        gate_policy = resolve_cover_f0_policy(f0_method)
+        gate_method = gate_policy.gate_method
+        if gate_method in ("rmvpe", "hybrid"):
             if not rmvpe_path.exists():
                 raise FileNotFoundError(f"RMVPE 模型未找到: {rmvpe_path}")
-            gate_pipe.load_f0_extractor(f0_method, str(rmvpe_path))
+            gate_pipe.load_f0_extractor(gate_method, str(rmvpe_path))
         else:
-            gate_pipe.load_f0_extractor(f0_method, None)
+            gate_pipe.load_f0_extractor(gate_method, None)
         f0 = gate_pipe.f0_extractor.extract(audio_in)
         gate_pipe.unload_f0_extractor()
 
@@ -1504,8 +1511,12 @@ class CoverPipeline:
         # phase interference / tearing artifacts), we only constrain the
         # MAGNITUDE toward the source envelope while preserving the converted
         # signal's phase.  This eliminates phase cancellation.
-        source_replace = 0.85 * (1.0 - activity)[np.newaxis, :] * (1.0 - soft_mask)
-        source_replace = np.clip(source_replace, 0.0, 0.70)
+        source_replace = compute_active_source_replace(
+            activity=activity,
+            soft_mask=soft_mask,
+            echo_ratio=echo_ratio,
+            direct_ratio=direct_ratio,
+        )
 
         # Target magnitude: blend toward source magnitude, keep converted phase
         target_mag = conv_mag * (1.0 - source_replace) + src_mag * source_replace
@@ -1534,8 +1545,8 @@ class CoverPipeline:
             reference_audio=orig if orig is not None else src,
             target_audio=constrained,
             sr=conv_sr,
-            min_gain=0.95,  # 放宽到0.95，只降低5%（从0.80改为0.95）
-            max_gain=1.30,  # 允许更大的提升（从1.25改为1.30）
+            min_gain=0.85,
+            max_gain=1.12,
         )
         if abs(gain - 1.0) > 1e-3 and out_rms > 1e-6 and ref_rms > 1e-6:
             constrained = self._apply_weighted_gain(constrained, gain_weights, gain)
@@ -1553,12 +1564,15 @@ class CoverPipeline:
         base_budget_rms = np.maximum(src_frame_rms, orig_frame_rms)
         ref_frame_rms = float(np.percentile(base_budget_rms, 95))
         energy_guard = np.clip(0.20 * direct_activity + 0.15 * direct_ratio + 0.65 * phrase_activity, 0.0, 1.0)
-        allowed_boost = 0.50 + 1.50 * energy_guard  # 提高基础boost（从0.35改为0.50，从1.20改为1.50）
         noise_floor = ref_frame_rms * (0.002 + 0.005 * (1.0 - phrase_activity))  # 降低noise_floor
+        allowed_boost, cleanup_floor = compute_source_cleanup_budget(
+            energy_guard=energy_guard,
+            phrase_activity=phrase_activity,
+        )
         frame_budget = base_budget_rms * allowed_boost + noise_floor
         cleanup_gain = np.clip(
             frame_budget / (constrained_frame_rms + eps),
-            0.75 + 0.20 * phrase_activity,  # 提高最小增益（从0.55改为0.75）
+            cleanup_floor,
             1.0,
         )
         cleanup_gain = np.convolve(cleanup_gain, frame_kernel, mode="same")
