@@ -23,6 +23,7 @@ def _load_quality_policy_module():
 quality_policy = _load_quality_policy_module()
 build_conservative_crepe_fill_mask = quality_policy.build_conservative_crepe_fill_mask
 compute_active_source_replace = quality_policy.compute_active_source_replace
+compute_breath_preserving_energy_gates = quality_policy.compute_breath_preserving_energy_gates
 compute_source_cleanup_budget = quality_policy.compute_source_cleanup_budget
 resolve_cover_f0_policy = quality_policy.resolve_cover_f0_policy
 
@@ -93,6 +94,31 @@ class SourceConstraintPolicyTests(unittest.TestCase):
         self.assertLess(float(np.max(allowed_boost)), 1.5)
 
 
+class BreathEnergyGateTests(unittest.TestCase):
+    def test_marginal_quiet_unvoiced_frames_keep_more_feature_than_pitch(self):
+        energy_db = np.array([-70.0, -60.0, -47.0, -38.0], dtype=np.float32)
+        unvoiced_mask = np.array([True, True, True, False], dtype=bool)
+
+        feature_gate, pitch_gate = compute_breath_preserving_energy_gates(
+            energy_db=energy_db,
+            ref_db=-12.0,
+            unvoiced_mask=unvoiced_mask,
+            quiet_floor=0.05,
+            breath_floor=0.28,
+            breath_active_margin_db=52.0,
+            transition_width_db=6.0,
+        )
+
+        self.assertAlmostEqual(float(feature_gate[0]), 0.05, places=5)
+        self.assertAlmostEqual(float(pitch_gate[0]), 0.05, places=5)
+        self.assertGreater(float(feature_gate[1]), float(pitch_gate[1]))
+        self.assertGreater(float(feature_gate[1]), 0.13)
+        self.assertLess(float(pitch_gate[1]), 0.13)
+        self.assertGreater(float(feature_gate[1]), float(pitch_gate[1]))
+        self.assertAlmostEqual(float(feature_gate[2]), float(pitch_gate[2]), places=5)
+        self.assertAlmostEqual(float(feature_gate[3]), float(pitch_gate[3]), places=5)
+
+
 class SourceRegressionTests(unittest.TestCase):
     def test_cover_pipeline_uses_single_conservative_cleanup_budget(self):
         source = (REPO_ROOT / "infer" / "cover_pipeline.py").read_text(encoding="utf-8")
@@ -121,6 +147,18 @@ class SourceRegressionTests(unittest.TestCase):
 
         self.assertRegex(source, r'"f0_hybrid_mode"\s*:\s*"fallback"')
         self.assertNotRegex(source, r'"crepe_force_ratio"\s*:\s*0\.0')
+
+    def test_official_vc_pipeline_uses_breath_preserving_energy_gates(self):
+        source = (REPO_ROOT / "infer" / "modules" / "vc" / "pipeline.py").read_text(encoding="utf-8")
+
+        self.assertIn("compute_breath_preserving_energy_gates", source)
+        self.assertIn("self.unvoiced_feature_gate_floor", source)
+
+    def test_config_includes_breath_gate_defaults(self):
+        source = (REPO_ROOT / "configs" / "config.json").read_text(encoding="utf-8")
+
+        self.assertRegex(source, r'"unvoiced_feature_gate_floor"\s*:\s*0\.28')
+        self.assertRegex(source, r'"breath_active_margin_db"\s*:\s*52\.0')
 
 
 if __name__ == "__main__":

@@ -161,3 +161,50 @@ def compute_source_cleanup_budget(
     allowed_boost = 0.35 + 1.00 * energy_guard
     cleanup_floor = 0.62 + 0.16 * phrase_activity
     return allowed_boost.astype(np.float32), cleanup_floor.astype(np.float32)
+
+
+def compute_breath_preserving_energy_gates(
+    energy_db: np.ndarray,
+    ref_db: float,
+    unvoiced_mask: np.ndarray | None,
+    quiet_floor: float = 0.05,
+    breath_floor: float = 0.28,
+    breath_active_margin_db: float = 52.0,
+    transition_width_db: float = 6.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    energy_db = np.asarray(energy_db, dtype=np.float32).reshape(-1)
+    if energy_db.size == 0:
+        empty = np.zeros(0, dtype=np.float32)
+        return empty, empty
+
+    quiet_floor = float(np.clip(quiet_floor, 0.0, 1.0))
+    breath_floor = float(np.clip(max(breath_floor, quiet_floor), quiet_floor, 1.0))
+    breath_active_margin_db = float(max(1.0, breath_active_margin_db))
+    transition_width_db = float(max(0.5, transition_width_db))
+    ref_db = float(ref_db)
+
+    silence_center = ref_db - 45.0
+    slope = transition_width_db / 4.0
+    base_gate = 1.0 / (1.0 + np.exp(-((energy_db - silence_center) / slope)))
+    base_gate = np.clip(base_gate, quiet_floor, 1.0).astype(np.float32)
+
+    if unvoiced_mask is None:
+        return base_gate, base_gate.copy()
+
+    unvoiced_mask = np.asarray(unvoiced_mask, dtype=bool).reshape(-1)
+    if len(unvoiced_mask) < len(base_gate):
+        unvoiced_mask = np.pad(unvoiced_mask, (0, len(base_gate) - len(unvoiced_mask)), mode="edge")
+    else:
+        unvoiced_mask = unvoiced_mask[: len(base_gate)]
+
+    breath_activity = np.clip(
+        (energy_db - (ref_db - breath_active_margin_db)) / 10.0,
+        0.0,
+        1.0,
+    ).astype(np.float32)
+    feature_floor = quiet_floor + (breath_floor - quiet_floor) * breath_activity
+
+    feature_gate = base_gate.copy()
+    feature_gate[unvoiced_mask] = np.maximum(feature_gate[unvoiced_mask], feature_floor[unvoiced_mask])
+    feature_gate = np.clip(feature_gate, quiet_floor, 1.0).astype(np.float32)
+    return feature_gate, base_gate.copy()

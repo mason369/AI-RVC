@@ -352,6 +352,12 @@ def convert_vocals_official(
     config.crepe_replace_semitones = _to_float(
         _get_cfg_value(app_cfg, "crepe_replace_semitones", 0.0), 0.0
     )
+    config.unvoiced_feature_gate_floor = _to_float(
+        _get_cfg_value(app_cfg, "unvoiced_feature_gate_floor", 0.28), 0.28
+    )
+    config.breath_active_margin_db = _to_float(
+        _get_cfg_value(app_cfg, "breath_active_margin_db", 52.0), 52.0
+    )
     config.f0_stabilize = bool(_get_cfg_value(app_cfg, "f0_stabilize", False))
     config.f0_stabilize_window = int(_get_cfg_value(app_cfg, "f0_stabilize_window", 2))
     config.f0_stabilize_max_semitones = _to_float(
@@ -373,6 +379,9 @@ def convert_vocals_official(
         config.is_half = False
         config.f0_hybrid_mode = "fallback"
         config.f0_energy_threshold_db = -42.0
+        config.unvoiced_feature_gate_floor = max(
+            0.32, float(config.unvoiced_feature_gate_floor)
+        )
         config.f0_fallback_context_radius = 12
         config.f0_fallback_repair_gap = 6
         config.f0_fallback_post_gap = 4
@@ -386,6 +395,10 @@ def convert_vocals_official(
     log.config(f"F0范围: {config.f0_min}-{config.f0_max}Hz")
     log.config(f"RMVPE阈值: {config.rmvpe_threshold}")
     log.config(f"F0能量阈值: {config.f0_energy_threshold_db}dB")
+    log.config(
+        f"无声气声特征地板: {config.unvoiced_feature_gate_floor:.2f}, "
+        f"呼吸激活边界: ref-{config.breath_active_margin_db:.1f}dB"
+    )
     log.config(
         f"F0混合: {config.f0_hybrid_mode}, CREPE阈值: {config.crepe_pd_threshold}, "
         f"强制比率: {config.crepe_force_ratio}, 替换阈值(半音): {config.crepe_replace_semitones}"

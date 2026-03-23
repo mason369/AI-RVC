@@ -29,6 +29,7 @@ except ImportError:
     log = None
 
 from lib.audio import soft_clip
+from infer.quality_policy import compute_breath_preserving_energy_gates
 
 bh, ah = signal.butter(N=5, Wn=48, btype="high", fs=16000)
 
@@ -372,6 +373,12 @@ class Pipeline(object):
         self.crepe_pd_threshold = float(getattr(config, "crepe_pd_threshold", 0.1))
         self.crepe_force_ratio = float(getattr(config, "crepe_force_ratio", 0.05))
         self.crepe_replace_semitones = float(getattr(config, "crepe_replace_semitones", 0.0))
+        self.unvoiced_feature_gate_floor = float(
+            getattr(config, "unvoiced_feature_gate_floor", 0.28)
+        )
+        self.breath_active_margin_db = float(
+            getattr(config, "breath_active_margin_db", 52.0)
+        )
         self.f0_fallback_context_radius = int(getattr(config, "f0_fallback_context_radius", 24))
         self.f0_fallback_repair_gap = int(getattr(config, "f0_fallback_repair_gap", 12))
         self.f0_fallback_post_gap = int(getattr(config, "f0_fallback_post_gap", 10))
@@ -394,6 +401,12 @@ class Pipeline(object):
             self.crepe_pd_threshold = 0.0
         if self.crepe_replace_semitones < 0:
             self.crepe_replace_semitones = 0.0
+        if self.unvoiced_feature_gate_floor < 0.05:
+            self.unvoiced_feature_gate_floor = 0.05
+        if self.unvoiced_feature_gate_floor > 1.0:
+            self.unvoiced_feature_gate_floor = 1.0
+        if self.breath_active_margin_db < 1.0:
+            self.breath_active_margin_db = 1.0
         if self.f0_fallback_context_radius < 1:
             self.f0_fallback_context_radius = 1
         if self.f0_fallback_repair_gap < 0:
@@ -420,6 +433,10 @@ class Pipeline(object):
             log.detail(
                 f"F0混合: {self.f0_hybrid_mode}, CREPE阈值: {self.crepe_pd_threshold}, "
                 f"强制比率: {self.crepe_force_ratio}, 替换阈值(半音): {self.crepe_replace_semitones}"
+            )
+            log.detail(
+                f"气声门控: 特征地板={self.unvoiced_feature_gate_floor:.2f}, "
+                f"激活边界=ref-{self.breath_active_margin_db:.1f}dB"
             )
             log.detail(
                 f"F0兜底: 上下文半径={self.f0_fallback_context_radius}, "
@@ -923,40 +940,58 @@ class Pipeline(object):
 
         _energy_db = 20.0 * np.log10(_frame_rms + 1e-8)
         _ref = energy_ref_db if energy_ref_db is not None else float(np.percentile(_energy_db, 95))
-        # Soft gate: sigmoid curve centered at ref-45dB with 6dB transition width.
-        # Frames well above threshold → gain≈1; frames well below → gain≈0.05
-        # (keep a small floor to avoid zero-feature shock to the network).
-        _silence_center = _ref - 45.0
-        _transition_width = 6.0  # dB for the sigmoid ramp
-        _energy_gate = 1.0 / (1.0 + np.exp(-(_energy_db - _silence_center) / (_transition_width / 4.0)))
-        # Apply floor: never fully zero features (network handles near-zero better than hard zero)
-        _energy_gate = np.clip(_energy_gate, 0.05, 1.0)
+        _unvoiced_mask = None
+        if pitchf is not None:
+            _pitchf_np = pitchf[0].detach().float().cpu().numpy()
+            if len(_pitchf_np) > _p_len_val:
+                _pitchf_np = _pitchf_np[:_p_len_val]
+            elif len(_pitchf_np) < _p_len_val:
+                _pitchf_np = np.pad(_pitchf_np, (0, _p_len_val - len(_pitchf_np)), mode="edge")
+            _unvoiced_mask = _pitchf_np <= 1e-4
+
+        _feat_gate_curve, _f0_gate_curve = compute_breath_preserving_energy_gates(
+            energy_db=_energy_db,
+            ref_db=_ref,
+            unvoiced_mask=_unvoiced_mask,
+            quiet_floor=0.05,
+            breath_floor=self.unvoiced_feature_gate_floor,
+            breath_active_margin_db=self.breath_active_margin_db,
+            transition_width_db=6.0,
+        )
         # Smooth temporally
         _sm = np.array([1, 2, 3, 2, 1], dtype=np.float32)
         _sm /= _sm.sum()
-        _energy_gate = np.convolve(_energy_gate, _sm, mode='same')[:_p_len_val]
-        _energy_gate = np.clip(_energy_gate, 0.05, 1.0)
+        _feat_gate_curve = np.convolve(_feat_gate_curve, _sm, mode='same')[:_p_len_val]
+        _f0_gate_curve = np.convolve(_f0_gate_curve, _sm, mode='same')[:_p_len_val]
+        _feat_gate_curve = np.clip(_feat_gate_curve, 0.05, 1.0)
+        _f0_gate_curve = np.clip(_f0_gate_curve, 0.05, 1.0)
+        if log and _unvoiced_mask is not None:
+            _breath_frames = int(np.sum(_feat_gate_curve > (_f0_gate_curve + 1e-4)))
+            if _breath_frames > 0:
+                log.detail(
+                    f"气声保护门控: { _breath_frames }/{ _p_len_val } 帧保留更高特征底噪"
+                )
 
         # Apply soft gate to features
         _feat_len = feats.shape[1]
-        if len(_energy_gate) > _feat_len:
-            _feat_gate = _energy_gate[:_feat_len]
-        elif len(_energy_gate) < _feat_len:
-            _feat_gate = np.pad(_energy_gate, (0, _feat_len - len(_energy_gate)), mode='constant', constant_values=1.0)
+        if len(_feat_gate_curve) > _feat_len:
+            _feat_gate = _feat_gate_curve[:_feat_len]
+        elif len(_feat_gate_curve) < _feat_len:
+            _feat_gate = np.pad(_feat_gate_curve, (0, _feat_len - len(_feat_gate_curve)), mode='constant', constant_values=1.0)
         else:
-            _feat_gate = _energy_gate
+            _feat_gate = _feat_gate_curve
         _gate_t = torch.from_numpy(_feat_gate.astype(np.float32)).to(feats.device).unsqueeze(0).unsqueeze(-1)
         feats = feats * _gate_t
 
         # F0 soft gating: consistently soft-attenuate both pitch confidence and pitch value
         if pitch is not None and pitchf is not None:
             _pitch_len = pitch.shape[1]
-            if len(_energy_gate) > _pitch_len:
-                _f0_gate = _energy_gate[:_pitch_len]
-            elif len(_energy_gate) < _pitch_len:
-                _f0_gate = np.pad(_energy_gate, (0, _pitch_len - len(_energy_gate)), mode='constant', constant_values=1.0)
+            if len(_f0_gate_curve) > _pitch_len:
+                _f0_gate = _f0_gate_curve[:_pitch_len]
+            elif len(_f0_gate_curve) < _pitch_len:
+                _f0_gate = np.pad(_f0_gate_curve, (0, _pitch_len - len(_f0_gate_curve)), mode='constant', constant_values=1.0)
             else:
-                _f0_gate = _energy_gate
+                _f0_gate = _f0_gate_curve
             _f0_gate_t = torch.from_numpy(_f0_gate.astype(np.float32)).to(pitch.device).unsqueeze(0)
             pitchf = pitchf * _f0_gate_t
             # Soft-blend pitch toward silence bin (1) instead of hard switch
