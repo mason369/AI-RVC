@@ -22,7 +22,6 @@ def _load_quality_policy_module():
 
 quality_policy = _load_quality_policy_module()
 build_conservative_crepe_fill_mask = quality_policy.build_conservative_crepe_fill_mask
-should_allow_crepe_fallback = quality_policy.should_allow_crepe_fallback
 compute_active_source_replace = quality_policy.compute_active_source_replace
 compute_breath_preserving_energy_gates = quality_policy.compute_breath_preserving_energy_gates
 compute_source_cleanup_budget = quality_policy.compute_source_cleanup_budget
@@ -57,33 +56,6 @@ class ConservativeCrepeFillTests(unittest.TestCase):
 
         expected = np.array([False, False, False, False, True, True, False, False, False, False])
         np.testing.assert_array_equal(fill_mask, expected)
-
-    def test_fragmented_dropouts_can_still_enable_crepe_fallback(self):
-        dropout_mask = np.zeros(26390, dtype=bool)
-        for start in range(400, 400 + 96 * 20, 20):
-            dropout_mask[start : start + 2] = True
-
-        allow = should_allow_crepe_fallback(
-            dropout_mask=dropout_mask,
-            total_frames=26390,
-            max_ratio=0.006,
-            max_frames=160,
-        )
-
-        self.assertTrue(allow)
-
-    def test_long_contiguous_dropout_stays_blocked(self):
-        dropout_mask = np.zeros(26390, dtype=bool)
-        dropout_mask[400:592] = True
-
-        allow = should_allow_crepe_fallback(
-            dropout_mask=dropout_mask,
-            total_frames=26390,
-            max_ratio=0.006,
-            max_frames=160,
-        )
-
-        self.assertFalse(allow)
 
 
 class SourceConstraintPolicyTests(unittest.TestCase):

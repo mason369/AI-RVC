@@ -29,11 +29,7 @@ except ImportError:
     log = None
 
 from lib.audio import soft_clip
-from infer.quality_policy import (
-    compute_breath_preserving_energy_gates,
-    compute_chunk_crossfade_samples,
-    should_allow_crepe_fallback,
-)
+from infer.quality_policy import compute_breath_preserving_energy_gates
 
 bh, ah = signal.butter(N=5, Wn=48, btype="high", fs=16000)
 
@@ -732,11 +728,9 @@ class Pipeline(object):
                         need_fill2_count = int(np.sum(need_fill2))
                         need_fill2_ratio = float(need_fill2_count) / max(len(f0), 1)
                         if np.any(need_fill2) and self.f0_fallback_use_crepe:
-                            allow_crepe_fallback = should_allow_crepe_fallback(
-                                dropout_mask=need_fill2,
-                                total_frames=len(f0),
-                                max_ratio=self.f0_fallback_crepe_max_ratio,
-                                max_frames=self.f0_fallback_crepe_max_frames,
+                            allow_crepe_fallback = (
+                                need_fill2_count <= self.f0_fallback_crepe_max_frames
+                                and need_fill2_ratio <= self.f0_fallback_crepe_max_ratio
                             )
                         else:
                             allow_crepe_fallback = False
@@ -776,7 +770,7 @@ class Pipeline(object):
                         elif np.any(need_fill2) and log:
                             log.detail(
                                 f"Harvest后仍掉线(主唱上下文): {need_fill2_count}/{len(f0)}，"
-                                f"已跳过CREPE兜底（count={need_fill2_count}, ratio={need_fill2_ratio:.2%}）"
+                                "已跳过CREPE兜底（超出保守阈值）"
                             )
 
                         final_drop = (f0 <= 0) & energy_mask & voiced_context
