@@ -12,11 +12,13 @@ ROOT_DIR = Path(__file__).parent
 sys.path.insert(0, str(ROOT_DIR))
 
 from lib.logger import log
+from lib.runtime_build import get_runtime_build_label
 
 
 def check_environment():
     """检查运行环境"""
     log.header("RVC AI 翻唱系统")
+    log.info(get_runtime_build_label())
 
     # 检查 Python 版本
     py_version = sys.version_info

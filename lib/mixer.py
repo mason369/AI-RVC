@@ -101,6 +101,106 @@ def adjust_audio_length(audio: np.ndarray, target_length: int) -> np.ndarray:
     return np.pad(audio, ((0, 0), (0, pad_amount)))
 
 
+def _frame_curve_to_sample_curve(curve: np.ndarray, target_length: int, hop_length: int) -> np.ndarray:
+    """Expand a frame-level curve to sample length using linear interpolation."""
+    curve = np.asarray(curve, dtype=np.float32).reshape(-1)
+    if target_length <= 0:
+        return np.zeros(0, dtype=np.float32)
+    if curve.size == 0:
+        return np.zeros(target_length, dtype=np.float32)
+    frame_positions = np.arange(curve.size, dtype=np.float32)
+    sample_positions = np.arange(target_length, dtype=np.float32) / max(float(hop_length), 1.0)
+    expanded = np.interp(sample_positions, frame_positions, curve, left=curve[0], right=curve[-1])
+    return np.asarray(expanded, dtype=np.float32)
+
+
+def _apply_adaptive_vocal_ducking(
+    vocals: np.ndarray,
+    accompaniment: np.ndarray,
+    sr: int,
+) -> np.ndarray:
+    """Duck accompaniment slightly under active vocals so default mixes keep the lead forward."""
+    vocals = np.asarray(vocals, dtype=np.float32)
+    accompaniment = np.asarray(accompaniment, dtype=np.float32)
+    if vocals.ndim == 1:
+        vocals = vocals.reshape(1, -1)
+    if accompaniment.ndim == 1:
+        accompaniment = accompaniment.reshape(1, -1)
+
+    aligned_len = min(vocals.shape[-1], accompaniment.shape[-1])
+    if aligned_len <= 2048:
+        return accompaniment
+
+    vocal_mono = vocals[:, :aligned_len].mean(axis=0)
+    accompaniment_mono = accompaniment[:, :aligned_len].mean(axis=0)
+    eps = 1e-8
+    frame_length = 2048
+    hop_length = 512
+
+    vocal_rms = librosa.feature.rms(
+        y=vocal_mono,
+        frame_length=frame_length,
+        hop_length=hop_length,
+        center=True,
+    )[0].astype(np.float32)
+    accompaniment_rms = librosa.feature.rms(
+        y=accompaniment_mono,
+        frame_length=frame_length,
+        hop_length=hop_length,
+        center=True,
+    )[0].astype(np.float32)
+
+    frame_count = min(vocal_rms.size, accompaniment_rms.size)
+    if frame_count <= 4:
+        return accompaniment
+
+    vocal_rms = vocal_rms[:frame_count]
+    accompaniment_rms = accompaniment_rms[:frame_count]
+
+    vocal_db = 20.0 * np.log10(vocal_rms + eps)
+    vocal_peak_db = float(np.percentile(vocal_db, 95))
+    activity = np.square(np.clip((vocal_db - (vocal_peak_db - 24.0)) / 11.0, 0.0, 1.0))
+    accompaniment_db = 20.0 * np.log10(accompaniment_rms + eps)
+    dense_backing = np.clip(
+        (accompaniment_db - float(np.percentile(accompaniment_db, 65)) + 4.0) / 10.0,
+        0.0,
+        1.0,
+    )
+
+    vocal_global_rms = float(np.sqrt(np.mean(np.square(vocal_mono)) + 1e-12))
+    accompaniment_global_rms = float(np.sqrt(np.mean(np.square(accompaniment_mono)) + 1e-12))
+    balance_ratio = float(vocal_global_rms / (accompaniment_global_rms + 1e-12))
+    duck_need = float(np.clip((0.92 - balance_ratio) / 0.34, 0.0, 1.0))
+    if duck_need <= 0.02:
+        return accompaniment
+
+    smooth_kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
+    smooth_kernel /= np.sum(smooth_kernel)
+    duck_curve = activity * (0.50 + 0.50 * dense_backing) * (0.45 + 0.55 * duck_need)
+    duck_curve = np.convolve(duck_curve, smooth_kernel, mode="same")
+
+    for i in range(1, duck_curve.size):
+        duck_curve[i] = max(duck_curve[i], duck_curve[i - 1] * 0.96)
+
+    duck_curve = np.clip(duck_curve, 0.0, 1.0).astype(np.float32)
+    sample_curve = _frame_curve_to_sample_curve(duck_curve, accompaniment.shape[-1], hop_length)
+    max_duck_db = 1.8 + 1.8 * duck_need
+    gain_curve = np.power(10.0, -(max_duck_db * sample_curve) / 20.0).astype(np.float32)
+
+    ducked = accompaniment.copy().astype(np.float32)
+    ducked *= gain_curve[np.newaxis, :]
+
+    if log:
+        log.detail(
+            "Adaptive mix ducking: "
+            f"balance={balance_ratio:.3f}, "
+            f"avg_duck={max_duck_db * float(np.mean(sample_curve)):.2f}dB, "
+            f"max_duck={max_duck_db * float(np.max(sample_curve)):.2f}dB"
+        )
+
+    return ducked
+
+
 def mix_vocals_and_accompaniment(
     vocals_path: str,
     accompaniment_path: str,
@@ -173,6 +273,7 @@ def mix_vocals_and_accompaniment(
 
     vocals = adjust_audio_length(vocals, target_len)
     accompaniment = adjust_audio_length(accompaniment, target_len)
+    accompaniment = _apply_adaptive_vocal_ducking(vocals, accompaniment, sr)
 
     if log:
         log.progress("混合音轨...")

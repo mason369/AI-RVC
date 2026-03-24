@@ -5,6 +5,7 @@
 import os
 import gc
 import re
+import json
 import uuid
 import shutil
 import torch
@@ -217,6 +218,10 @@ class CoverPipeline:
         separation_db = float(20.0 * np.log10((active_rms + 1e-12) / (quiet_rms + 1e-12)))
         active_ratio = float(active_rms / (ref_active_rms + 1e-12))
         ratio_penalty = abs(float(np.log2(max(active_ratio, 1e-4))))
+        active_diff_rms = float(
+            np.sqrt(np.mean(np.square(reference_audio[active_mask] - candidate_audio[active_mask])) + 1e-12)
+        )
+        reduction_ratio = float(active_diff_rms / (ref_active_rms + 1e-12))
         score = separation_db + 18.0 * corr - 6.0 * ratio_penalty
 
         return score, {
@@ -224,6 +229,7 @@ class CoverPipeline:
             "separation_db": separation_db,
             "corr": corr,
             "active_ratio": active_ratio,
+            "reduction_ratio": reduction_ratio,
         }
 
     def _select_best_uvr_deecho_output(self, reference_path: str, candidate_files: List[Path]) -> Optional[Path]:
@@ -242,7 +248,8 @@ class CoverPipeline:
                 "UVR DeEcho candidate: "
                 f"{candidate_path.name}, score={metrics['score']:.2f}, "
                 f"sep={metrics['separation_db']:.2f}dB, corr={metrics['corr']:.3f}, "
-                f"ratio={metrics['active_ratio']:.3f}"
+                f"ratio={metrics['active_ratio']:.3f}, "
+                f"reduction={metrics['reduction_ratio']:.3f}"
             )
             if best_score is None or score > best_score:
                 best_score = score
@@ -252,6 +259,366 @@ class CoverPipeline:
         # 保存最佳候选的质量指标，供 blend 决策使用
         self._uvr_deecho_metrics = best_metrics
         return best_path
+
+    @staticmethod
+    def _save_debug_audio_snapshot(
+        session_dir: Path,
+        audio_path: str,
+        label: str,
+    ) -> Optional[str]:
+        source_path = Path(audio_path)
+        if not source_path.exists():
+            return None
+        suffix = source_path.suffix or ".wav"
+        snapshot_path = session_dir / f"{label}{suffix}"
+        shutil.copy2(source_path, snapshot_path)
+        return str(snapshot_path)
+
+    @staticmethod
+    def _append_quality_debug_entry(session_dir: Path, entry: Dict[str, object]) -> None:
+        report_path = session_dir / "quality_debug.json"
+        payload: Dict[str, object] = {"stages": []}
+        if report_path.exists():
+            try:
+                payload = json.loads(report_path.read_text(encoding="utf-8"))
+            except Exception:
+                payload = {"stages": []}
+        stages = payload.get("stages")
+        if not isinstance(stages, list):
+            stages = []
+        stages.append(entry)
+        payload["stages"] = stages
+        report_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _export_suspect_transition_clips(
+        session_dir: Path,
+        stage: str,
+        candidate_path: str,
+        reference_path: Optional[str],
+        suspect_times: List[float],
+        max_clips: int = 6,
+        clip_duration_sec: float = 1.2,
+    ) -> List[str]:
+        import soundfile as sf
+
+        if not suspect_times:
+            return []
+
+        clip_dir = session_dir / "debug_clips" / stage
+        clip_dir.mkdir(parents=True, exist_ok=True)
+
+        exported: List[str] = []
+
+        def _export_one(prefix: str, path: str, time_sec: float) -> Optional[str]:
+            if not path or not Path(path).exists():
+                return None
+            audio, sr = sf.read(path, always_2d=True)
+            audio = np.asarray(audio, dtype=np.float32)
+            clip_samples = int(max(1, round(float(clip_duration_sec) * sr)))
+            center = int(round(float(time_sec) * sr))
+            start = max(0, center - clip_samples // 2)
+            end = min(audio.shape[0], start + clip_samples)
+            start = max(0, end - clip_samples)
+            clip = audio[start:end]
+            out_path = clip_dir / f"{prefix}_{float(time_sec):07.3f}s.wav"
+            sf.write(str(out_path), clip, sr)
+            return str(out_path)
+
+        for time_sec in suspect_times[: max(1, int(max_clips))]:
+            candidate_clip = _export_one("candidate", candidate_path, float(time_sec))
+            reference_clip = _export_one("reference", reference_path, float(time_sec)) if reference_path else None
+            if candidate_clip:
+                exported.append(candidate_clip)
+            if reference_clip:
+                exported.append(reference_clip)
+
+        return exported
+
+    @staticmethod
+    def _analyze_quality_stage(
+        candidate_path: str,
+        reference_path: Optional[str] = None,
+    ) -> Dict[str, object]:
+        import librosa
+        import soundfile as sf
+
+        def _load_mono(path: str) -> Tuple[np.ndarray, int]:
+            audio, sr = sf.read(path, always_2d=True)
+            audio = np.asarray(audio, dtype=np.float32)
+            mono = audio.mean(axis=1)
+            return mono.astype(np.float32), int(sr)
+
+        def _safe_rms(values: np.ndarray, mask: np.ndarray) -> float:
+            values = np.asarray(values, dtype=np.float32)
+            mask = np.asarray(mask, dtype=bool)
+            if values.size == 0 or mask.size == 0 or not np.any(mask):
+                return 0.0
+            return float(np.sqrt(np.mean(np.square(values[mask])) + 1e-12))
+
+        def _preemphasis_rms(audio: np.ndarray, frame_length: int, hop_length: int) -> np.ndarray:
+            audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+            if audio.size == 0:
+                return np.zeros(0, dtype=np.float32)
+            residual = np.empty_like(audio)
+            residual[0] = audio[0]
+            residual[1:] = audio[1:] - 0.97 * audio[:-1]
+            return librosa.feature.rms(
+                y=residual,
+                frame_length=frame_length,
+                hop_length=hop_length,
+                center=True,
+            )[0].astype(np.float32)
+
+        candidate_audio, candidate_sr = _load_mono(candidate_path)
+        aligned_len = int(candidate_audio.size)
+        peak = float(np.max(np.abs(candidate_audio))) if aligned_len > 0 else 0.0
+        clip_samples = int(np.sum(np.abs(candidate_audio) >= 0.995)) if aligned_len > 0 else 0
+        analysis: Dict[str, object] = {
+            "sample_rate": int(candidate_sr),
+            "duration_sec": float(aligned_len / max(candidate_sr, 1)),
+            "global_rms": float(np.sqrt(np.mean(np.square(candidate_audio)) + 1e-12)) if aligned_len > 0 else 0.0,
+            "peak": peak,
+            "clip_samples": clip_samples,
+            "clip_ratio": float(clip_samples / max(aligned_len, 1)),
+        }
+
+        if not reference_path:
+            return analysis
+
+        reference_audio, reference_sr = _load_mono(reference_path)
+        if reference_sr != candidate_sr:
+            reference_audio = librosa.resample(
+                reference_audio,
+                orig_sr=reference_sr,
+                target_sr=candidate_sr,
+            ).astype(np.float32)
+
+        aligned_len = min(reference_audio.size, candidate_audio.size)
+        if aligned_len <= 2048:
+            return analysis
+
+        reference_audio = reference_audio[:aligned_len]
+        candidate_audio = candidate_audio[:aligned_len]
+
+        frame_length = 2048
+        hop_length = 512
+        eps = 1e-8
+
+        ref_rms = librosa.feature.rms(
+            y=reference_audio,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0].astype(np.float32)
+        cand_rms = librosa.feature.rms(
+            y=candidate_audio,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0].astype(np.float32)
+        ref_hf = _preemphasis_rms(reference_audio, frame_length, hop_length)
+        cand_hf = _preemphasis_rms(candidate_audio, frame_length, hop_length)
+        frame_count = min(ref_rms.size, cand_rms.size, ref_hf.size, cand_hf.size)
+        if frame_count <= 4:
+            return analysis
+
+        ref_rms = ref_rms[:frame_count]
+        cand_rms = cand_rms[:frame_count]
+        ref_hf = ref_hf[:frame_count]
+        cand_hf = cand_hf[:frame_count]
+
+        ref_db = 20.0 * np.log10(ref_rms + eps)
+        ref_db_peak = float(np.percentile(ref_db, 95))
+        active_mask = ref_db >= (ref_db_peak - 24.0)
+        quiet_mask = ref_db <= (ref_db_peak - 38.0)
+        midquiet_mask = (ref_db > (ref_db_peak - 38.0)) & (ref_db <= (ref_db_peak - 28.0))
+
+        corr_active = 0.0
+        if np.sum(active_mask) > 8:
+            corr_val = np.corrcoef(ref_rms[active_mask], cand_rms[active_mask])[0, 1]
+            if np.isfinite(corr_val):
+                corr_active = float(np.clip(corr_val, -1.0, 1.0))
+
+        cand_delta = np.abs(np.diff(cand_rms))
+        ref_delta = np.abs(np.diff(ref_rms))
+        spike_threshold = 0.010 + 1.8 * ref_delta
+        spike_mask = (
+            (cand_delta > spike_threshold)
+            & (np.maximum(cand_rms[:-1], cand_rms[1:]) > float(np.percentile(cand_rms, 60)))
+        )
+        suspect_frames = np.where(spike_mask)[0]
+        suspect_times = [
+            round(float(idx * hop_length / candidate_sr), 3)
+            for idx in suspect_frames[:12]
+        ]
+
+        low_mid_energy = np.clip((ref_db_peak - 18.0 - ref_db) / 22.0, 0.0, 1.0)
+        not_sustained_gap = 1.0 - np.clip((ref_db_peak - 42.0 - ref_db) / 8.0, 0.0, 1.0)
+        breath_excess = low_mid_energy * not_sustained_gap * np.maximum(
+            np.clip((cand_rms - 1.15 * ref_rms) / (cand_rms + eps), 0.0, 1.0),
+            np.clip((cand_hf - 1.10 * ref_hf) / (cand_hf + eps), 0.0, 1.0),
+        )
+
+        analysis.update(
+            {
+                "reference_duration_sec": float(reference_audio.size / max(candidate_sr, 1)),
+                "active_rms_ratio": float(_safe_rms(cand_rms, active_mask) / (_safe_rms(ref_rms, active_mask) + 1e-12)),
+                "active_hf_ratio": float(_safe_rms(cand_hf, active_mask) / (_safe_rms(ref_hf, active_mask) + 1e-12)),
+                "quiet_rms_ratio": float(_safe_rms(cand_rms, quiet_mask) / (_safe_rms(ref_rms, quiet_mask) + 1e-12)),
+                "midquiet_rms_ratio": float(_safe_rms(cand_rms, midquiet_mask) / (_safe_rms(ref_rms, midquiet_mask) + 1e-12)),
+                "quiet_hf_ratio": float(_safe_rms(cand_hf, quiet_mask) / (_safe_rms(ref_hf, quiet_mask) + 1e-12)),
+                "midquiet_hf_ratio": float(_safe_rms(cand_hf, midquiet_mask) / (_safe_rms(ref_hf, midquiet_mask) + 1e-12)),
+                "corr_active": corr_active,
+                "transition_spike_ratio": float(np.percentile(cand_delta, 95) / (np.percentile(ref_delta, 95) + 1e-12)),
+                "transition_spike_frames": int(suspect_frames.size),
+                "transition_spike_times_sec": suspect_times,
+                "synthetic_breath_frames": int(np.sum(breath_excess > 0.20)),
+            }
+        )
+        return analysis
+
+    def _record_quality_debug(
+        self,
+        session_dir: Path,
+        stage: str,
+        candidate_path: str,
+        reference_path: Optional[str] = None,
+        snapshot_label: Optional[str] = None,
+        extra: Optional[Dict[str, object]] = None,
+    ) -> None:
+        try:
+            snapshot_path = None
+            if snapshot_label:
+                snapshot_path = self._save_debug_audio_snapshot(
+                    session_dir=session_dir,
+                    audio_path=candidate_path,
+                    label=snapshot_label,
+                )
+            analysis = self._analyze_quality_stage(
+                candidate_path=snapshot_path or candidate_path,
+                reference_path=reference_path,
+            )
+            entry: Dict[str, object] = {
+                "stage": stage,
+                "candidate_path": str(snapshot_path or candidate_path),
+                "reference_path": str(reference_path) if reference_path else None,
+                "preprocess_mode": self._last_vc_preprocess_mode,
+                "analysis": analysis,
+            }
+            if extra:
+                entry["extra"] = extra
+            suspect_times = analysis.get("transition_spike_times_sec", [])
+            if isinstance(suspect_times, list) and suspect_times:
+                exported_clips = self._export_suspect_transition_clips(
+                    session_dir=session_dir,
+                    stage=stage,
+                    candidate_path=str(snapshot_path or candidate_path),
+                    reference_path=reference_path,
+                    suspect_times=[float(t) for t in suspect_times],
+                )
+                if exported_clips:
+                    entry["suspect_clips"] = exported_clips
+            self._append_quality_debug_entry(session_dir, entry)
+
+            if reference_path:
+                log.detail(
+                    f"Quality[{stage}]: "
+                    f"active={analysis.get('active_rms_ratio', 0.0):.3f}, "
+                    f"active_hf={analysis.get('active_hf_ratio', 0.0):.3f}, "
+                    f"quiet={analysis.get('quiet_rms_ratio', 0.0):.3f}, "
+                    f"midquiet={analysis.get('midquiet_rms_ratio', 0.0):.3f}, "
+                    f"quiet_hf={analysis.get('quiet_hf_ratio', 0.0):.3f}, "
+                    f"spike={analysis.get('transition_spike_ratio', 0.0):.3f}, "
+                    f"breath_frames={analysis.get('synthetic_breath_frames', 0)}"
+                )
+                suspect_times = analysis.get("transition_spike_times_sec", [])
+                if isinstance(suspect_times, list) and suspect_times:
+                    times_text = ", ".join(f"{float(t):.2f}s" for t in suspect_times[:8])
+                    log.detail(f"Quality[{stage}] suspect transitions: {times_text}")
+            else:
+                log.detail(
+                    f"Quality[{stage}]: "
+                    f"peak={analysis.get('peak', 0.0):.3f}, "
+                    f"clip_ratio={analysis.get('clip_ratio', 0.0):.6f}, "
+                    f"rms={analysis.get('global_rms', 0.0):.4f}"
+                )
+        except Exception as e:
+            log.warning(f"Quality debug capture failed at {stage}: {e}")
+
+    @staticmethod
+    def _load_quality_stage_analysis(
+        session_dir: Path,
+        stage: str,
+    ) -> Optional[Dict[str, object]]:
+        report_path = session_dir / "quality_debug.json"
+        if not report_path.exists():
+            return None
+        try:
+            with open(report_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception:
+            return None
+
+        stages = payload.get("stages", [])
+        if not isinstance(stages, list):
+            return None
+
+        for entry in reversed(stages):
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("stage") != stage:
+                continue
+            analysis = entry.get("analysis")
+            if isinstance(analysis, dict):
+                return analysis
+        return None
+
+    def _maybe_log_diagnostic_hint(
+        self,
+        session_dir: Path,
+        model_path: str,
+        index_path: Optional[str],
+    ) -> None:
+        final_analysis = self._load_quality_stage_analysis(session_dir, "vc_final_state")
+        raw_analysis = self._load_quality_stage_analysis(session_dir, "vc_raw")
+        analysis = final_analysis or raw_analysis
+        if not analysis:
+            return
+
+        quiet_rms = float(analysis.get("quiet_rms_ratio", 0.0) or 0.0)
+        quiet_hf = float(analysis.get("quiet_hf_ratio", 0.0) or 0.0)
+        spike = float(analysis.get("transition_spike_ratio", 0.0) or 0.0)
+        breath_frames = int(analysis.get("synthetic_breath_frames", 0) or 0)
+        should_hint = (
+            quiet_rms >= 3.0
+            or quiet_hf >= 2.5
+            or spike >= 1.6
+            or breath_frames >= 350
+        )
+        if not should_hint:
+            return
+
+        command = (
+            f'python tools/diagnose_vc_session.py --session-dir "{session_dir}" '
+            f'--model-path "{model_path}"'
+        )
+        if index_path:
+            command += f' --index-path "{index_path}"'
+
+        log.warning(
+            "Persistent VC artifacts detected after final cleanup; "
+            "run the diagnostic matrix to compare short A/B clips."
+        )
+        log.warning(
+            "Diagnostic summary: "
+            f"quiet={quiet_rms:.3f}, quiet_hf={quiet_hf:.3f}, "
+            f"spike={spike:.3f}, breath_frames={breath_frames}"
+        )
+        log.detail(f"Diagnostic command: {command}")
 
     def _init_separator(
         self,
@@ -766,6 +1133,989 @@ class CoverPipeline:
 
         sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr)
 
+    def _apply_source_breath_cleanup(
+        self,
+        source_vocals_path: str,
+        converted_vocals_path: str,
+    ) -> None:
+        """Blend dry source breaths back where converted low-energy regions sound too synthetic."""
+        import librosa
+        import soundfile as sf
+
+        def _preemphasis_rms(audio: np.ndarray, frame_length: int, hop_length: int) -> np.ndarray:
+            audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+            if audio.size == 0:
+                return np.zeros(0, dtype=np.float32)
+            residual = np.empty_like(audio)
+            residual[0] = audio[0]
+            residual[1:] = audio[1:] - 0.97 * audio[:-1]
+            return librosa.feature.rms(
+                y=residual,
+                frame_length=frame_length,
+                hop_length=hop_length,
+                center=True,
+            )[0]
+
+        def _spectral_flatness(audio: np.ndarray, frame_length: int, hop_length: int) -> np.ndarray:
+            audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+            if audio.size == 0:
+                return np.zeros(0, dtype=np.float32)
+            return librosa.feature.spectral_flatness(
+                y=audio + 1e-8,
+                n_fft=frame_length,
+                hop_length=hop_length,
+                center=True,
+            )[0].astype(np.float32)
+
+        source_audio, source_sr = librosa.load(source_vocals_path, sr=None, mono=True)
+        converted_audio, converted_sr = sf.read(converted_vocals_path)
+        if converted_audio.ndim > 1:
+            converted_audio = converted_audio.mean(axis=1)
+        source_audio = np.asarray(source_audio, dtype=np.float32)
+        converted_audio = np.asarray(converted_audio, dtype=np.float32)
+
+        if source_sr != converted_sr:
+            source_audio = librosa.resample(
+                source_audio,
+                orig_sr=source_sr,
+                target_sr=converted_sr,
+            ).astype(np.float32)
+
+        aligned_len = min(len(source_audio), len(converted_audio))
+        if aligned_len <= 0:
+            return
+
+        source_main = source_audio[:aligned_len]
+        converted_main = converted_audio[:aligned_len]
+
+        frame_length = 2048
+        hop_length = 512
+        eps = 1e-8
+
+        source_rms = librosa.feature.rms(
+            y=source_main,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0]
+        converted_rms = librosa.feature.rms(
+            y=converted_main,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0]
+        source_hf = _preemphasis_rms(source_main, frame_length, hop_length)
+        converted_hf = _preemphasis_rms(converted_main, frame_length, hop_length)
+        source_flatness = _spectral_flatness(source_main, frame_length, hop_length)
+        converted_flatness = _spectral_flatness(converted_main, frame_length, hop_length)
+
+        frame_count = min(
+            source_rms.size,
+            converted_rms.size,
+            source_hf.size,
+            converted_hf.size,
+            source_flatness.size,
+            converted_flatness.size,
+        )
+        if frame_count <= 0:
+            return
+
+        source_rms = source_rms[:frame_count].astype(np.float32)
+        converted_rms = converted_rms[:frame_count].astype(np.float32)
+        source_hf = source_hf[:frame_count].astype(np.float32)
+        converted_hf = converted_hf[:frame_count].astype(np.float32)
+        source_flatness = source_flatness[:frame_count].astype(np.float32)
+        converted_flatness = converted_flatness[:frame_count].astype(np.float32)
+
+        source_db = 20.0 * np.log10(source_rms + eps)
+        ref_db = float(np.percentile(source_db, 95))
+
+        low_mid_energy = np.clip((ref_db - 18.0 - source_db) / 22.0, 0.0, 1.0)
+        not_sustained_gap = 1.0 - np.clip((ref_db - 42.0 - source_db) / 8.0, 0.0, 1.0)
+        breath_like = (
+            not_sustained_gap
+            * np.clip((source_flatness - 0.22) / 0.22, 0.0, 1.0)
+            * np.clip(source_hf / (float(np.percentile(source_hf, 72)) + eps), 0.0, 1.25)
+        )
+        excess_rms = np.clip(
+            (converted_rms - 1.15 * source_rms) / (converted_rms + eps),
+            0.0,
+            1.0,
+        )
+        excess_hf = np.clip(
+            (converted_hf - 1.10 * source_hf) / (converted_hf + eps),
+            0.0,
+            1.0,
+        )
+        tonalized_breath = breath_like * np.clip(
+            (source_flatness - converted_flatness) / 0.18,
+            0.0,
+            1.0,
+        )
+
+        blend_curve = np.maximum(
+            low_mid_energy * not_sustained_gap * np.maximum(excess_rms, excess_hf),
+            0.88
+            * tonalized_breath
+            * np.maximum(
+                np.clip((converted_rms - 0.92 * source_rms) / (converted_rms + eps), 0.0, 1.0),
+                np.clip((converted_hf - 0.95 * source_hf) / (converted_hf + eps), 0.0, 1.0),
+            ),
+        )
+        smooth_kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
+        smooth_kernel /= np.sum(smooth_kernel)
+        blend_curve = np.convolve(blend_curve, smooth_kernel, mode="same")
+        blend_curve = self._hold_activity_curve(
+            blend_curve,
+            max(1, int(0.05 * converted_sr / hop_length)),
+        )
+        blend_curve = np.clip(blend_curve, 0.0, 1.0).astype(np.float32)
+
+        blended_frames = int(np.sum(blend_curve > 0.20))
+        if blended_frames <= 0:
+            return
+        mechanical_frames = int(np.sum(tonalized_breath > 0.20))
+
+        sample_blend = 0.82 * self._frame_curve_to_sample_gain(
+            blend_curve,
+            aligned_len,
+            hop_length,
+        )
+        sample_blend = np.clip(sample_blend[:aligned_len], 0.0, 0.82).astype(np.float32)
+        blended_main = (
+            converted_main * (1.0 - sample_blend)
+            + source_main * sample_blend
+        ).astype(np.float32)
+
+        if len(converted_audio) > aligned_len:
+            converted_audio = np.concatenate([blended_main, converted_audio[aligned_len:]])
+        else:
+            converted_audio = blended_main
+
+        sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr)
+        log.detail(
+            "Source breath cleanup: "
+            f"blended {blended_frames}/{frame_count} low-mid-energy frames toward dry source "
+            f"(mechanical={mechanical_frames})"
+        )
+
+    def _apply_source_transition_cleanup(
+        self,
+        source_vocals_path: str,
+        converted_vocals_path: str,
+    ) -> None:
+        """Blend dry source into glitch-prone breaths and transition spikes."""
+        import librosa
+        import soundfile as sf
+
+        def _preemphasis_rms(audio: np.ndarray, frame_length: int, hop_length: int) -> np.ndarray:
+            audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+            if audio.size == 0:
+                return np.zeros(0, dtype=np.float32)
+            residual = np.empty_like(audio)
+            residual[0] = audio[0]
+            residual[1:] = audio[1:] - 0.97 * audio[:-1]
+            return librosa.feature.rms(
+                y=residual,
+                frame_length=frame_length,
+                hop_length=hop_length,
+                center=True,
+            )[0].astype(np.float32)
+
+        source_audio, source_sr = librosa.load(source_vocals_path, sr=None, mono=True)
+        converted_audio, converted_sr = sf.read(converted_vocals_path)
+        if converted_audio.ndim > 1:
+            converted_audio = converted_audio.mean(axis=1)
+        source_audio = np.asarray(source_audio, dtype=np.float32)
+        converted_audio = np.asarray(converted_audio, dtype=np.float32)
+
+        if source_sr != converted_sr:
+            source_audio = librosa.resample(
+                source_audio,
+                orig_sr=source_sr,
+                target_sr=converted_sr,
+            ).astype(np.float32)
+
+        aligned_len = min(len(source_audio), len(converted_audio))
+        if aligned_len <= 0:
+            return
+
+        source_main = source_audio[:aligned_len]
+        converted_main = converted_audio[:aligned_len]
+
+        frame_length = 2048
+        hop_length = 512
+        eps = 1e-8
+
+        source_rms = librosa.feature.rms(
+            y=source_main,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0].astype(np.float32)
+        converted_rms = librosa.feature.rms(
+            y=converted_main,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0].astype(np.float32)
+        source_hf = _preemphasis_rms(source_main, frame_length, hop_length)
+        converted_hf = _preemphasis_rms(converted_main, frame_length, hop_length)
+
+        frame_count = min(
+            source_rms.size,
+            converted_rms.size,
+            source_hf.size,
+            converted_hf.size,
+        )
+        if frame_count <= 4:
+            return
+
+        source_rms = source_rms[:frame_count]
+        converted_rms = converted_rms[:frame_count]
+        source_hf = source_hf[:frame_count]
+        converted_hf = converted_hf[:frame_count]
+
+        source_db = 20.0 * np.log10(source_rms + eps)
+        ref_db = float(np.percentile(source_db, 95))
+        low_mid_energy = np.clip((ref_db - 18.0 - source_db) / 22.0, 0.0, 1.0)
+        not_sustained_gap = 1.0 - np.clip((ref_db - 42.0 - source_db) / 8.0, 0.0, 1.0)
+        excess_rms = np.clip(
+            (converted_rms - 1.10 * source_rms) / (converted_rms + eps),
+            0.0,
+            1.0,
+        )
+        excess_hf = np.clip(
+            (converted_hf - 1.07 * source_hf) / (converted_hf + eps),
+            0.0,
+            1.0,
+        )
+
+        breath_curve = low_mid_energy * not_sustained_gap * np.maximum(excess_rms, excess_hf)
+        cand_delta = np.abs(np.diff(converted_rms, prepend=converted_rms[:1]))
+        ref_delta = np.abs(np.diff(source_rms, prepend=source_rms[:1]))
+        spike_excess = np.clip(
+            (cand_delta - (0.007 + 1.35 * ref_delta)) / (cand_delta + eps),
+            0.0,
+            1.0,
+        )
+        activity = np.clip((source_db - (ref_db - 28.0)) / 14.0, 0.0, 1.0)
+        transition_curve = spike_excess * np.maximum(activity, 0.35 * low_mid_energy)
+        quiet_curve = np.clip((ref_db - 35.0 - source_db) / 12.0, 0.0, 1.0) * np.maximum(
+            excess_rms,
+            excess_hf,
+        )
+        overshoot_energy = np.maximum(
+            np.clip((converted_rms - 1.09 * source_rms) / (converted_rms + eps), 0.0, 1.0),
+            np.clip((converted_hf - 1.07 * source_hf) / (converted_hf + eps), 0.0, 1.0),
+        )
+        overshoot_focus = np.clip(
+            np.maximum(
+                1.15 * spike_excess,
+                0.55 * low_mid_energy * np.maximum(excess_rms, excess_hf),
+            ),
+            0.0,
+            1.0,
+        )
+        overshoot_curve = activity * overshoot_energy * overshoot_focus
+
+        smooth_kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
+        smooth_kernel /= np.sum(smooth_kernel)
+        for _ in range(2):
+            breath_curve = np.convolve(breath_curve, smooth_kernel, mode="same")
+            transition_curve = np.convolve(transition_curve, smooth_kernel, mode="same")
+            quiet_curve = np.convolve(quiet_curve, smooth_kernel, mode="same")
+            overshoot_curve = np.convolve(overshoot_curve, smooth_kernel, mode="same")
+
+        breath_curve = self._hold_activity_curve(
+            breath_curve,
+            max(1, int(0.07 * converted_sr / hop_length)),
+        )
+        transition_curve = self._hold_activity_curve(
+            transition_curve,
+            max(1, int(0.07 * converted_sr / hop_length)),
+        )
+        quiet_curve = self._hold_activity_curve(
+            quiet_curve,
+            max(1, int(0.08 * converted_sr / hop_length)),
+        )
+        overshoot_curve = self._hold_activity_curve(
+            overshoot_curve,
+            max(1, int(0.04 * converted_sr / hop_length)),
+        )
+
+        blend_curve = np.maximum.reduce(
+            [
+                0.72 * np.clip(breath_curve, 0.0, 1.0),
+                0.74 * np.clip(transition_curve, 0.0, 1.0),
+                0.50 * np.clip(quiet_curve, 0.0, 1.0),
+                0.40 * np.clip(overshoot_curve, 0.0, 1.0),
+            ]
+        )
+        blend_curve = np.clip(blend_curve, 0.0, 0.88).astype(np.float32)
+
+        blended_frames = int(np.sum(blend_curve > 0.20))
+        if blended_frames <= 0:
+            return
+
+        sample_blend = self._frame_curve_to_sample_gain(
+            blend_curve,
+            aligned_len,
+            hop_length,
+        )[:aligned_len]
+        repaired_main = (
+            converted_main * (1.0 - sample_blend)
+            + source_main * sample_blend
+        ).astype(np.float32)
+        trim_curve = np.clip(
+            np.maximum(
+                0.72 * overshoot_curve,
+                0.55 * transition_curve,
+            ),
+            0.0,
+            1.0,
+        ).astype(np.float32)
+        trim_weights = self._frame_curve_to_sample_gain(
+            trim_curve,
+            aligned_len,
+            hop_length,
+        )[:aligned_len]
+        trim_weights = (
+            trim_weights
+            * self._compute_activity_sample_weights(source_main, converted_sr)[:aligned_len]
+        ).astype(np.float32)
+        trim_weights = np.clip(trim_weights, 0.0, 1.0)
+
+        ref_active_rms = self._weighted_rms(source_main, trim_weights)
+        out_active_rms = self._weighted_rms(repaired_main, trim_weights)
+        gain = 1.0
+        if (
+            float(np.sum(trim_weights)) > 1e-3
+            and ref_active_rms > 1e-6
+            and out_active_rms > ref_active_rms * 1.05
+        ):
+            gain = float(
+                np.clip(
+                    (1.04 * ref_active_rms) / (out_active_rms + eps),
+                    0.92,
+                    1.0,
+                )
+            )
+            if gain < 0.999:
+                repaired_main = self._apply_weighted_gain(
+                    repaired_main,
+                    trim_weights,
+                    gain,
+                ).astype(np.float32)
+
+        if len(converted_audio) > aligned_len:
+            converted_audio = np.concatenate([repaired_main, converted_audio[aligned_len:]])
+        else:
+            converted_audio = repaired_main
+
+        sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr)
+        log.detail(
+            "Source transition cleanup: "
+            f"blended {blended_frames}/{frame_count} frames "
+            f"(breath={int(np.sum(breath_curve > 0.20))}, "
+            f"spike={int(np.sum(transition_curve > 0.20))}, "
+            f"quiet={int(np.sum(quiet_curve > 0.20))}, "
+            f"overshoot={int(np.sum(overshoot_curve > 0.20))})"
+        )
+        if gain < 0.999:
+            log.detail(
+                "Source transition cleanup: "
+                f"hotspot RMS trim ref={ref_active_rms:.6f}, "
+                f"out={out_active_rms:.6f}, gain={gain:.3f}"
+            )
+
+    def _restore_active_vocal_loudness(
+        self,
+        reference_vocals_path: str,
+        converted_vocals_path: str,
+        target_ratio: float = 0.86,
+        max_gain: float = 1.85,
+    ) -> None:
+        """Restore vocal body loudness without boosting breaths and unstable frames."""
+        import librosa
+        import soundfile as sf
+
+        def _preemphasis_rms(audio: np.ndarray, frame_length: int, hop_length: int) -> np.ndarray:
+            audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+            if audio.size == 0:
+                return np.zeros(0, dtype=np.float32)
+            residual = np.empty_like(audio)
+            residual[0] = audio[0]
+            residual[1:] = audio[1:] - 0.97 * audio[:-1]
+            return librosa.feature.rms(
+                y=residual,
+                frame_length=frame_length,
+                hop_length=hop_length,
+                center=True,
+            )[0].astype(np.float32)
+
+        reference_audio, reference_sr = librosa.load(reference_vocals_path, sr=None, mono=True)
+        converted_audio, converted_sr = sf.read(converted_vocals_path)
+        if converted_audio.ndim > 1:
+            converted_audio = converted_audio.mean(axis=1)
+        reference_audio = np.asarray(reference_audio, dtype=np.float32)
+        converted_audio = np.asarray(converted_audio, dtype=np.float32)
+
+        if reference_sr != converted_sr:
+            reference_audio = librosa.resample(
+                reference_audio,
+                orig_sr=reference_sr,
+                target_sr=converted_sr,
+            ).astype(np.float32)
+
+        aligned_len = min(len(reference_audio), len(converted_audio))
+        if aligned_len <= 0:
+            return
+
+        reference_main = reference_audio[:aligned_len]
+        converted_main = converted_audio[:aligned_len]
+
+        frame_length = 2048
+        hop_length = 512
+        eps = 1e-8
+
+        reference_rms = librosa.feature.rms(
+            y=reference_main,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0].astype(np.float32)
+        converted_rms = librosa.feature.rms(
+            y=converted_main,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0].astype(np.float32)
+        reference_hf = _preemphasis_rms(reference_main, frame_length, hop_length)
+        converted_hf = _preemphasis_rms(converted_main, frame_length, hop_length)
+
+        frame_count = min(
+            reference_rms.size,
+            converted_rms.size,
+            reference_hf.size,
+            converted_hf.size,
+        )
+        if frame_count <= 4:
+            return
+
+        reference_rms = reference_rms[:frame_count]
+        converted_rms = converted_rms[:frame_count]
+        reference_hf = reference_hf[:frame_count]
+        converted_hf = converted_hf[:frame_count]
+
+        reference_db = 20.0 * np.log10(reference_rms + eps)
+        ref_db = float(np.percentile(reference_db, 95))
+        body_curve = np.square(np.clip((reference_db - (ref_db - 18.0)) / 9.0, 0.0, 1.0))
+        smooth_kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
+        smooth_kernel /= np.sum(smooth_kernel)
+        body_curve = np.convolve(body_curve, smooth_kernel, mode="same")
+        body_curve = self._hold_activity_curve(
+            body_curve,
+            max(1, int(0.08 * converted_sr / hop_length)),
+        )
+        under_target = np.clip(
+            (0.95 * reference_rms - converted_rms) / (0.95 * reference_rms + eps),
+            0.0,
+            1.0,
+        )
+        artifact_guard = 1.0 - np.maximum(
+            np.clip((converted_hf - 1.12 * reference_hf) / (converted_hf + eps), 0.0, 1.0),
+            np.clip((converted_rms - 1.10 * reference_rms) / (converted_rms + eps), 0.0, 1.0),
+        )
+        boost_curve = np.clip(body_curve * under_target * artifact_guard, 0.0, 1.0).astype(np.float32)
+
+        boosted_frames = int(np.sum(boost_curve > 0.20))
+        if boosted_frames <= 0:
+            return
+
+        sample_weights = self._frame_curve_to_sample_gain(
+            boost_curve,
+            aligned_len,
+            hop_length,
+        )[:aligned_len]
+        ref_body_rms = self._weighted_rms(reference_main, sample_weights)
+        out_body_rms = self._weighted_rms(converted_main, sample_weights)
+        if ref_body_rms <= 1e-6 or out_body_rms <= 1e-6:
+            return
+
+        target_body_rms = target_ratio * ref_body_rms
+        if out_body_rms >= target_body_rms * 0.98:
+            return
+
+        gain = float(np.clip(target_body_rms / (out_body_rms + eps), 1.0, max_gain))
+        if gain <= 1.001:
+            return
+
+        restored_main = self._apply_weighted_gain(
+            converted_main,
+            sample_weights,
+            gain,
+        ).astype(np.float32)
+        restored_main = soft_clip(restored_main, threshold=0.92, ceiling=0.985)
+
+        if len(converted_audio) > aligned_len:
+            converted_audio = np.concatenate([restored_main, converted_audio[aligned_len:]])
+        else:
+            converted_audio = restored_main
+
+        sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr)
+        log.detail(
+            "Source loudness restore: "
+            f"boosted {boosted_frames}/{frame_count} body frames, "
+            f"ref={ref_body_rms:.6f}, out={out_body_rms:.6f}, gain={gain:.3f}"
+        )
+
+    def _restore_voiced_body_from_raw(
+        self,
+        raw_vocals_path: str,
+        source_vocals_path: str,
+        converted_vocals_path: str,
+        max_blend: float = 0.18,
+    ) -> None:
+        """Restore target timbre body from raw VC only on stable voiced phrases."""
+        import librosa
+        import soundfile as sf
+
+        def _preemphasis_rms(audio: np.ndarray, frame_length: int, hop_length: int) -> np.ndarray:
+            audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+            if audio.size == 0:
+                return np.zeros(0, dtype=np.float32)
+            residual = np.empty_like(audio)
+            residual[0] = audio[0]
+            residual[1:] = audio[1:] - 0.97 * audio[:-1]
+            return librosa.feature.rms(
+                y=residual,
+                frame_length=frame_length,
+                hop_length=hop_length,
+                center=True,
+            )[0].astype(np.float32)
+
+        def _spectral_flatness(audio: np.ndarray, frame_length: int, hop_length: int) -> np.ndarray:
+            audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+            if audio.size == 0:
+                return np.zeros(0, dtype=np.float32)
+            return librosa.feature.spectral_flatness(
+                y=audio + 1e-8,
+                n_fft=frame_length,
+                hop_length=hop_length,
+                center=True,
+            )[0].astype(np.float32)
+
+        raw_audio, raw_sr = sf.read(raw_vocals_path)
+        source_audio, source_sr = librosa.load(source_vocals_path, sr=None, mono=True)
+        converted_audio, converted_sr = sf.read(converted_vocals_path)
+
+        if raw_audio.ndim > 1:
+            raw_audio = raw_audio.mean(axis=1)
+        if converted_audio.ndim > 1:
+            converted_audio = converted_audio.mean(axis=1)
+
+        raw_audio = np.asarray(raw_audio, dtype=np.float32)
+        source_audio = np.asarray(source_audio, dtype=np.float32)
+        converted_audio = np.asarray(converted_audio, dtype=np.float32)
+
+        if raw_sr != converted_sr:
+            raw_audio = librosa.resample(
+                raw_audio,
+                orig_sr=raw_sr,
+                target_sr=converted_sr,
+            ).astype(np.float32)
+        if source_sr != converted_sr:
+            source_audio = librosa.resample(
+                source_audio,
+                orig_sr=source_sr,
+                target_sr=converted_sr,
+            ).astype(np.float32)
+
+        aligned_len = min(len(raw_audio), len(source_audio), len(converted_audio))
+        if aligned_len <= 0:
+            return
+
+        raw_main = raw_audio[:aligned_len]
+        source_main = source_audio[:aligned_len]
+        converted_main = converted_audio[:aligned_len]
+
+        frame_length = 2048
+        hop_length = 512
+        eps = 1e-8
+
+        raw_rms = librosa.feature.rms(
+            y=raw_main,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0].astype(np.float32)
+        source_rms = librosa.feature.rms(
+            y=source_main,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0].astype(np.float32)
+        converted_rms = librosa.feature.rms(
+            y=converted_main,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0].astype(np.float32)
+        raw_hf = _preemphasis_rms(raw_main, frame_length, hop_length)
+        source_hf = _preemphasis_rms(source_main, frame_length, hop_length)
+        converted_hf = _preemphasis_rms(converted_main, frame_length, hop_length)
+        raw_flatness = _spectral_flatness(raw_main, frame_length, hop_length)
+        source_flatness = _spectral_flatness(source_main, frame_length, hop_length)
+        converted_flatness = _spectral_flatness(converted_main, frame_length, hop_length)
+
+        frame_count = min(
+            raw_rms.size,
+            source_rms.size,
+            converted_rms.size,
+            raw_hf.size,
+            source_hf.size,
+            converted_hf.size,
+            raw_flatness.size,
+            source_flatness.size,
+            converted_flatness.size,
+        )
+        if frame_count <= 4:
+            return
+
+        raw_rms = raw_rms[:frame_count]
+        source_rms = source_rms[:frame_count]
+        converted_rms = converted_rms[:frame_count]
+        raw_hf = raw_hf[:frame_count]
+        source_hf = source_hf[:frame_count]
+        converted_hf = converted_hf[:frame_count]
+        raw_flatness = raw_flatness[:frame_count]
+        source_flatness = source_flatness[:frame_count]
+        converted_flatness = converted_flatness[:frame_count]
+
+        source_db = 20.0 * np.log10(source_rms + eps)
+        ref_db = float(np.percentile(source_db, 95))
+        activity = np.square(np.clip((source_db - (ref_db - 20.0)) / 10.0, 0.0, 1.0))
+        low_mid_energy = np.clip((ref_db - 18.0 - source_db) / 22.0, 0.0, 1.0)
+        breath_like = (
+            low_mid_energy
+            * np.clip((source_flatness - 0.22) / 0.22, 0.0, 1.0)
+            * np.clip(source_hf / (float(np.percentile(source_hf, 72)) + eps), 0.0, 1.25)
+        )
+
+        body_need = np.maximum(
+            np.clip((0.93 * source_rms - converted_rms) / (0.93 * source_rms + eps), 0.0, 1.0),
+            np.clip((0.90 * source_hf - converted_hf) / (0.90 * source_hf + eps), 0.0, 1.0),
+        )
+        source_delta = np.abs(np.diff(source_rms, prepend=source_rms[:1]))
+        raw_delta = np.abs(np.diff(raw_rms, prepend=raw_rms[:1]))
+        converted_delta = np.abs(np.diff(converted_rms, prepend=converted_rms[:1]))
+        glitch_curve = np.clip(
+            (converted_delta - (0.008 + 1.40 * source_delta)) / (converted_delta + eps),
+            0.0,
+            1.0,
+        )
+        body_gap = np.maximum(
+            np.clip((0.90 * raw_rms - converted_rms) / (0.90 * raw_rms + eps), 0.0, 1.0),
+            np.clip((0.84 * raw_hf - converted_hf) / (0.84 * raw_hf + eps), 0.0, 1.0),
+        )
+        raw_overshoot = np.maximum(
+            np.clip((raw_rms - 1.18 * source_rms) / (raw_rms + eps), 0.0, 1.0),
+            np.clip((raw_hf - 1.18 * source_hf) / (raw_hf + eps), 0.0, 1.0),
+        )
+        raw_roughness = np.maximum.reduce(
+            [
+                np.clip((raw_flatness - source_flatness - 0.015) / 0.085, 0.0, 1.0),
+                np.clip((raw_hf - 1.08 * source_hf) / (raw_hf + eps), 0.0, 1.0),
+                np.clip((raw_delta - (0.006 + 1.18 * source_delta)) / (raw_delta + eps), 0.0, 1.0),
+                np.clip((raw_flatness - converted_flatness - 0.020) / 0.080, 0.0, 1.0),
+            ]
+        )
+        stable_curve = (
+            activity
+            * (1.0 - 0.90 * breath_like)
+            * (1.0 - 0.75 * glitch_curve)
+            * (1.0 - 0.65 * raw_overshoot)
+            * (1.0 - 0.82 * raw_roughness)
+        )
+        blend_curve = np.clip(stable_curve * body_gap * body_need, 0.0, 1.0).astype(np.float32)
+
+        smooth_kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
+        smooth_kernel /= np.sum(smooth_kernel)
+        for _ in range(2):
+            blend_curve = np.convolve(blend_curve, smooth_kernel, mode="same")
+        blend_curve = self._hold_activity_curve(
+            blend_curve,
+            max(1, int(0.06 * converted_sr / hop_length)),
+        )
+        blend_curve = np.clip(blend_curve, 0.0, 1.0).astype(np.float32)
+
+        need_curve = np.clip(activity * body_need * (1.0 - 0.75 * raw_roughness), 0.0, 1.0).astype(np.float32)
+        if float(np.mean(need_curve)) < 0.035:
+            return
+
+        restored_frames = int(np.sum(blend_curve > 0.20))
+        if restored_frames <= 0:
+            return
+
+        sample_blend = max_blend * self._frame_curve_to_sample_gain(
+            blend_curve,
+            aligned_len,
+            hop_length,
+        )[:aligned_len]
+        sample_blend = np.clip(sample_blend, 0.0, max_blend).astype(np.float32)
+        restored_main = (
+            converted_main * (1.0 - sample_blend)
+            + raw_main * sample_blend
+        ).astype(np.float32)
+
+        trim_weights = self._frame_curve_to_sample_gain(
+            np.clip(stable_curve, 0.0, 1.0),
+            aligned_len,
+            hop_length,
+        )[:aligned_len]
+        ref_body_rms = self._weighted_rms(raw_main, trim_weights)
+        out_body_rms = self._weighted_rms(restored_main, trim_weights)
+        gain = 1.0
+        if ref_body_rms > 1e-6 and out_body_rms > ref_body_rms * 0.99:
+            gain = float(np.clip((0.99 * ref_body_rms) / (out_body_rms + eps), 0.92, 1.0))
+            if gain < 0.999:
+                restored_main = self._apply_weighted_gain(
+                    restored_main,
+                    trim_weights,
+                    gain,
+                ).astype(np.float32)
+
+        restored_main = soft_clip(restored_main, threshold=0.92, ceiling=0.985)
+
+        if len(converted_audio) > aligned_len:
+            converted_audio = np.concatenate([restored_main, converted_audio[aligned_len:]])
+        else:
+            converted_audio = restored_main
+
+        sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr)
+        log.detail(
+            "Raw body restore: "
+            f"blended {restored_frames}/{frame_count} stable voiced frames from raw VC "
+            f"(max_blend={max_blend:.2f}, gain={gain:.3f}, "
+            f"rough_frames={int(np.sum(raw_roughness > 0.20))})"
+        )
+
+    def _apply_artifact_segment_rescue(
+        self,
+        source_vocals_path: str,
+        converted_vocals_path: str,
+        max_source_blend: float = 0.68,
+    ) -> None:
+        """Fallback toward dry source only on short segments where final VC still sounds unstable."""
+        import librosa
+        import soundfile as sf
+
+        def _preemphasis_rms(audio: np.ndarray, frame_length: int, hop_length: int) -> np.ndarray:
+            audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+            if audio.size == 0:
+                return np.zeros(0, dtype=np.float32)
+            residual = np.empty_like(audio)
+            residual[0] = audio[0]
+            residual[1:] = audio[1:] - 0.97 * audio[:-1]
+            return librosa.feature.rms(
+                y=residual,
+                frame_length=frame_length,
+                hop_length=hop_length,
+                center=True,
+            )[0].astype(np.float32)
+
+        def _spectral_flatness(audio: np.ndarray, frame_length: int, hop_length: int) -> np.ndarray:
+            audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+            if audio.size == 0:
+                return np.zeros(0, dtype=np.float32)
+            return librosa.feature.spectral_flatness(
+                y=audio + 1e-8,
+                n_fft=frame_length,
+                hop_length=hop_length,
+                center=True,
+            )[0].astype(np.float32)
+
+        source_audio, source_sr = librosa.load(source_vocals_path, sr=None, mono=True)
+        converted_audio, converted_sr = sf.read(converted_vocals_path)
+        if converted_audio.ndim > 1:
+            converted_audio = converted_audio.mean(axis=1)
+
+        source_audio = np.asarray(source_audio, dtype=np.float32)
+        converted_audio = np.asarray(converted_audio, dtype=np.float32)
+
+        if source_sr != converted_sr:
+            source_audio = librosa.resample(
+                source_audio,
+                orig_sr=source_sr,
+                target_sr=converted_sr,
+            ).astype(np.float32)
+
+        aligned_len = min(len(source_audio), len(converted_audio))
+        if aligned_len <= 0:
+            return
+
+        source_main = source_audio[:aligned_len]
+        converted_main = converted_audio[:aligned_len]
+
+        frame_length = 2048
+        hop_length = 512
+        eps = 1e-8
+
+        source_rms = librosa.feature.rms(
+            y=source_main,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0].astype(np.float32)
+        converted_rms = librosa.feature.rms(
+            y=converted_main,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0].astype(np.float32)
+        source_hf = _preemphasis_rms(source_main, frame_length, hop_length)
+        converted_hf = _preemphasis_rms(converted_main, frame_length, hop_length)
+        source_flatness = _spectral_flatness(source_main, frame_length, hop_length)
+        converted_flatness = _spectral_flatness(converted_main, frame_length, hop_length)
+
+        frame_count = min(
+            source_rms.size,
+            converted_rms.size,
+            source_hf.size,
+            converted_hf.size,
+            source_flatness.size,
+            converted_flatness.size,
+        )
+        if frame_count <= 4:
+            return
+
+        source_rms = source_rms[:frame_count]
+        converted_rms = converted_rms[:frame_count]
+        source_hf = source_hf[:frame_count]
+        converted_hf = converted_hf[:frame_count]
+        source_flatness = source_flatness[:frame_count]
+        converted_flatness = converted_flatness[:frame_count]
+
+        source_db = 20.0 * np.log10(source_rms + eps)
+        ref_db = float(np.percentile(source_db, 95))
+        activity = np.square(np.clip((source_db - (ref_db - 24.0)) / 11.0, 0.0, 1.0))
+        support_activity = np.clip((source_db - (ref_db - 30.0)) / 14.0, 0.0, 1.0)
+        low_mid_energy = np.clip((ref_db - 18.0 - source_db) / 22.0, 0.0, 1.0)
+        not_sustained_gap = 1.0 - np.clip((ref_db - 42.0 - source_db) / 8.0, 0.0, 1.0)
+        quiet_curve = np.clip((ref_db - 35.0 - source_db) / 12.0, 0.0, 1.0)
+
+        excess_rms = np.clip(
+            (converted_rms - 1.05 * source_rms) / (converted_rms + eps),
+            0.0,
+            1.0,
+        )
+        excess_hf = np.clip(
+            (converted_hf - 1.03 * source_hf) / (converted_hf + eps),
+            0.0,
+            1.0,
+        )
+        source_delta = np.abs(np.diff(source_rms, prepend=source_rms[:1]))
+        converted_delta = np.abs(np.diff(converted_rms, prepend=converted_rms[:1]))
+        spike_excess = np.clip(
+            (converted_delta - (0.006 + 1.35 * source_delta)) / (converted_delta + eps),
+            0.0,
+            1.0,
+        )
+
+        tonalized_breath = (
+            not_sustained_gap
+            * np.clip((source_flatness - 0.20) / 0.24, 0.0, 1.0)
+            * np.maximum(
+                np.clip((source_flatness - converted_flatness) / 0.15, 0.0, 1.0),
+                np.clip((converted_hf - 0.95 * source_hf) / (converted_hf + eps), 0.0, 1.0),
+            )
+        )
+        quiet_residue = quiet_curve * np.maximum(excess_rms, excess_hf)
+        active_residue = activity * np.maximum(
+            spike_excess,
+            np.clip((converted_hf - 1.15 * source_hf) / (converted_hf + eps), 0.0, 1.0),
+        )
+
+        breath_curve = 0.96 * tonalized_breath * np.maximum(excess_rms, excess_hf)
+        quiet_fix_curve = 0.82 * quiet_residue
+        active_fix_curve = 0.52 * active_residue
+        blend_curve = np.maximum.reduce([breath_curve, quiet_fix_curve, active_fix_curve])
+
+        smooth_kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
+        smooth_kernel /= np.sum(smooth_kernel)
+        for _ in range(2):
+            blend_curve = np.convolve(blend_curve, smooth_kernel, mode="same")
+
+        blend_curve = self._hold_activity_curve(
+            blend_curve,
+            max(1, int(0.05 * converted_sr / hop_length)),
+        )
+        blend_curve = np.clip(blend_curve, 0.0, 1.0).astype(np.float32)
+
+        rescued_frames = int(np.sum(blend_curve > 0.18))
+        if rescued_frames <= 0:
+            return
+
+        frame_cap = np.maximum.reduce(
+            [
+                0.40 * activity,
+                0.58 * support_activity * np.clip(spike_excess, 0.0, 1.0),
+                0.70 * quiet_curve,
+                0.84 * tonalized_breath,
+            ]
+        )
+        effective_curve = np.minimum(
+            blend_curve,
+            np.clip(frame_cap / max(max_source_blend, 1e-6), 0.0, 1.0),
+        ).astype(np.float32)
+
+        sample_blend = max_source_blend * self._frame_curve_to_sample_gain(
+            effective_curve,
+            aligned_len,
+            hop_length,
+        )[:aligned_len]
+        sample_blend = np.clip(sample_blend, 0.0, max_source_blend).astype(np.float32)
+
+        rescued_main = (
+            converted_main * (1.0 - sample_blend)
+            + source_main * sample_blend
+        ).astype(np.float32)
+
+        activity_weights = self._frame_curve_to_sample_gain(
+            np.clip(activity, 0.0, 1.0),
+            aligned_len,
+            hop_length,
+        )[:aligned_len]
+        ref_active_rms = self._weighted_rms(converted_main, activity_weights)
+        out_active_rms = self._weighted_rms(rescued_main, activity_weights)
+        gain = 1.0
+        if ref_active_rms > 1e-6 and out_active_rms < ref_active_rms * 0.92:
+            gain = float(np.clip((0.95 * ref_active_rms) / (out_active_rms + eps), 1.0, 1.08))
+            if gain > 1.001:
+                rescued_main = self._apply_weighted_gain(
+                    rescued_main,
+                    activity_weights,
+                    gain,
+                ).astype(np.float32)
+
+        rescued_main = soft_clip(rescued_main, threshold=0.92, ceiling=0.985)
+
+        if len(converted_audio) > aligned_len:
+            converted_audio = np.concatenate([rescued_main, converted_audio[aligned_len:]])
+        else:
+            converted_audio = rescued_main
+
+        sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr)
+        log.detail(
+            "Artifact segment rescue: "
+            f"rescued {rescued_frames}/{frame_count} frames "
+            f"(breath={int(np.sum(breath_curve > 0.18))}, "
+            f"quiet={int(np.sum(quiet_fix_curve > 0.18))}, "
+            f"active={int(np.sum(active_fix_curve > 0.18))}, "
+            f"gain={gain:.3f})"
+        )
+
     @staticmethod
     def _compute_quiet_gap_sample_gain(
         reference_audio: np.ndarray,
@@ -916,7 +2266,12 @@ class CoverPipeline:
                 return False
             return vc_preprocessed
         if normalized_mode == "auto":
-            return vc_preprocessed and self._last_vc_preprocess_mode in {"uvr_deecho", "legacy", "advanced_dereverb"}
+            return vc_preprocessed and self._last_vc_preprocess_mode in {
+                "uvr_deecho",
+                "uvr_deecho_plus",
+                "legacy",
+                "advanced_dereverb",
+            }
         return False
 
     def _refine_source_constrained_output(
@@ -925,12 +2280,14 @@ class CoverPipeline:
         converted_vocals_path: str,
         source_constraint_mode: str,
         f0_method: str,
+        original_vocals_path: Optional[str] = None,
+        session_dir: Optional[Path] = None,
     ) -> None:
         """Apply extra cleanup passes for mature UVR DeEcho routing."""
         normalized_mode = str(source_constraint_mode or "auto").strip().lower()
         if normalized_mode != "auto":
             return
-        if self._last_vc_preprocess_mode != "uvr_deecho":
+        if self._last_vc_preprocess_mode not in {"uvr_deecho", "uvr_deecho_plus"}:
             return
 
         self._apply_silence_gate_official(
@@ -944,7 +2301,43 @@ class CoverPipeline:
         )
         log.detail("Low-energy unvoiced cleanup: applied after source-guided reconstruction")
 
+        self._apply_source_breath_cleanup(
+            source_vocals_path=source_vocals_path,
+            converted_vocals_path=converted_vocals_path,
+        )
+
         self._apply_source_gap_suppression(
+            source_vocals_path=source_vocals_path,
+            converted_vocals_path=converted_vocals_path,
+        )
+        self._apply_source_transition_cleanup(
+            source_vocals_path=source_vocals_path,
+            converted_vocals_path=converted_vocals_path,
+        )
+        if original_vocals_path:
+            self._restore_active_vocal_loudness(
+                reference_vocals_path=original_vocals_path,
+                converted_vocals_path=converted_vocals_path,
+            )
+        if session_dir:
+            raw_snapshot_path = None
+            for candidate_name in (
+                "debug_converted_raw.wav",
+                "debug_converted_raw_current.wav",
+                "debug_converted_raw_upstream.wav",
+                "debug_converted_raw_repair.wav",
+            ):
+                candidate_path = session_dir / candidate_name
+                if candidate_path.exists():
+                    raw_snapshot_path = str(candidate_path)
+                    break
+            if raw_snapshot_path:
+                self._restore_voiced_body_from_raw(
+                    raw_vocals_path=raw_snapshot_path,
+                    source_vocals_path=source_vocals_path,
+                    converted_vocals_path=converted_vocals_path,
+                )
+        self._apply_artifact_segment_rescue(
             source_vocals_path=source_vocals_path,
             converted_vocals_path=converted_vocals_path,
         )
@@ -1036,13 +2429,23 @@ class CoverPipeline:
         # --- Blending weight ---
         # 全局回音水平驱动系数自适应
         global_echo = float(np.mean(echo_ratio))
-        # 沉默段基权: 轻回音0.65, 重回音0.85
-        base_coef = 0.65 + 0.20 * global_echo
+        # 沉默段基权: 轻回音0.68, 重回音0.86
+        base_coef = 0.68 + 0.18 * global_echo
         base_weight = base_coef * np.square(1.0 - activity[:n_blend])
-        # 活跃唱段 echo_boost: 轻回音0.55, 重回音0.90
-        echo_boost_coef = 0.55 + 0.35 * global_echo
+        # 活跃唱段在检测到明显回声时更激进，但避免把主唱主体削得过干。
+        echo_boost_coef = 0.60 + 0.20 * global_echo
         echo_boost = echo_boost_coef * echo_ratio * activity[:n_blend]
-        deecho_weight = base_weight + echo_boost
+        active_floor = (
+            activity[:n_blend]
+            * np.clip((echo_ratio - 0.32) / 0.28, 0.0, 1.0)
+            * (0.58 + 0.18 * global_echo)
+        )
+        tail_support = (
+            (1.0 - activity[:n_blend])
+            * np.clip((echo_ratio - 0.14) / 0.22, 0.0, 1.0)
+            * (0.16 + 0.08 * global_echo)
+        )
+        deecho_weight = np.maximum(base_weight + echo_boost + tail_support, active_floor)
         deecho_weight = np.convolve(deecho_weight, smooth_kernel, mode="same")
         deecho_weight = np.clip(deecho_weight, 0.0, 0.95)
         deecho_weight = CoverPipeline._frame_curve_to_sample_gain(
@@ -1055,6 +2458,117 @@ class CoverPipeline:
         if direct_mono.size > aligned_len:
             blended = np.concatenate([blended, direct_mono[aligned_len:]])
         return blended.astype(np.float32)
+
+    @staticmethod
+    def _merge_uvr_hotspot_cleanup(
+        direct_mono: np.ndarray,
+        deecho_mono: np.ndarray,
+        aggressive_mono: np.ndarray,
+        sr: int,
+    ) -> Tuple[np.ndarray, Dict[str, float]]:
+        """Apply the aggressive dereverb pass only where active echo is still obvious."""
+        import librosa
+
+        direct_mono = np.asarray(direct_mono, dtype=np.float32).reshape(-1)
+        deecho_mono = np.asarray(deecho_mono, dtype=np.float32).reshape(-1)
+        aggressive_mono = np.asarray(aggressive_mono, dtype=np.float32).reshape(-1)
+        aligned_len = min(direct_mono.size, deecho_mono.size, aggressive_mono.size)
+        if aligned_len <= 0:
+            return deecho_mono.astype(np.float32), {
+                "hotspot_frames": 0.0,
+                "avg_weight": 0.0,
+                "max_weight": 0.0,
+                "coverage_ratio": 0.0,
+            }
+
+        direct_main = direct_mono[:aligned_len]
+        deecho_main = deecho_mono[:aligned_len]
+        aggressive_main = aggressive_mono[:aligned_len]
+
+        frame_length = 2048
+        hop_length = 512
+        eps = 1e-8
+        smooth_kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
+        smooth_kernel /= np.sum(smooth_kernel)
+
+        direct_rms = librosa.feature.rms(
+            y=direct_main,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0]
+        deecho_rms = librosa.feature.rms(
+            y=deecho_main,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0]
+        aggressive_rms = librosa.feature.rms(
+            y=aggressive_main,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0]
+
+        frame_count = min(direct_rms.size, deecho_rms.size, aggressive_rms.size)
+        if frame_count <= 0:
+            return deecho_mono.astype(np.float32), {
+                "hotspot_frames": 0.0,
+                "avg_weight": 0.0,
+                "max_weight": 0.0,
+                "coverage_ratio": 0.0,
+            }
+
+        direct_rms = direct_rms[:frame_count].astype(np.float32)
+        deecho_rms = deecho_rms[:frame_count].astype(np.float32)
+        aggressive_rms = aggressive_rms[:frame_count].astype(np.float32)
+
+        direct_db = 20.0 * np.log10(direct_rms + eps)
+        ref_db = float(np.percentile(direct_db, 95))
+        activity = np.square(np.clip((direct_db - (ref_db - 18.0)) / 9.0, 0.0, 1.0))
+        support_activity = np.clip((direct_db - (ref_db - 24.0)) / 12.0, 0.0, 1.0)
+
+        primary_removed = np.clip(1.0 - (deecho_rms / (direct_rms + eps)), 0.0, 1.0)
+        secondary_removed = np.clip(1.0 - (aggressive_rms / (deecho_rms + eps)), 0.0, 1.0)
+        hotspot_curve = (
+            activity
+            * np.clip((secondary_removed - 0.10) / 0.22, 0.0, 1.0)
+            * np.clip((primary_removed - 0.02) / 0.10, 0.0, 1.0)
+        )
+        support_curve = (
+            0.22
+            * support_activity
+            * np.clip((secondary_removed - 0.16) / 0.20, 0.0, 1.0)
+        )
+        aggressive_weight = np.clip(hotspot_curve + support_curve, 0.0, 0.62)
+        aggressive_weight = np.convolve(aggressive_weight, smooth_kernel, mode="same")
+        aggressive_weight = CoverPipeline._hold_activity_curve(
+            aggressive_weight,
+            max(1, int(0.03 * sr / hop_length)),
+        )
+        aggressive_weight = np.clip(aggressive_weight, 0.0, 0.62).astype(np.float32)
+
+        sample_weight = CoverPipeline._frame_curve_to_sample_gain(
+            aggressive_weight,
+            aligned_len,
+            hop_length,
+        )[:aligned_len]
+        cleaned_main = (
+            deecho_main * (1.0 - sample_weight)
+            + aggressive_main * sample_weight
+        ).astype(np.float32)
+
+        if deecho_mono.size > aligned_len:
+            cleaned = np.concatenate([cleaned_main, deecho_mono[aligned_len:]])
+        else:
+            cleaned = cleaned_main
+
+        return cleaned.astype(np.float32), {
+            "hotspot_frames": float(np.sum(aggressive_weight > 0.20)),
+            "avg_weight": float(np.mean(aggressive_weight)),
+            "max_weight": float(np.max(aggressive_weight)),
+            "coverage_ratio": float(np.mean(aggressive_weight > 0.20)),
+        }
 
     def _prepare_vocals_for_vc(
         self,
@@ -1168,15 +2682,76 @@ class CoverPipeline:
                     # DeEcho 质量检测：用 UVR 候选打分指标判断是否跳过 blend
                     uvr_metrics = getattr(self, '_uvr_deecho_metrics', None)
                     skip_blend = False
+                    secondary_dry_cleanup = False
+                    hotspot_cleaned = False
+                    hotspot_stats = {
+                        "hotspot_frames": 0.0,
+                        "avg_weight": 0.0,
+                        "max_weight": 0.0,
+                        "coverage_ratio": 0.0,
+                    }
                     if uvr_metrics:
                         sep_db = uvr_metrics.get('separation_db', 0.0)
                         corr = uvr_metrics.get('corr', 0.0)
+                        active_ratio = uvr_metrics.get('active_ratio', 1.0)
+                        reduction_ratio = uvr_metrics.get('reduction_ratio', 0.0)
                         log.detail(
-                            f"DeEcho quality: sep={sep_db:.2f}dB, corr={corr:.3f}"
+                            "DeEcho quality: "
+                            f"sep={sep_db:.2f}dB, corr={corr:.3f}, "
+                            f"active_ratio={active_ratio:.3f}, reduction={reduction_ratio:.3f}"
                         )
-                        # sep > 30dB 且 corr > 0.9 说明 DeEcho 质量好
-                        if sep_db > 30.0 and corr > 0.9:
+                        # sep/corr only mean the output is coherent. We should skip blend
+                        # only when the DeEcho branch is also meaningfully drier than source.
+                        if (
+                            sep_db > 30.0
+                            and corr > 0.9
+                            and not (active_ratio > 0.90 and reduction_ratio < 0.25)
+                        ):
                             skip_blend = True
+                        if active_ratio > 0.93 and reduction_ratio < 0.18:
+                            secondary_dry_cleanup = True
+
+                    if secondary_dry_cleanup:
+                        dry_signal, reverb_tail = advanced_dereverb(deecho_mono, sr)
+                        deecho_rms = float(np.sqrt(np.mean(np.square(deecho_mono)) + 1e-12))
+                        delta_rms = float(
+                            np.sqrt(np.mean(np.square(dry_signal.astype(np.float32) - deecho_mono)) + 1e-12)
+                        )
+                        delta_ratio = float(delta_rms / (deecho_rms + 1e-12))
+                        if delta_ratio > 0.025:
+                            cleaned_mono, hotspot_stats = CoverPipeline._merge_uvr_hotspot_cleanup(
+                                direct_mono=direct_mono,
+                                deecho_mono=deecho_mono,
+                                aggressive_mono=dry_signal.astype(np.float32),
+                                sr=sr,
+                            )
+                            if hotspot_stats.get("hotspot_frames", 0.0) > 0:
+                                deecho_mono = cleaned_mono.astype(np.float32)
+                                hotspot_cleaned = True
+                        if hotspot_cleaned:
+                            self._last_vc_preprocess_mode = "uvr_deecho_plus"
+                            log.detail(
+                                "VC preprocess: UVR deecho active-echo hotspot cleanup "
+                                f"(delta_ratio={delta_ratio:.3f}, "
+                                f"hotspot_frames={int(hotspot_stats.get('hotspot_frames', 0.0))}, "
+                                f"coverage={hotspot_stats.get('coverage_ratio', 0.0):.3f}, "
+                                f"avg_weight={hotspot_stats.get('avg_weight', 0.0):.3f}, "
+                                f"max_weight={hotspot_stats.get('max_weight', 0.0):.3f})"
+                            )
+                        else:
+                            log.detail(
+                                "VC preprocess: advanced dereverb second pass had no strong active-echo hotspots, "
+                                f"keeping UVR deecho output (delta_ratio={delta_ratio:.3f})"
+                            )
+
+                    if hotspot_cleaned:
+                        skip_blend = False
+                        coverage_ratio = float(hotspot_stats.get("coverage_ratio", 0.0))
+                        if coverage_ratio > 0.35:
+                            log.detail(
+                                "VC preprocess: hotspot cleanup touched a wide region; "
+                                "forcing direct/deecho blend to preserve vocal body"
+                            )
 
                     if skip_blend:
                         mono = deecho_mono
@@ -1231,12 +2806,144 @@ class CoverPipeline:
 
         return cleaned.astype(np.float32)
 
+    def _duck_backing_under_lead(
+        self,
+        lead_audio: np.ndarray,
+        backing_audio: np.ndarray,
+        sr: int,
+        base_gain: float = 0.92,
+    ) -> Tuple[np.ndarray, Dict[str, float]]:
+        """Keep backing present while making room for the lead on overlap sections."""
+        import librosa
+
+        lead_audio = self._ensure_2d(lead_audio).astype(np.float32)
+        backing_audio = self._ensure_2d(backing_audio).astype(np.float32)
+        backing_audio = self._match_channels(backing_audio, lead_audio.shape[0])
+
+        output = backing_audio.copy().astype(np.float32)
+        output *= float(base_gain)
+
+        aligned_len = min(lead_audio.shape[1], backing_audio.shape[1])
+        if aligned_len <= 2048:
+            return output, {
+                "base_gain": float(base_gain),
+                "overlap_ratio": 0.0,
+                "duck_need": 0.0,
+                "avg_duck_db": 0.0,
+                "max_duck_db": 0.0,
+            }
+
+        lead_mono = lead_audio[:, :aligned_len].mean(axis=0).astype(np.float32)
+        backing_mono = backing_audio[:, :aligned_len].mean(axis=0).astype(np.float32)
+
+        lead_weights = self._compute_activity_sample_weights(lead_mono, sr)[:aligned_len]
+        backing_weights = self._compute_activity_sample_weights(backing_mono, sr)[:aligned_len]
+        overlap_weights = np.clip(
+            lead_weights * (0.35 + 0.65 * backing_weights),
+            0.0,
+            1.0,
+        ).astype(np.float32)
+
+        lead_overlap_rms = self._weighted_rms(lead_mono, overlap_weights)
+        backing_overlap_rms = self._weighted_rms(backing_mono, overlap_weights)
+        overlap_ratio = float(backing_overlap_rms / (lead_overlap_rms + 1e-12))
+
+        duck_need = float(np.clip((overlap_ratio - 0.18) / 0.20, 0.0, 1.0))
+        if duck_need <= 0.02:
+            return output, {
+                "base_gain": float(base_gain),
+                "overlap_ratio": overlap_ratio,
+                "duck_need": duck_need,
+                "avg_duck_db": 0.0,
+                "max_duck_db": 0.0,
+            }
+
+        frame_length = 2048
+        hop_length = 512
+        eps = 1e-8
+        lead_rms = librosa.feature.rms(
+            y=lead_mono,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0].astype(np.float32)
+        backing_rms = librosa.feature.rms(
+            y=backing_mono,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0].astype(np.float32)
+
+        frame_count = min(lead_rms.size, backing_rms.size)
+        if frame_count <= 4:
+            return output, {
+                "base_gain": float(base_gain),
+                "overlap_ratio": overlap_ratio,
+                "duck_need": duck_need,
+                "avg_duck_db": 0.0,
+                "max_duck_db": 0.0,
+            }
+
+        lead_rms = lead_rms[:frame_count]
+        backing_rms = backing_rms[:frame_count]
+
+        lead_db = 20.0 * np.log10(lead_rms + eps)
+        backing_db = 20.0 * np.log10(backing_rms + eps)
+        lead_peak_db = float(np.percentile(lead_db, 95))
+        backing_peak_db = float(np.percentile(backing_db, 92))
+
+        lead_activity = np.square(
+            np.clip((lead_db - (lead_peak_db - 24.0)) / 11.0, 0.0, 1.0)
+        )
+        backing_density = np.clip(
+            (backing_db - (backing_peak_db - 18.0)) / 10.0,
+            0.0,
+            1.0,
+        )
+
+        smooth_kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
+        smooth_kernel /= np.sum(smooth_kernel)
+        lead_activity = np.convolve(lead_activity, smooth_kernel, mode="same")
+        backing_density = np.convolve(backing_density, smooth_kernel, mode="same")
+        lead_activity = self._hold_activity_curve(
+            lead_activity,
+            max(1, int(0.18 * sr / hop_length)),
+        )
+
+        duck_curve = np.clip(
+            lead_activity * (0.35 + 0.65 * backing_density),
+            0.0,
+            1.0,
+        ).astype(np.float32)
+        sample_curve = self._frame_curve_to_sample_gain(
+            duck_curve,
+            aligned_len,
+            hop_length,
+        )
+
+        max_duck_db = float(1.8 + 3.2 * duck_need)
+        dynamic_gain = np.power(
+            10.0,
+            -(max_duck_db * sample_curve) / 20.0,
+        ).astype(np.float32)
+        output[:, :aligned_len] *= dynamic_gain[np.newaxis, :]
+
+        avg_duck_db = float(max_duck_db * float(np.mean(sample_curve)))
+        return output.astype(np.float32), {
+            "base_gain": float(base_gain),
+            "overlap_ratio": overlap_ratio,
+            "duck_need": duck_need,
+            "avg_duck_db": avg_duck_db,
+            "max_duck_db": float(max_duck_db * float(np.max(sample_curve))),
+        }
+
     def _merge_backing_into_accompaniment(
         self,
         backing_vocals_path: str,
         accompaniment_path: str,
         session_dir: Path,
         lead_vocals_path: Optional[str] = None,
+        duck_reference_path: Optional[str] = None,
     ) -> str:
         """将和声轨混入伴奏轨；可选抑制 backing 内残留主唱"""
         import librosa
@@ -1265,6 +2972,18 @@ class CoverPipeline:
                 lead_audio=lead,
                 backing_audio=backing,
             )
+
+        duck_reference = None
+        if duck_reference_path and Path(duck_reference_path).exists():
+            duck_reference, duck_sr = librosa.load(duck_reference_path, sr=None, mono=False)
+            duck_reference = self._ensure_2d(duck_reference).astype(np.float32)
+            if duck_sr != accompaniment_sr:
+                duck_reference = self._resample_audio(
+                    duck_reference,
+                    orig_sr=duck_sr,
+                    target_sr=accompaniment_sr,
+                )
+            duck_reference = self._match_channels(duck_reference, backing.shape[0])
 
         accompaniment = self._match_channels(accompaniment, backing.shape[0])
         max_len = max(accompaniment.shape[1], backing.shape[1])
@@ -1739,6 +3458,7 @@ class CoverPipeline:
         log.detail(f"文件大小: {_format_size(input_size)}")
         log.detail(f"音频时长: {_format_duration(input_duration)}")
         log.detail(f"会话目录: {session_dir}")
+        log.detail(f"Quality debug report: {session_dir / 'quality_debug.json'}")
         log.separator()
         # 记录参数配置
         log.config(f"RVC模型: {Path(model_path).name}")
@@ -1879,6 +3599,17 @@ class CoverPipeline:
                 log.warning(f"VC预处理失败，回退原始输入: {e}")
 
             report_progress("正在转换人声...", step_convert)
+            self._record_quality_debug(
+                session_dir=session_dir,
+                stage="vc_input",
+                candidate_path=vc_input_path,
+                reference_path=vocals_path if vc_input_path != vocals_path else None,
+                extra={
+                    "vc_preprocessed": vc_preprocessed,
+                    "requested_preprocess_mode": normalized_vc_preprocess_mode,
+                    "effective_preprocess_mode": effective_preprocess_mode,
+                },
+            )
             converted_vocals_path = str(session_dir / "converted_vocals.wav")
 
             log.model(f"加载RVC模型: {Path(model_path).name}")
@@ -1902,6 +3633,14 @@ class CoverPipeline:
                     protect=protect,
                     speaker_id=speaker_id,
                 )
+                self._record_quality_debug(
+                    session_dir=session_dir,
+                    stage="vc_raw_upstream",
+                    candidate_path=converted_vocals_path,
+                    reference_path=vc_input_path,
+                    snapshot_label="debug_converted_raw_upstream",
+                    extra={"source_constraint_mode": normalized_source_constraint_mode},
+                )
                 log.detail("内置官方模式：去混响干声 -> 官方RVC推理（纯净管道）")
                 log.success("内置官方VC转换完成")
             elif normalized_vc_pipeline_mode == "official" and singing_repair:
@@ -1923,6 +3662,14 @@ class CoverPipeline:
                     protect=protect,
                     speaker_id=speaker_id,
                     repair_profile=True,
+                )
+                self._record_quality_debug(
+                    session_dir=session_dir,
+                    stage="vc_raw_repair",
+                    candidate_path=converted_vocals_path,
+                    reference_path=vc_input_path,
+                    snapshot_label="debug_converted_raw_repair",
+                    extra={"source_constraint_mode": normalized_source_constraint_mode},
                 )
                 try:
                     self._apply_silence_gate_official(
@@ -1948,11 +3695,12 @@ class CoverPipeline:
                     log.warning(f"唱歌修复静音区抑制失败，保留当前结果: {e}")
                 log.success("官方兼容唱歌修复转换完成")
             elif effective_use_official:
-                log.detail("使用当前项目官方封装VC进行转换")
+                log.detail("VC backend: upstream_official_raw + current postprocess")
+                log.detail("VC route detail: vendored upstream official raw -> current cleanup chain")
                 log.config(f"F0方法: {f0_method}, 音调: {pitch_shift}, 索引率: {index_ratio}")
                 log.config(f"滤波半径: {filter_radius}, RMS混合: {rms_mix_rate}, 保护: {protect}")
 
-                convert_vocals_official(
+                convert_vocals_official_upstream(
                     vocals_path=vc_input_path,
                     output_path=converted_vocals_path,
                     model_path=model_path,
@@ -1964,6 +3712,14 @@ class CoverPipeline:
                     rms_mix_rate=rms_mix_rate,
                     protect=protect,
                     speaker_id=speaker_id,
+                )
+                self._record_quality_debug(
+                    session_dir=session_dir,
+                    stage="vc_raw",
+                    candidate_path=converted_vocals_path,
+                    reference_path=vc_input_path,
+                    snapshot_label="debug_converted_raw",
+                    extra={"source_constraint_mode": normalized_source_constraint_mode},
                 )
                 if silence_gate:
                     log.detail("启用静音门限（当前项目官方封装VC后处理）")
@@ -1989,12 +3745,30 @@ class CoverPipeline:
                             converted_vocals_path=converted_vocals_path,
                             original_vocals_path=vocals_path,
                         )
+                        self._record_quality_debug(
+                            session_dir=session_dir,
+                            stage="vc_source_constrained",
+                            candidate_path=converted_vocals_path,
+                            reference_path=vc_input_path,
+                            snapshot_label="debug_converted_source_constrained",
+                            extra={"source_constraint_mode": normalized_source_constraint_mode},
+                        )
                         log.detail("Applied source-guided reconstruction to suppress echo/noise")
                         self._refine_source_constrained_output(
                             source_vocals_path=vc_input_path,
                             converted_vocals_path=converted_vocals_path,
                             source_constraint_mode=normalized_source_constraint_mode,
                             f0_method=f0_method,
+                            original_vocals_path=vocals_path,
+                            session_dir=session_dir,
+                        )
+                        self._record_quality_debug(
+                            session_dir=session_dir,
+                            stage="vc_refined",
+                            candidate_path=converted_vocals_path,
+                            reference_path=vc_input_path,
+                            snapshot_label="debug_converted_refined",
+                            extra={"source_constraint_mode": normalized_source_constraint_mode},
                         )
                     except Exception as e:
                         log.warning(f"Source-guided reconstruction failed, keeping raw conversion: {e}")
@@ -2005,6 +3779,14 @@ class CoverPipeline:
                         self._apply_source_gap_suppression(
                             source_vocals_path=vc_input_path,
                             converted_vocals_path=converted_vocals_path,
+                        )
+                        self._record_quality_debug(
+                            session_dir=session_dir,
+                            stage="vc_gap_suppressed",
+                            candidate_path=converted_vocals_path,
+                            reference_path=vc_input_path,
+                            snapshot_label="debug_converted_gap_suppressed",
+                            extra={"source_constraint_mode": normalized_source_constraint_mode},
                         )
                         log.detail("Source gap suppression: applied for mature/default route")
                     except Exception as e:
@@ -2092,6 +3874,14 @@ class CoverPipeline:
                     silence_smoothing_ms=silence_smoothing_ms,
                     silence_min_duration_ms=silence_min_duration_ms,
                 )
+                self._record_quality_debug(
+                    session_dir=session_dir,
+                    stage="vc_raw_current",
+                    candidate_path=converted_vocals_path,
+                    reference_path=vc_input_path,
+                    snapshot_label="debug_converted_raw_current",
+                    extra={"source_constraint_mode": normalized_source_constraint_mode},
+                )
                 normalized_source_constraint_mode = str(source_constraint_mode or "auto").strip().lower()
                 should_apply_source_constraint = self._should_apply_source_constraint(
                     vc_preprocessed=vc_preprocessed,
@@ -2105,12 +3895,30 @@ class CoverPipeline:
                             converted_vocals_path=converted_vocals_path,
                             original_vocals_path=vocals_path,
                         )
+                        self._record_quality_debug(
+                            session_dir=session_dir,
+                            stage="vc_source_constrained_current",
+                            candidate_path=converted_vocals_path,
+                            reference_path=vc_input_path,
+                            snapshot_label="debug_converted_source_constrained_current",
+                            extra={"source_constraint_mode": normalized_source_constraint_mode},
+                        )
                         log.detail("Applied source-guided reconstruction to suppress echo/noise")
                         self._refine_source_constrained_output(
                             source_vocals_path=vc_input_path,
                             converted_vocals_path=converted_vocals_path,
                             source_constraint_mode=normalized_source_constraint_mode,
                             f0_method=f0_method,
+                            original_vocals_path=vocals_path,
+                            session_dir=session_dir,
+                        )
+                        self._record_quality_debug(
+                            session_dir=session_dir,
+                            stage="vc_refined_current",
+                            candidate_path=converted_vocals_path,
+                            reference_path=vc_input_path,
+                            snapshot_label="debug_converted_refined_current",
+                            extra={"source_constraint_mode": normalized_source_constraint_mode},
                         )
                     except Exception as e:
                         log.warning(f"Source-guided reconstruction failed, keeping raw conversion: {e}")
@@ -2121,6 +3929,14 @@ class CoverPipeline:
                         self._apply_source_gap_suppression(
                             source_vocals_path=vc_input_path,
                             converted_vocals_path=converted_vocals_path,
+                        )
+                        self._record_quality_debug(
+                            session_dir=session_dir,
+                            stage="vc_gap_suppressed_current",
+                            candidate_path=converted_vocals_path,
+                            reference_path=vc_input_path,
+                            snapshot_label="debug_converted_gap_suppressed_current",
+                            extra={"source_constraint_mode": normalized_source_constraint_mode},
                         )
                         log.detail("Source gap suppression: applied for mature/default route")
                     except Exception as e:
@@ -2138,6 +3954,18 @@ class CoverPipeline:
                 log.detail("已清理设备缓存")
 
             # 记录转换结果
+            self._record_quality_debug(
+                session_dir=session_dir,
+                stage="vc_final_state",
+                candidate_path=converted_vocals_path,
+                reference_path=vc_input_path if Path(vc_input_path).exists() else None,
+                extra={"source_constraint_mode": normalized_source_constraint_mode},
+            )
+            self._maybe_log_diagnostic_hint(
+                session_dir=session_dir,
+                model_path=model_path,
+                index_path=index_path,
+            )
             converted_size = Path(converted_vocals_path).stat().st_size if Path(converted_vocals_path).exists() else 0
             log.audio(f"转换后人声: {Path(converted_vocals_path).name} ({_format_size(converted_size)})")
 
@@ -2165,6 +3993,7 @@ class CoverPipeline:
                     accompaniment_path=accompaniment_path,
                     session_dir=session_dir,
                     lead_vocals_path=lead_vocals_path,
+                    duck_reference_path=mix_vocals_path,
                 )
                 log.detail("已将和声混入伴奏轨道")
 
@@ -2184,6 +4013,17 @@ class CoverPipeline:
                 reverb_amount=reverb_amount
             )
 
+            self._record_quality_debug(
+                session_dir=session_dir,
+                stage="cover_mix",
+                candidate_path=cover_path,
+                reference_path=None,
+                extra={
+                    "vocals_volume": vocals_volume,
+                    "accompaniment_volume": accompaniment_volume,
+                    "reverb_amount": reverb_amount,
+                },
+            )
             cover_size = Path(cover_path).stat().st_size if Path(cover_path).exists() else 0
             log.success(f"混音完成: {_format_size(cover_size)}")
 

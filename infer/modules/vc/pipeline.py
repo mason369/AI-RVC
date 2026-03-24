@@ -29,7 +29,11 @@ except ImportError:
     log = None
 
 from lib.audio import soft_clip
-from infer.quality_policy import compute_breath_preserving_energy_gates
+from infer.quality_policy import (
+    build_conservative_harvest_fill_mask,
+    compute_breath_preserving_energy_gates,
+    compute_chunk_crossfade_samples,
+)
 
 bh, ah = signal.butter(N=5, Wn=48, btype="high", fs=16000)
 
@@ -721,7 +725,19 @@ class Pipeline(object):
                         else:
                             f0_fb = f0_fb[: len(f0)]
 
-                        fill_mask = need_fill & (f0_fb > 0)
+                        fill_mask = build_conservative_harvest_fill_mask(
+                            reference_f0=f0,
+                            fallback_f0=f0_fb,
+                            dropout_mask=need_fill,
+                            max_run=10,
+                            local_radius=4,
+                            max_semitones=4.0,
+                        )
+                        rejected_fill_count = int(np.sum(need_fill)) - int(np.sum(fill_mask))
+                        if rejected_fill_count > 0 and log:
+                            log.detail(
+                                f"Harvest兜底已拒绝 {rejected_fill_count} 帧长间隙/离群音高，避免呼吸与回气误赋音高"
+                            )
                         f0[fill_mask] = f0_fb[fill_mask]
 
                         need_fill2 = (f0 <= 0) & energy_mask & voiced_context
@@ -1110,6 +1126,9 @@ class Pipeline(object):
                 )
             if log:
                 log.detail(f"分段数量: {len(opt_ts) + 1}")
+                if opt_ts:
+                    boundary_times = [round(float(t) / 16000.0, 3) for t in opt_ts[:12]]
+                    log.detail(f"分段边界(秒): {boundary_times}")
         else:
             if log:
                 if self.disable_chunking:
@@ -1175,10 +1194,14 @@ class Pipeline(object):
         segment_count = len(opt_ts) + 1
         current_segment = 0
 
-        # Crossfade length at target rate (~12ms). Each boundary segment
-        # keeps this many extra samples from the normally-trimmed padding
-        # region. The overlap between adjacent segments is 2 * _xfade_tgt.
-        _xfade_tgt = min(int(0.012 * tgt_sr), self.t_pad_tgt // 4) if len(opt_ts) > 0 else 0
+        # Keep a wider overlap than the legacy 12ms crossfade. Adjacent
+        # chunks are synthesized independently and benefit from a longer,
+        # equal-power merge to suppress tearing at the boundaries.
+        _xfade_tgt = compute_chunk_crossfade_samples(
+            tgt_sr=tgt_sr,
+            t_pad_tgt=self.t_pad_tgt,
+            segment_count=segment_count,
+        )
 
         def _trim_segment(raw, is_first, is_last):
             """Trim padding from vc() output, keeping crossfade overlap."""
@@ -1276,8 +1299,9 @@ class Pipeline(object):
             for seg in audio_opt[1:]:
                 xf = min(overlap, len(result), len(seg))
                 if xf > 1:
-                    fade_out = np.linspace(1.0, 0.0, xf, dtype=np.float32)
-                    fade_in = 1.0 - fade_out
+                    theta = np.linspace(0.0, np.pi / 2.0, xf, dtype=np.float32)
+                    fade_out = np.cos(theta)
+                    fade_in = np.sin(theta)
                     blended = result[-xf:] * fade_out + seg[:xf] * fade_in
                     result = np.concatenate([result[:-xf], blended, seg[xf:]])
                 else:

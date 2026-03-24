@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional, Tuple, Dict
 
 from lib.logger import log
+from lib.runtime_build import get_runtime_build_label
 
 # 项目根目录
 ROOT_DIR = Path(__file__).parent.parent
@@ -547,6 +548,7 @@ def process_cover(
         status_msg += f"\nVC\u7ba1\u7ebf\u6a21\u5f0f: {pipeline_value_to_label.get(vc_pipeline_mode, vc_pipeline_mode)}"
         status_msg += f"\n唱歌修复: {'开启' if singing_repair else '关闭'}"
         status_msg += f"\n\u6e90\u7ea6\u675f\u7b56\u7565: {source_value_to_label.get(source_constraint_mode, source_constraint_mode)}"
+        status_msg += f"\n{get_runtime_build_label()}"
         if result.get("all_files_dir"):
             status_msg += f"\n\u5168\u90e8\u6587\u4ef6\u76ee\u5f55: {result['all_files_dir']}"
 
@@ -617,12 +619,14 @@ def get_cover_vc_route_status(
     pipeline_mode = pipeline_label_to_value.get(pipeline_mode, pipeline_mode)
     preferred = get_preferred_mature_deecho_model()
     newline = chr(10)
+    build_label = get_runtime_build_label()
 
     if pipeline_mode == "official":
         return newline.join([
             "当前使用内置官方 RVC 实现",
             "流程：主唱分离 → 官方音频加载 / 官方 VC → 混音",
             "说明：跳过本项目自定义 VC 预处理、源约束与静音门限后处理",
+            build_label,
         ])
 
     if mode == "direct":
@@ -630,12 +634,14 @@ def get_cover_vc_route_status(
             "ℹ️ 当前固定为主唱直通 RVC",
             "流程: 主唱分离 → 直接进入 RVC → 混音",
             "说明: 不使用学习型 DeEcho，也不走旧版手工链",
+            build_label,
         ])
     if mode == "legacy":
         return newline.join([
             "⚠️ 当前固定为旧版手工链",
             "流程: 主唱分离 → 手工去回声链 → RVC → 混音",
             "说明: 仅用于对比，不是默认推荐路径",
+            build_label,
         ])
     if mode == "uvr_deecho":
         if preferred:
@@ -643,11 +649,13 @@ def get_cover_vc_route_status(
                 "✅ 当前固定优先使用学习型 DeEcho / DeReverb",
                 f"当前命中模型: {preferred}",
                 "流程: 主唱分离 → UVR DeEcho/DeReverb → RVC → 混音",
+                build_label,
             ])
         return newline.join([
             "⚠️ 当前设为官方 DeEcho 优先，但本地缺少模型",
             "当前将回退流程: 主唱分离 → 算法去混响 → RVC → 混音",
             "建议: 下载成熟 DeEcho 模型可获得更好效果",
+            build_label,
         ])
 
     if preferred:
@@ -655,11 +663,13 @@ def get_cover_vc_route_status(
             "✅ 自动模式当前会优先使用学习型 DeEcho / DeReverb",
             f"当前命中模型: {preferred}",
             "流程: 主唱分离 → UVR DeEcho/DeReverb → RVC → 混音",
+            build_label,
         ])
     return newline.join([
         "ℹ️ 自动模式当前使用算法去混响",
         "原因: 本地未检测到成熟 DeEcho / DeReverb 模型，已回退到 advanced dereverb",
         "流程: 主唱分离 → 算法去混响 → RVC → 混音",
+        build_label,
     ])
 
 
@@ -714,6 +724,14 @@ CUSTOM_CSS = """
     text-align: center;
     margin-bottom: 1rem;
     color: #e0e0e0 !important;
+}
+
+.runtime-stamp {
+    text-align: center;
+    margin: -0.3rem 0 1rem 0;
+    color: #bdbdbd !important;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.95rem;
 }
 
 /* 状态框样式 */
@@ -1288,6 +1306,9 @@ def create_ui() -> gr.Blocks:
         )
         gr.Markdown(
             f"<center>{i18n.get('app_description', '基于 RVC v2 的 AI 翻唱系统')}</center>"
+        )
+        gr.Markdown(
+            f"<div class='runtime-stamp'>{get_runtime_build_label()}</div>"
         )
 
         with gr.Tabs():

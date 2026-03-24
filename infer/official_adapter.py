@@ -375,6 +375,18 @@ def convert_vocals_official(
         config.f0_fallback_use_crepe = True
         config.f0_fallback_crepe_max_ratio = 0.006
         config.f0_fallback_crepe_max_frames = 160
+        if not repair_profile:
+            config.f0_stabilize = True
+            config.f0_rate_limit = True
+            config.f0_stabilize_max_semitones = min(
+                5.0,
+                float(config.f0_stabilize_max_semitones),
+            )
+            config.f0_rate_limit_semitones = min(
+                7.0,
+                float(config.f0_rate_limit_semitones),
+            )
+            log.detail("Hybrid唱歌护栏已启用: F0稳定器 + F0限速")
     if repair_profile:
         config.is_half = False
         config.f0_hybrid_mode = "fallback"
@@ -547,6 +559,13 @@ def convert_vocals_official_upstream(
 ) -> str:
     """Run vendored upstream official RVC in an isolated subprocess."""
     root_dir = Path(__file__).parent.parent
+    app_cfg = _load_app_config(root_dir)
+    f0_policy = resolve_cover_f0_policy(
+        requested_method=f0_method,
+        configured_hybrid_mode=str(_get_cfg_value(app_cfg, "f0_hybrid_mode", "off")),
+        repair_profile=False,
+    )
+    effective_f0_method = f0_policy.vc_method
     env_paths = setup_upstream_official_env(root_dir)
 
     sid, official_index = export_model_to_official(
@@ -571,7 +590,7 @@ def convert_vocals_official_upstream(
         "--output-path",
         str(output_path),
         "--f0-method",
-        str(f0_method),
+        str(effective_f0_method),
         "--pitch-shift",
         str(int(pitch_shift)),
         "--index-path",
@@ -592,6 +611,14 @@ def convert_vocals_official_upstream(
     log.detail(f"官方模型SID: {sid}")
     if official_index:
         log.detail(f"官方索引路径: {official_index}")
+    if effective_f0_method != str(f0_method).strip().lower():
+        log.detail(
+            "官方F0路由解析: "
+            f"requested={f0_policy.requested_method}, "
+            f"vc={f0_policy.vc_method}, "
+            f"hybrid_mode={f0_policy.hybrid_mode}, "
+            f"gate={f0_policy.gate_method}"
+        )
     log.detail(f"官方RMS混合率: {official_rms_mix_rate}")
 
     try:

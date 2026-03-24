@@ -119,12 +119,92 @@ def build_conservative_crepe_fill_mask(
     return fill_mask
 
 
+def build_conservative_harvest_fill_mask(
+    reference_f0: np.ndarray,
+    fallback_f0: np.ndarray,
+    dropout_mask: np.ndarray,
+    max_run: int = 10,
+    local_radius: int = 4,
+    max_semitones: float = 4.0,
+    min_neighbors: int = 2,
+) -> np.ndarray:
+    reference_f0 = np.asarray(reference_f0, dtype=np.float32).reshape(-1)
+    fallback_f0 = np.asarray(fallback_f0, dtype=np.float32).reshape(-1)
+    dropout_mask = np.asarray(dropout_mask, dtype=bool).reshape(-1)
+
+    n = min(reference_f0.size, fallback_f0.size, dropout_mask.size)
+    if n <= 0:
+        return np.zeros(0, dtype=bool)
+
+    reference_f0 = reference_f0[:n]
+    fallback_f0 = fallback_f0[:n]
+    dropout_mask = dropout_mask[:n]
+    accepted = np.zeros(n, dtype=bool)
+
+    max_run = max(1, int(max_run))
+    local_radius = max(1, int(local_radius))
+    max_semitones = max(0.0, float(max_semitones))
+    min_neighbors = max(1, int(min_neighbors))
+
+    padded = np.pad(dropout_mask.astype(np.int8), (1, 1), mode="constant")
+    edges = np.diff(padded)
+    starts = np.where(edges == 1)[0]
+    ends = np.where(edges == -1)[0]
+    eps = 1e-6
+
+    for start, end in zip(starts, ends):
+        run_slice = slice(start, end)
+        run_len = end - start
+        if run_len <= 0 or run_len > max_run:
+            continue
+
+        run_fallback = fallback_f0[run_slice]
+        voiced_run = run_fallback > 0
+        if not np.any(voiced_run):
+            continue
+
+        left = reference_f0[max(0, start - local_radius) : start]
+        right = reference_f0[end : min(n, end + local_radius)]
+        neighbors = np.concatenate([left[left > 0], right[right > 0]])
+        if neighbors.size < min_neighbors:
+            continue
+
+        local_median = float(np.median(neighbors))
+        if local_median <= 0:
+            continue
+
+        semitone_diff = np.abs(
+            12.0 * np.log2((run_fallback + eps) / (local_median + eps))
+        )
+        accepted[run_slice] = voiced_run & (semitone_diff <= max_semitones)
+
+    return accepted
+
+
+def compute_chunk_crossfade_samples(
+    tgt_sr: int,
+    t_pad_tgt: int,
+    segment_count: int,
+) -> int:
+    tgt_sr = int(max(tgt_sr, 0))
+    t_pad_tgt = int(max(t_pad_tgt, 0))
+    segment_count = int(max(segment_count, 0))
+    if tgt_sr <= 0 or t_pad_tgt <= 0 or segment_count <= 1:
+        return 0
+
+    base = int(round(tgt_sr * 0.018))
+    extra = int(round(tgt_sr * 0.002 * max(0, segment_count - 2)))
+    min_crossfade = int(round(tgt_sr * 0.012))
+    max_crossfade = max(min_crossfade, t_pad_tgt // 3)
+    return int(np.clip(base + extra, min_crossfade, max_crossfade))
+
+
 def compute_active_source_replace(
     activity: np.ndarray,
     soft_mask: np.ndarray,
     echo_ratio: np.ndarray,
     direct_ratio: np.ndarray,
-    max_replace: float = 0.70,
+    max_replace: float = 0.82,
 ) -> np.ndarray:
     activity = np.asarray(activity, dtype=np.float32).reshape(-1)
     direct_ratio = np.asarray(direct_ratio, dtype=np.float32).reshape(-1)
@@ -146,8 +226,12 @@ def compute_active_source_replace(
     direct_ratio = direct_ratio[:frame_count][np.newaxis, :]
 
     base_replace = 0.85 * (1.0 - activity) * (1.0 - soft_mask)
-    active_echo_pressure = np.clip(echo_ratio * (1.0 - direct_ratio), 0.0, 1.0)
-    active_replace = 0.40 * activity * active_echo_pressure * (1.0 - soft_mask)
+    active_echo_presence = np.clip(
+        echo_ratio * (0.35 + 0.65 * (1.0 - direct_ratio)),
+        0.0,
+        1.0,
+    )
+    active_replace = 0.65 * activity * active_echo_presence * (1.0 - soft_mask)
     source_replace = np.clip(base_replace + active_replace, 0.0, float(max_replace))
     return source_replace.astype(np.float32)
 
