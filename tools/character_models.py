@@ -9,6 +9,7 @@ import zipfile
 import shutil
 from pathlib import Path
 from typing import Optional, List, Dict, Callable
+from urllib.parse import quote
 
 try:
     from huggingface_hub import hf_hub_download, list_repo_files
@@ -21,6 +22,17 @@ except ImportError:
 HF_REPO_ID = "trioskosmos/rvc_models"
 _VERSION_NOTE_CACHE: Dict[str, Optional[str]] = {}
 _VERSION_NOTE_CACHE_LOADED = False
+LOCAL_MODEL_INFO_FILENAME = "ai_rvc_model.json"
+INTEGRATED_REPO_IDS = {
+    "trioskosmos/rvc_models",
+    "Icchan/LoveLive",
+    "0xMifune/LoveLive",
+    "Zurakichi/RVC",
+    "Swordsmagus/Love-Live-RVC",
+    "makiligon/RVC-Models",
+    "kohaku12/RVC-MODELS",
+    "megaaziib/my-rvc-models-collection",
+}
 
 
 def _get_hf_token() -> Optional[str]:
@@ -59,8 +71,133 @@ def normalize_series(source: str) -> str:
     return source
 
 
-def _get_display_name(info: Dict, fallback: str) -> str:
-    """拼接中文名 / 英文名 / 日文名用于展示"""
+def _dedupe_parts(parts: List[str]) -> List[str]:
+    result = []
+    seen = set()
+    for part in parts:
+        text = str(part or "").strip()
+        if not text:
+            continue
+        if text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def _get_registry_repo_id(info: Dict) -> Optional[str]:
+    repo_id = str(info.get("repo") or "").strip()
+    if repo_id:
+        return repo_id
+    if info.get("gdrive_id") or info.get("url"):
+        return None
+    if info.get("file") or info.get("files") or info.get("pattern"):
+        return HF_REPO_ID
+    return None
+
+
+def _build_repo_page_url(repo_id: Optional[str]) -> Optional[str]:
+    repo_id = str(repo_id or "").strip()
+    if not repo_id:
+        return None
+    return f"https://huggingface.co/{repo_id}"
+
+
+def _build_repo_file_url(repo_id: Optional[str], file_name: Optional[str]) -> Optional[str]:
+    repo_id = str(repo_id or "").strip()
+    file_name = str(file_name or "").strip()
+    if not repo_id or not file_name:
+        return None
+    return f"https://huggingface.co/{repo_id}/resolve/main/{quote(file_name, safe='/')}"
+
+
+def _build_gdrive_view_url(file_id: Optional[str]) -> Optional[str]:
+    file_id = str(file_id or "").strip()
+    if not file_id:
+        return None
+    return f"https://drive.google.com/file/d/{file_id}/view?usp=sharing"
+
+
+def _infer_download_method(info: Dict) -> str:
+    if info.get("gdrive_id"):
+        return "google_drive"
+    if info.get("url"):
+        return "direct_url"
+    if info.get("files"):
+        return "huggingface_files"
+    if info.get("pattern"):
+        return "huggingface_pattern"
+    if info.get("file"):
+        return "huggingface_zip"
+    return "unknown"
+
+
+def _infer_distribution(info: Dict) -> str:
+    distribution = str(info.get("distribution") or "").strip()
+    if distribution:
+        return distribution
+    if info.get("gdrive_id"):
+        return "社区直链"
+    if info.get("url"):
+        if "huggingface.co" in str(info.get("url", "")):
+            return "独立仓库"
+        return "外部直链"
+    repo_id = _get_registry_repo_id(info)
+    if repo_id in INTEGRATED_REPO_IDS:
+        return "整合仓库"
+    if repo_id:
+        return "独立仓库"
+    return "未知来源"
+
+
+def _infer_continuity(info: Dict) -> Optional[str]:
+    continuity = str(info.get("continuity") or "").strip()
+    if continuity:
+        return continuity
+
+    source = str(info.get("source") or "").strip()
+    joined_name = " ".join(
+        str(info.get(key) or "")
+        for key in ("zh_name", "en_name", "jp_name", "variant")
+    )
+
+    if "幻日夜羽" in source or "夜羽" in joined_name or "ヨハネ" in joined_name:
+        return "幻日夜羽"
+    if source.startswith("Love Live! Sunshine!!"):
+        return "Sunshine 正篇"
+    if source.startswith("Love Live! 虹咲"):
+        return "虹咲学园"
+    if source.startswith("Love Live! Superstar!!"):
+        return "Superstar!!"
+    if source.startswith("Love Live! 莲之空"):
+        return "莲之空"
+    if source == "Love Live!":
+        return "μ's"
+    return None
+
+
+def _humanize_variant(info: Dict) -> Optional[str]:
+    variant = str(info.get("variant") or "").strip()
+    if not variant:
+        return None
+    if variant.lower() == "trios":
+        return "trios 版"
+    return variant
+
+
+def _build_variant_label(name: str, info: Dict) -> Optional[str]:
+    parts = []
+    variant = _humanize_variant(info)
+    if variant:
+        parts.append(variant)
+    variant_note = _get_version_note(name, info)
+    if variant_note and variant_note != "未提供版本说明":
+        parts.append(variant_note)
+    deduped = _dedupe_parts(parts)
+    return " · ".join(deduped) if deduped else None
+
+
+def _get_base_display_name(info: Dict, fallback: str) -> str:
     zh_name = info.get("zh_name") or info.get("description") or fallback
     en_name = info.get("en_name")
     jp_name = info.get("jp_name")
@@ -69,13 +206,15 @@ def _get_display_name(info: Dict, fallback: str) -> str:
         parts.append(en_name)
     if jp_name and jp_name != zh_name and jp_name != en_name:
         parts.append(jp_name)
-    display = " / ".join(parts)
-    variant = info.get("variant")
-    if variant:
-        display = f"{display} - {variant}"
-    variant_note = _get_version_note(fallback, info)
-    if variant_note:
-        display = f"{display} ({variant_note})"
+    return " / ".join(parts)
+
+
+def _get_display_name(info: Dict, fallback: str) -> str:
+    """拼接中文名 / 英文名 / 日文名用于展示"""
+    display = _get_base_display_name(info, fallback)
+    variant_label = _build_variant_label(fallback, info)
+    if variant_label:
+        display = f"{display} - {variant_label}"
     return display
 
 
@@ -185,6 +324,11 @@ def _note_from_metadata(path: Path) -> Optional[str]:
     except Exception:
         return None
 
+    for key in ("version_label", "version_note", "variant"):
+        value = _normalize_note(str(data.get(key) or ""))
+        if value:
+            return value
+
     parts = []
     title = str(data.get("title") or "")
     desc = str(data.get("description") or "")
@@ -281,7 +425,7 @@ def _get_version_note(name: str, info: Dict) -> Optional[str]:
     # 1) 读取本地模型目录中的 metadata / info
     char_dir = get_character_models_dir() / name
     if char_dir.exists():
-        for candidate in ("metadata.json", "model_info.json", "info.json"):
+        for candidate in (LOCAL_MODEL_INFO_FILENAME, "metadata.json", "model_info.json", "info.json"):
             path = char_dir / candidate
             if path.exists():
                 note = _note_from_metadata(path)
@@ -320,6 +464,108 @@ def _get_version_note(name: str, info: Dict) -> Optional[str]:
     _VERSION_NOTE_CACHE[name] = note
     _save_version_note_cache()
     return note
+
+
+def _load_local_model_info(char_dir: Path) -> Dict:
+    info_path = char_dir / LOCAL_MODEL_INFO_FILENAME
+    if not info_path.exists():
+        return {}
+    try:
+        with open(info_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {}
+
+
+def _build_source_page_url(info: Dict) -> Optional[str]:
+    explicit = str(info.get("source_page_url") or "").strip()
+    if explicit:
+        return explicit
+    repo_id = _get_registry_repo_id(info)
+    if repo_id:
+        return _build_repo_page_url(repo_id)
+    if info.get("url"):
+        return str(info.get("url")).strip()
+    return _build_gdrive_view_url(info.get("gdrive_id"))
+
+
+def _build_download_url(info: Dict) -> Optional[str]:
+    explicit = str(info.get("download_url") or "").strip()
+    if explicit:
+        return explicit
+    if info.get("url"):
+        return str(info.get("url")).strip()
+    if info.get("gdrive_id"):
+        return _build_gdrive_view_url(info.get("gdrive_id"))
+    repo_id = _get_registry_repo_id(info)
+    file_name = info.get("file")
+    if file_name:
+        return _build_repo_file_url(repo_id, file_name)
+    files = info.get("files") or []
+    if files:
+        return _build_repo_file_url(repo_id, files[0])
+    return _build_repo_page_url(repo_id)
+
+
+def _build_character_record(name: str, info: Dict) -> Dict:
+    source = info.get("source", "未知")
+    base_display = _get_base_display_name(info, name)
+    display = _get_display_name(info, name)
+    repo_id = _get_registry_repo_id(info)
+    version_note = _get_version_note(name, info)
+    version_label = (
+        str(info.get("version_label") or "").strip()
+        or _build_variant_label(name, info)
+        or version_note
+        or ""
+    )
+    return {
+        "name": name,
+        "description": info.get("description", display),
+        "base_display": base_display,
+        "display": display,
+        "source": source,
+        "series": normalize_series(source),
+        "variant": str(info.get("variant") or "").strip(),
+        "version_note": version_note,
+        "version_label": version_label,
+        "role": str(info.get("role") or "角色模型").strip() or "角色模型",
+        "continuity": _infer_continuity(info) or "",
+        "distribution": _infer_distribution(info),
+        "repo": repo_id,
+        "source_page_url": _build_source_page_url(info),
+        "download_url": _build_download_url(info),
+        "download_method": _infer_download_method(info),
+        "file": info.get("file"),
+        "files": info.get("files"),
+        "url": info.get("url"),
+        "gdrive_id": info.get("gdrive_id"),
+        "zh_name": info.get("zh_name"),
+        "en_name": info.get("en_name"),
+        "jp_name": info.get("jp_name"),
+    }
+
+
+def _write_local_model_info(name: str, char_dir: Path, info: Dict):
+    try:
+        payload = _build_character_record(name, info)
+        payload["registry_key"] = name
+        payload["local_files"] = {
+            "pth": sorted(p.name for p in char_dir.glob("*.pth")),
+            "index": sorted(p.name for p in char_dir.glob("*.index")),
+            "metadata": sorted(
+                p.name for p in char_dir.glob("*.json")
+                if p.name != LOCAL_MODEL_INFO_FILENAME
+            ),
+        }
+        info_path = char_dir / LOCAL_MODEL_INFO_FILENAME
+        with open(info_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
 
 def refresh_version_notes(force: bool = False) -> Dict[str, Optional[str]]:
@@ -514,7 +760,10 @@ CHARACTER_MODELS = {
         "zh_name": "松浦果南",
         "en_name": "Kanan Matsuura",
         "jp_name": "松浦果南",
-        "source": "Love Live! Sunshine!!"
+        "source": "Love Live! Sunshine!!",
+        "distribution": "社区直链",
+        "source_page_url": "https://rentry.co/llrvc",
+        "version_label": "RVC V2 · 211 epochs"
     },
     "yu_takasaki": {
         "gdrive_id": "1xjIG_bsBzOTOwghGaLSMnO_vL2GgMPNw",
@@ -1382,19 +1631,16 @@ def list_available_characters() -> List[Dict]:
     """
     result = []
     for name, info in CHARACTER_MODELS.items():
-        source = info.get("source", "未知")
-        display = _get_display_name(info, name)
-        result.append({
-            "name": name,
-            "description": info.get("description", display),
-            "display": display,
-            "source": source,
-            "series": normalize_series(source),
-            "file": info.get("file"),
-            "files": info.get("files"),
-            "url": info.get("url"),
-            "repo": info.get("repo", HF_REPO_ID)
-        })
+        result.append(_build_character_record(name, info))
+    result.sort(
+        key=lambda item: (
+            str(item.get("series", "")),
+            str(item.get("base_display", item.get("display", ""))),
+            str(item.get("continuity", "")),
+            str(item.get("version_label", "")),
+            str(item.get("name", "")),
+        )
+    )
     return result
 
 
@@ -1425,21 +1671,49 @@ def list_downloaded_characters() -> List[Dict]:
             continue
         seen.add(char_name)
 
-        info = CHARACTER_MODELS.get(char_name, {})
-        source = info.get("source", "未知")
-        display = _get_display_name(info, char_name)
+        info = dict(CHARACTER_MODELS.get(char_name, {}))
+        local_info = _load_local_model_info(models_dir / char_name)
+        if local_info:
+            info.update({
+                key: value for key, value in local_info.items()
+                if value not in (None, "", [], {})
+            })
+        record = _build_character_record(char_name, info)
         index_file = _find_index_file(pth_file)
-        downloaded.append({
-            "name": char_name,
-            "description": info.get("description", display),
-            "display": display,
-            "source": source,
-            "series": normalize_series(source),
+        record.update({
             "model_path": str(pth_file),
-            "index_path": str(index_file) if index_file else None
+            "index_path": str(index_file) if index_file else None,
         })
+        downloaded.append(record)
 
+    downloaded.sort(
+        key=lambda item: (
+            str(item.get("series", "")),
+            str(item.get("base_display", item.get("display", ""))),
+            str(item.get("continuity", "")),
+            str(item.get("version_label", "")),
+            str(item.get("name", "")),
+        )
+    )
     return downloaded
+
+
+def get_character_info(name: str, downloaded_only: bool = False) -> Optional[Dict]:
+    if not name:
+        return None
+    if downloaded_only:
+        pool = list_downloaded_characters()
+    else:
+        pool = list_downloaded_characters() + list_available_characters()
+    seen = set()
+    for item in pool:
+        item_name = item.get("name")
+        if item_name in seen:
+            continue
+        seen.add(item_name)
+        if item_name == name:
+            return item
+    return None
 
 
 def get_character_model_path(name: str) -> Optional[Dict]:
@@ -1515,6 +1789,7 @@ def download_character_model(
     # 检查是否已下载
     char_dir = get_character_models_dir() / name
     if char_dir.exists() and list(char_dir.glob("*.pth")):
+        _write_local_model_info(name, char_dir, char_info)
         _safe_print(f"角色模型已存在: {name}")
         return True
 
@@ -1681,6 +1956,7 @@ def download_character_model(
         if progress_callback:
             progress_callback(f"{name} 模型下载完成", 1.0)
 
+        _write_local_model_info(name, char_dir, char_info)
         # 下载完成后更新版本说明缓存
         _get_version_note(name, char_info)
         _safe_print(f"角色模型已下载: {name}")

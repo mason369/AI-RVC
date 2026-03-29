@@ -8,7 +8,7 @@ import re
 import tempfile
 import gradio as gr
 from pathlib import Path
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, List
 
 from lib.logger import log
 from lib.runtime_build import get_runtime_build_label
@@ -239,12 +239,31 @@ def get_available_character_series() -> list:
 
 
 def format_character_label(char_info: dict) -> str:
-    """格式化角色展示名称：【语言】角色名(中/英/日) · 出处 · 内部名"""
-    display = char_info.get("display") or char_info.get("description") or char_info.get("name", "")
+    """格式化角色展示名称，明确显示版本、归属和来源。"""
+    display = char_info.get("base_display") or char_info.get("display") or char_info.get("description") or char_info.get("name", "")
     source = char_info.get("source", "未知")
     name = char_info.get("name", "")
     lang_tag = get_character_language_tag(char_info)
-    return f"【{lang_tag}】{display}（出自：{source}）[{name}]"
+    parts: List[str] = []
+    continuity = str(char_info.get("continuity") or "").strip()
+    version_label = str(char_info.get("version_label") or "").strip()
+    distribution = str(char_info.get("distribution") or "").strip()
+    repo = str(char_info.get("repo") or "").strip()
+
+    if continuity:
+        parts.append(continuity)
+    if version_label:
+        parts.append(version_label)
+    parts.append(source)
+    if distribution and repo:
+        parts.append(f"{distribution}: {repo}")
+    elif distribution:
+        parts.append(distribution)
+    elif repo:
+        parts.append(repo)
+
+    meta = "｜".join(part for part in parts if part)
+    return f"【{lang_tag}】{display}｜{meta} [{name}]"
 
 
 def get_character_language_tag(char_info: dict) -> str:
@@ -278,6 +297,69 @@ def get_character_language_tag(char_info: dict) -> str:
     return "中文"
 
 
+def _find_character_entry(selection: str, downloaded: bool) -> Optional[dict]:
+    if not selection:
+        return None
+    chars = get_downloaded_character_list() if downloaded else get_available_character_list()
+    resolved = resolve_character_name(selection)
+    for char in chars:
+        if selection == char.get("name") or selection == format_character_label(char):
+            return char
+        if resolved and char.get("name") == resolved:
+            return char
+    return None
+
+
+def format_character_details(char_info: Optional[dict], downloaded: bool = False) -> str:
+    if not char_info:
+        if downloaded:
+            return "选择已下载角色后，这里会显示该模型的版本归属、来源仓库和本地文件路径。"
+        return "选择待下载角色后，这里会显示该模型的版本归属、来源仓库和下载来源。"
+
+    title = char_info.get("base_display") or char_info.get("display") or char_info.get("name", "")
+    lines = [f"**{title}**"]
+
+    version_label = str(char_info.get("version_label") or "").strip()
+    continuity = str(char_info.get("continuity") or "").strip()
+    role = str(char_info.get("role") or "").strip()
+    source = str(char_info.get("source") or "").strip()
+    distribution = str(char_info.get("distribution") or "").strip()
+    repo = str(char_info.get("repo") or "").strip()
+    source_page_url = str(char_info.get("source_page_url") or "").strip()
+    download_url = str(char_info.get("download_url") or "").strip()
+
+    if version_label:
+        lines.append(f"- 版本标识：`{version_label}`")
+    if continuity:
+        lines.append(f"- 角色归属：`{continuity}`")
+    if role:
+        lines.append(f"- 模型类型：`{role}`")
+    if source:
+        lines.append(f"- 作品来源：`{source}`")
+    if distribution:
+        lines.append(f"- 分发方式：`{distribution}`")
+    if repo:
+        lines.append(f"- 来源仓库：`{repo}`")
+    if source_page_url:
+        lines.append(f"- 来源页面：{source_page_url}")
+    if download_url and download_url != source_page_url:
+        lines.append(f"- 下载链接：{download_url}")
+    if downloaded and char_info.get("model_path"):
+        lines.append(f"- 本地权重：`{char_info['model_path']}`")
+    if downloaded and char_info.get("index_path"):
+        lines.append(f"- 本地索引：`{char_info['index_path']}`")
+    lines.append(f"- 内部键：`{char_info.get('name', '')}`")
+    return "\n".join(lines)
+
+
+def get_downloaded_character_details(selection: str) -> str:
+    return format_character_details(_find_character_entry(selection, downloaded=True), downloaded=True)
+
+
+def get_available_character_details(selection: str) -> str:
+    return format_character_details(_find_character_entry(selection, downloaded=False), downloaded=False)
+
+
 def get_downloaded_character_choices(series: str = "全部", keyword: str = "") -> list:
     """获取已下载角色的下拉选项"""
     chars = get_downloaded_character_list()
@@ -291,6 +373,10 @@ def get_downloaded_character_choices(series: str = "全部", keyword: str = "") 
                 if kw in c.get("name", "").lower()
                 or kw in c.get("display", "").lower()
                 or kw in c.get("source", "").lower()
+                or kw in str(c.get("repo", "")).lower()
+                or kw in str(c.get("continuity", "")).lower()
+                or kw in str(c.get("version_label", "")).lower()
+                or kw in str(c.get("distribution", "")).lower()
             ]
     return [(format_character_label(c), c["name"]) for c in chars]
 
@@ -322,6 +408,10 @@ def get_available_character_choices(series: str = "全部", keyword: str = "") -
                 if kw in c.get("name", "").lower()
                 or kw in c.get("display", "").lower()
                 or kw in c.get("source", "").lower()
+                or kw in str(c.get("repo", "")).lower()
+                or kw in str(c.get("continuity", "")).lower()
+                or kw in str(c.get("version_label", "")).lower()
+                or kw in str(c.get("distribution", "")).lower()
             ]
     return [(format_character_label(c), c["name"]) for c in chars]
 
@@ -434,11 +524,12 @@ def process_cover(
         return *_none6, "请选择角色"
 
     try:
-        from tools.character_models import get_character_model_path
+        from tools.character_models import get_character_model_path, get_character_info
         from infer.cover_pipeline import get_cover_pipeline
 
         # 获取角色模型路径
         resolved_name = resolve_character_name(character_name)
+        char_meta = get_character_info(resolved_name, downloaded_only=True) or {}
         model_info = get_character_model_path(resolved_name)
         if model_info is None:
             return *_none6, f"角色模型不存在: {resolved_name}"
@@ -548,6 +639,12 @@ def process_cover(
         status_msg += f"\nVC\u7ba1\u7ebf\u6a21\u5f0f: {pipeline_value_to_label.get(vc_pipeline_mode, vc_pipeline_mode)}"
         status_msg += f"\n唱歌修复: {'开启' if singing_repair else '关闭'}"
         status_msg += f"\n\u6e90\u7ea6\u675f\u7b56\u7565: {source_value_to_label.get(source_constraint_mode, source_constraint_mode)}"
+        if char_meta.get("version_label"):
+            status_msg += f"\n模型版本: {char_meta['version_label']}"
+        if char_meta.get("continuity"):
+            status_msg += f"\n角色归属: {char_meta['continuity']}"
+        if char_meta.get("repo"):
+            status_msg += f"\n模型来源: {char_meta['repo']}"
         status_msg += f"\n{get_runtime_build_label()}"
         if result.get("all_files_dir"):
             status_msg += f"\n\u5168\u90e8\u6587\u4ef6\u76ee\u5f55: {result['all_files_dir']}"
@@ -1440,7 +1537,11 @@ def create_ui() -> gr.Blocks:
                             label="选择角色",
                             choices=get_downloaded_character_choices("全部", ""),
                             interactive=True,
-                            info="括号中的信息为模型训练参数：epochs=训练轮数(越大通常越成熟)，数字+k=训练采样率(如40k=40000Hz)"
+                            info="列表会显示版本标识、角色归属和模型来源；版本里常见的 epochs 表示训练轮数，40k/48k 表示采样率。"
+                        )
+
+                        character_details = gr.Markdown(
+                            value=get_downloaded_character_details(None)
                         )
 
                         with gr.Row():
@@ -1469,7 +1570,12 @@ def create_ui() -> gr.Blocks:
                             download_char_dropdown = gr.Dropdown(
                                 label="选择角色",
                                 choices=get_available_character_choices("全部", ""),
-                                interactive=True
+                                interactive=True,
+                                info="列表会显示版本标识、角色归属和来源仓库，便于区分同角色的不同模型。"
+                            )
+
+                            download_char_details = gr.Markdown(
+                                value=get_available_character_details(None)
                             )
 
                             download_char_btn = gr.Button(
@@ -1722,11 +1828,19 @@ def create_ui() -> gr.Blocks:
                     inputs=[downloaded_series, downloaded_keyword],
                     outputs=[downloaded_series, character_dropdown]
                 )
+                refresh_char_btn.click(
+                    fn=lambda: get_downloaded_character_details(None),
+                    outputs=[character_details]
+                )
 
                 downloaded_series.change(
                     fn=update_downloaded_choices,
                     inputs=[downloaded_series, downloaded_keyword],
                     outputs=[character_dropdown]
+                )
+                downloaded_series.change(
+                    fn=lambda: get_downloaded_character_details(None),
+                    outputs=[character_details]
                 )
 
                 downloaded_keyword.change(
@@ -1734,11 +1848,25 @@ def create_ui() -> gr.Blocks:
                     inputs=[downloaded_series, downloaded_keyword],
                     outputs=[character_dropdown]
                 )
+                downloaded_keyword.change(
+                    fn=lambda: get_downloaded_character_details(None),
+                    outputs=[character_details]
+                )
+
+                character_dropdown.change(
+                    fn=get_downloaded_character_details,
+                    inputs=[character_dropdown],
+                    outputs=[character_details]
+                )
 
                 download_series.change(
                     fn=update_download_choices,
                     inputs=[download_series, download_keyword],
                     outputs=[download_char_dropdown]
+                )
+                download_series.change(
+                    fn=lambda: get_available_character_details(None),
+                    outputs=[download_char_details]
                 )
 
                 download_keyword.change(
@@ -1746,11 +1874,26 @@ def create_ui() -> gr.Blocks:
                     inputs=[download_series, download_keyword],
                     outputs=[download_char_dropdown]
                 )
+                download_keyword.change(
+                    fn=lambda: get_available_character_details(None),
+                    outputs=[download_char_details]
+                )
+
+                download_char_dropdown.change(
+                    fn=get_available_character_details,
+                    inputs=[download_char_dropdown],
+                    outputs=[download_char_details]
+                )
 
                 download_char_btn.click(
                     fn=download_character,
                     inputs=[download_char_dropdown, downloaded_series, downloaded_keyword],
                     outputs=[download_char_status, character_dropdown, downloaded_series]
+                )
+                download_char_btn.click(
+                    fn=get_available_character_details,
+                    inputs=[download_char_dropdown],
+                    outputs=[download_char_details]
                 )
 
                 download_all_series_btn.click(
@@ -1758,11 +1901,19 @@ def create_ui() -> gr.Blocks:
                     inputs=[download_series, downloaded_series, downloaded_keyword],
                     outputs=[download_char_status, character_dropdown, downloaded_series]
                 )
+                download_all_series_btn.click(
+                    fn=lambda: get_downloaded_character_details(None),
+                    outputs=[character_details]
+                )
 
                 download_all_btn.click(
                     fn=lambda series, keyword: download_all_characters("全部", series, keyword),
                     inputs=[downloaded_series, downloaded_keyword],
                     outputs=[download_char_status, character_dropdown, downloaded_series]
+                )
+                download_all_btn.click(
+                    fn=lambda: get_downloaded_character_details(None),
+                    outputs=[character_details]
                 )
 
                 cover_mix_preset.change(
