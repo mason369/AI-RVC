@@ -75,7 +75,11 @@ jobs:
         pip install omegaconf==2.0.6 --no-deps
         pip install PyYAML antlr4-python3-runtime hydra-core
         pip install fairseq==0.12.2 --no-deps
-        pip install gradio==3.50.2 librosa soundfile scipy numpy praat-parselmouth pyworld torchcrepe faiss-cpu tqdm requests python-dotenv colorama demucs huggingface_hub pedalboard ffmpeg-python av imageio-ffmpeg
+        pip install "jinja2<3.1.5"
+        pip install gradio==3.50.2 librosa soundfile scipy numpy praat-parselmouth pyworld faiss-cpu tqdm requests python-dotenv colorama huggingface_hub pedalboard ffmpeg-python av imageio-ffmpeg
+        pip install demucs torchcrepe --no-deps
+        pip install julius dora-search lameenc openunmix treetable
+        python -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}')"
 
     - name: Install audio-separator
       run: pip install audio-separator onnxruntime
