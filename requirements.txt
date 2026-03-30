@@ -34,6 +34,7 @@ demucs>=4.0.0          # 人声分离 (Demucs)
 audio-separator[gpu]   # 人声分离 (Mel-Band Roformer)
 huggingface_hub>=0.19.0 # 模型下载
 pedalboard>=0.7.0      # 音频效果(混响)
+imageio-ffmpeg>=0.5.1  # 便携 ffmpeg 运行时
 
 ffmpeg-python>=0.2.0   # FFmpeg 绑定
 fairseq==0.12.2        # HuBERT 特征提取

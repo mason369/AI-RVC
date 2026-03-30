@@ -4,7 +4,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-import ffmpeg
+import av
 import torch
 
 from configs.config import Config
@@ -18,6 +18,24 @@ except ImportError:
     log = None
 
 config = Config()
+
+
+def _read_audio_metadata(path: str) -> tuple[int, str]:
+    with av.open(path) as container:
+        stream = next((candidate for candidate in container.streams if candidate.type == "audio"), None)
+        if stream is None:
+            raise RuntimeError(f"No audio stream found in {path}")
+
+        codec_context = stream.codec_context
+        channels = getattr(codec_context, "channels", None)
+        if not channels and getattr(stream, "layout", None) is not None:
+            channels = getattr(stream.layout, "nb_channels", None)
+
+        sample_rate = getattr(codec_context, "sample_rate", None) or getattr(stream, "sample_rate", None)
+        if channels is None or sample_rate is None:
+            raise RuntimeError(f"Unable to read audio metadata from {path}")
+
+        return int(channels), str(sample_rate)
 
 
 def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format0):
@@ -74,9 +92,7 @@ def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format
             need_reformat = 1
             done = 0
             try:
-                info = ffmpeg.probe(inp_path, cmd="ffprobe")
-                channels = info["streams"][0]["channels"]
-                sample_rate = info["streams"][0]["sample_rate"]
+                channels, sample_rate = _read_audio_metadata(inp_path)
                 if log:
                     log.audio(f"音频信息: {channels}声道, {sample_rate}Hz")
 

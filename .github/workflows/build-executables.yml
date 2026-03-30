@@ -75,10 +75,40 @@ jobs:
         pip install omegaconf==2.0.6 --no-deps
         pip install PyYAML antlr4-python3-runtime hydra-core
         pip install fairseq==0.12.2 --no-deps
-        pip install gradio==3.50.2 librosa soundfile scipy numpy praat-parselmouth pyworld torchcrepe faiss-cpu tqdm requests python-dotenv colorama demucs huggingface_hub pedalboard ffmpeg-python av
+        pip install gradio==3.50.2 librosa soundfile scipy numpy praat-parselmouth pyworld torchcrepe faiss-cpu tqdm requests python-dotenv colorama demucs huggingface_hub pedalboard ffmpeg-python av imageio-ffmpeg
 
     - name: Install audio-separator
       run: pip install audio-separator onnxruntime
+
+    - name: Bundle FFmpeg runtime
+      shell: bash
+      run: |
+        python - <<'PY'
+        import os
+        import shutil
+        import stat
+        from pathlib import Path
+
+        import imageio_ffmpeg
+
+        bundle_dir = Path("tools/ffmpeg/bin")
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+
+        ffmpeg_src = Path(imageio_ffmpeg.get_ffmpeg_exe())
+        ffmpeg_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+        ffmpeg_dest = bundle_dir / ffmpeg_name
+        shutil.copy2(ffmpeg_src, ffmpeg_dest)
+        ffmpeg_dest.chmod(ffmpeg_dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        print(f"Bundled ffmpeg: {ffmpeg_dest}")
+
+        ffprobe_src = shutil.which("ffprobe")
+        if ffprobe_src:
+            ffprobe_name = "ffprobe.exe" if os.name == "nt" else "ffprobe"
+            ffprobe_dest = bundle_dir / ffprobe_name
+            shutil.copy2(ffprobe_src, ffprobe_dest)
+            ffprobe_dest.chmod(ffprobe_dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            print(f"Bundled ffprobe: {ffprobe_dest}")
+        PY
 
     - name: Download all AI models
       shell: bash

@@ -11,6 +11,10 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).parent
 sys.path.insert(0, str(ROOT_DIR))
 
+from lib.ffmpeg_runtime import configure_ffmpeg_runtime
+
+configure_ffmpeg_runtime()
+
 # 设置环境变量
 os.environ["GRADIO_SERVER_NAME"] = "0.0.0.0"
 os.environ["GRADIO_SERVER_PORT"] = "7860"

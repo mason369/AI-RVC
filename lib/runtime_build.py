@@ -8,6 +8,8 @@ from typing import Dict
 ROOT_DIR = Path(__file__).resolve().parent.parent
 WATCHED_FILES = (
     "run.py",
+    "app.py",
+    "lib/ffmpeg_runtime.py",
     "ui/app.py",
     "infer/cover_pipeline.py",
     "infer/official_adapter.py",

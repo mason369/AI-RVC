@@ -11,8 +11,11 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).parent
 sys.path.insert(0, str(ROOT_DIR))
 
+from lib.ffmpeg_runtime import configure_ffmpeg_runtime
 from lib.logger import log
 from lib.runtime_build import get_runtime_build_label
+
+configure_ffmpeg_runtime()
 
 
 def check_environment():
