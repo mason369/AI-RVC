@@ -73,10 +73,39 @@ jobs:
         pip install fairseq==0.12.2 --no-deps
         pip install gradio==3.50.2 librosa soundfile scipy numpy praat-parselmouth pyworld torchcrepe faiss-cpu tqdm requests python-dotenv colorama demucs huggingface_hub pedalboard ffmpeg-python av
 
-    - name: Download base models
-      run: python tools/download_models.py
+    - name: Install audio-separator
+      run: pip install audio-separator
+
+    - name: Download all AI models
+      shell: bash
       env:
         PYTHONIOENCODING: utf-8
+      run: |
+        echo "=== Download all base models (HuBERT, RMVPE, UVR5, DeEcho, pretrained) ==="
+        python tools/download_models.py --all
+
+        echo "=== Download Roformer separator models ==="
+        python -c "
+        from audio_separator.separator import Separator
+        import os
+        model_dir = os.path.join('assets', 'separator_models')
+        os.makedirs(model_dir, exist_ok=True)
+        # Vocal separation model
+        sep = Separator(output_dir='.', model_file_dir=model_dir)
+        sep.load_model('vocals_mel_band_roformer.ckpt')
+        del sep
+        # Karaoke model
+        sep2 = Separator(output_dir='.', model_file_dir=model_dir)
+        sep2.load_model('mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt')
+        del sep2
+        print('Roformer models downloaded.')
+        "
+
+        echo "=== Verify downloaded models ==="
+        find assets/ -name "*.pt" -o -name "*.pth" -o -name "*.ckpt" -o -name "*.onnx" | while read f; do
+          SIZE=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f")
+          echo "  $f ($(( SIZE / 1048576 )) MB)"
+        done
 
     - name: Build executable
       shell: bash
@@ -94,6 +123,9 @@ jobs:
           --add-data "configs${SEP}configs" \
           --add-data "assets/hubert${SEP}assets/hubert" \
           --add-data "assets/rmvpe${SEP}assets/rmvpe" \
+          --add-data "assets/uvr5_weights${SEP}assets/uvr5_weights" \
+          --add-data "assets/pretrained_v2${SEP}assets/pretrained_v2" \
+          --add-data "assets/separator_models${SEP}assets/separator_models" \
           --hidden-import=torch \
           --hidden-import=torchaudio \
           --hidden-import=gradio \
@@ -139,7 +171,7 @@ jobs:
 
         ${VARIANT_NOTE}
 
-        首次启动会自动下载所需模型（约 5-10 分钟）
+        AI 模型已内置，无需额外下载
         无需安装 Python，解压即用
         HEREDOC
         else
@@ -155,7 +187,7 @@ jobs:
 
         ${VARIANT_NOTE}
 
-        首次启动会自动下载所需模型（约 5-10 分钟）
+        AI 模型已内置，无需额外下载
         无需安装 Python，解压即用
         HEREDOC
         fi
