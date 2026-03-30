@@ -66,6 +66,12 @@ class FfmpegRuntimeTests(unittest.TestCase):
 
         self.assertIn("tools/ffmpeg", workflow)
 
+    def test_release_upload_uses_timeout_and_retry(self):
+        workflow = (REPO_ROOT / ".github" / "workflows" / "build-executables.yml").read_text(encoding="utf-8")
+
+        self.assertIn("upload_asset_with_retry", workflow)
+        self.assertIn("timeout 30m gh release upload", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
