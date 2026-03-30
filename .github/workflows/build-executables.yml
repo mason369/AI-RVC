@@ -74,7 +74,7 @@ jobs:
         pip install gradio==3.50.2 librosa soundfile scipy numpy praat-parselmouth pyworld torchcrepe faiss-cpu tqdm requests python-dotenv colorama demucs huggingface_hub pedalboard ffmpeg-python av
 
     - name: Install audio-separator
-      run: pip install audio-separator
+      run: pip install audio-separator onnxruntime
 
     - name: Download all AI models
       shell: bash
