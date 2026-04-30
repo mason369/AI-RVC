@@ -34,12 +34,34 @@ except ImportError:
     AUDIO_SEPARATOR_AVAILABLE = False
 
 
-# Mel-Band Roformer 默认模型
-ROFORMER_DEFAULT_MODEL = "vocals_mel_band_roformer.ckpt"
-KARAOKE_DEFAULT_MODEL = "mel_band_roformer_karaoke_gabox.ckpt"
-KARAOKE_FALLBACK_MODELS = [
-    "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
+# Local, public audio-separator defaults selected by published SDR/model-list
+# evidence while keeping older stable models as fallbacks.
+ROFORMER_DEFAULT_MODEL = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
+ROFORMER_FALLBACK_MODELS = [
+    "model_bs_roformer_ep_368_sdr_12.9628.ckpt",
+    "vocals_mel_band_roformer.ckpt",
 ]
+
+KARAOKE_DEFAULT_MODEL = "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt"
+KARAOKE_FALLBACK_MODELS = [
+    "mel_band_roformer_karaoke_gabox.ckpt",
+    "mel_band_roformer_karaoke_gabox_v2.ckpt",
+    "mel_band_roformer_karaoke_becruily.ckpt",
+]
+
+ROFORMER_DEECHO_DEFAULT_MODEL = "dereverb-echo_mel_band_roformer_sdr_13.4843_v2.ckpt"
+ROFORMER_DEECHO_FALLBACK_MODELS = [
+    "dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt",
+    "deverb_bs_roformer_8_384dim_10depth.ckpt",
+]
+
+
+def _unique_model_candidates(primary: str, fallbacks: list[str]) -> list[str]:
+    models = [primary]
+    for fallback in fallbacks:
+        if fallback not in models:
+            models.append(fallback)
+    return models
 
 
 def _resolve_output_files(output_files, output_dir: Path) -> list[str]:
@@ -87,10 +109,15 @@ class RoformerSeparator:
         if not AUDIO_SEPARATOR_AVAILABLE:
             raise ImportError(
                 "请安装 audio-separator: pip install audio-separator[gpu]"
-            )
+        )
         self.model_filename = model_filename
+        self.model_candidates = _unique_model_candidates(
+            model_filename,
+            ROFORMER_FALLBACK_MODELS,
+        )
         self.device = str(get_device(device))
         self.separator = None
+        self.active_model = None
 
     def load_model(self, output_dir: str = ""):
         """加载 Roformer 模型"""
@@ -113,16 +140,26 @@ class RoformerSeparator:
             self.separator = None
             gc.collect()
 
-        log.info(f"正在加载 Mel-Band Roformer 模型: {self.model_filename}")
+        last_error = None
+        for model_name in self.model_candidates:
+            try:
+                log.info(f"正在加载 Roformer 模型: {model_name}")
+                separator = Separator(
+                    log_level=_logging.WARNING,
+                    output_dir=target_dir,
+                    model_file_dir=model_dir,
+                )
+                separator.load_model(model_name)
+                self.separator = separator
+                self._init_output_dir = target_dir
+                self.active_model = model_name
+                log.info(f"Roformer 模型已加载: {model_name}")
+                return
+            except Exception as exc:
+                last_error = exc
+                log.warning(f"Roformer 模型加载失败: {model_name} ({exc})")
 
-        self.separator = Separator(
-            log_level=_logging.WARNING,
-            output_dir=target_dir,
-            model_file_dir=model_dir,
-        )
-        self._init_output_dir = target_dir
-        self.separator.load_model(self.model_filename)
-        log.info("Mel-Band Roformer 模型已加载")
+        raise RuntimeError(f"无法加载 Roformer 模型: {last_error}")
 
     def separate(
         self,
@@ -233,6 +270,7 @@ class RoformerSeparator:
         if self.separator is not None:
             del self.separator
             self.separator = None
+        self.active_model = None
         gc.collect()
         empty_device_cache()
 
@@ -253,11 +291,10 @@ class KaraokeSeparator:
         self.separator = None
         self.active_model = None
 
-        models = [model_filename]
-        for fallback in KARAOKE_FALLBACK_MODELS:
-            if fallback not in models:
-                models.append(fallback)
-        self.model_candidates = models
+        self.model_candidates = _unique_model_candidates(
+            model_filename,
+            KARAOKE_FALLBACK_MODELS,
+        )
 
     def load_model(self, output_dir: str = ""):
         """加载 Karaoke 模型（主模型失败时自动回退）"""

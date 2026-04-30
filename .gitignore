@@ -45,6 +45,7 @@ assets/weights/*.pth
 assets/weights/*.index
 assets/weights/characters/**/*.pth
 assets/weights/characters/**/*.index
+assets/weights/characters/**/ai_rvc_model.json
 assets/weights/official_models/
 assets/weights/official_indexes/
 

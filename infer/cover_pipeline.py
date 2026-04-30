@@ -18,6 +18,8 @@ from infer.separator import (
     RoformerSeparator,
     KaraokeSeparator,
     ROFORMER_DEFAULT_MODEL,
+    ROFORMER_DEECHO_DEFAULT_MODEL,
+    ROFORMER_DEECHO_FALLBACK_MODELS,
     KARAOKE_DEFAULT_MODEL,
     check_demucs_available,
     check_roformer_available,
@@ -32,8 +34,14 @@ from infer.official_adapter import (
 )
 from infer.advanced_dereverb import advanced_dereverb, apply_reverb_to_converted
 from infer.quality_policy import (
+    compute_accompaniment_leakage_metrics,
     compute_active_source_replace,
+    compute_karaoke_stem_separation_metrics,
+    compute_midquiet_transition_hf_blend_curve,
+    compute_mix_fusion_metrics,
+    compute_residual_quiet_hf_blend_curve,
     compute_source_cleanup_budget,
+    get_official_cover_vc_profile,
     resolve_cover_f0_policy,
 )
 from lib.audio import soft_clip
@@ -146,6 +154,146 @@ class CoverPipeline:
             selected_file = candidate_files[-1]
         log.audio(f"UVR DeEcho selected vocal output: {selected_file.name}")
         return str(selected_file)
+
+    @staticmethod
+    def _get_roformer_deecho_candidates() -> List[str]:
+        candidates = [ROFORMER_DEECHO_DEFAULT_MODEL]
+        for model_name in ROFORMER_DEECHO_FALLBACK_MODELS:
+            if model_name not in candidates:
+                candidates.append(model_name)
+        return candidates
+
+    @staticmethod
+    def _classify_roformer_deecho_stem(file_name: str) -> Optional[str]:
+        lower_name = file_name.lower()
+        dry_markers = [
+            "(dry)",
+            "(noreverb)",
+            "(no_reverb)",
+            "(no reverb)",
+            "(no echo)",
+            "(no_echo)",
+        ]
+        wet_markers = [
+            "(no dry)",
+            "(nodry)",
+            "(reverb)",
+            "(echo)",
+            "(other)",
+        ]
+
+        for marker in dry_markers:
+            if marker in lower_name:
+                return "dry"
+        for marker in wet_markers:
+            if marker in lower_name:
+                return "wet"
+        return None
+
+    def _select_best_roformer_deecho_output(
+        self,
+        reference_path: str,
+        candidate_files: List[Path],
+    ) -> Optional[Path]:
+        dry_candidates = [
+            path for path in candidate_files
+            if self._classify_roformer_deecho_stem(path.name) == "dry"
+        ]
+        scored_candidates = dry_candidates or candidate_files
+
+        best_path = None
+        best_score = None
+        best_metrics = None
+        for candidate_path in scored_candidates:
+            scored = self._score_uvr_deecho_candidate(reference_path, candidate_path)
+            if scored is None:
+                if best_path is None and candidate_path.exists():
+                    best_path = candidate_path
+                continue
+
+            score, metrics = scored
+            log.detail(
+                "Roformer DeEcho candidate: "
+                f"{candidate_path.name}, score={metrics['score']:.2f}, "
+                f"sep={metrics['separation_db']:.2f}dB, corr={metrics['corr']:.3f}, "
+                f"ratio={metrics['active_ratio']:.3f}, "
+                f"reduction={metrics['reduction_ratio']:.3f}"
+            )
+            if best_score is None or score > best_score:
+                best_score = score
+                best_path = candidate_path
+                best_metrics = metrics
+
+        self._uvr_deecho_metrics = best_metrics
+        return best_path
+
+    def _apply_roformer_deecho_for_vc(self, vocals_path: str, session_dir: Path) -> Optional[str]:
+        """Prefer local RoFormer De-Reverb-Echo models before older UVR DeEcho fallbacks."""
+        if not check_roformer_available():
+            return None
+
+        try:
+            from audio_separator.separator import Separator
+            import logging as audio_separator_logging
+        except Exception:
+            return None
+
+        model_dir = Path(__file__).parent.parent / "assets" / "separator_models"
+        model_dir.mkdir(parents=True, exist_ok=True)
+        output_root = session_dir / "vc_roformer_deecho"
+        output_root.mkdir(parents=True, exist_ok=True)
+
+        last_error = None
+        for model_name in self._get_roformer_deecho_candidates():
+            output_dir = output_root / Path(model_name).stem
+            output_dir.mkdir(parents=True, exist_ok=True)
+            separator = None
+            try:
+                log.model(f"VC预处理使用RoFormer DeEcho模型: {model_name}")
+                separator = Separator(
+                    log_level=audio_separator_logging.WARNING,
+                    output_dir=str(output_dir),
+                    model_file_dir=str(model_dir),
+                )
+                separator.load_model(model_name)
+                output_files = separator.separate(vocals_path)
+                candidate_files = []
+                for file_name in output_files:
+                    file_path = Path(file_name)
+                    if not file_path.is_absolute():
+                        file_path = output_dir / file_path
+                    if file_path.exists():
+                        candidate_files.append(file_path)
+
+                if not candidate_files:
+                    candidate_files = sorted(
+                        output_dir.glob("*.wav"),
+                        key=lambda path: path.stat().st_mtime,
+                    )
+                if not candidate_files:
+                    raise RuntimeError("RoFormer DeEcho produced no output files")
+
+                selected_file = self._select_best_roformer_deecho_output(
+                    vocals_path,
+                    candidate_files,
+                )
+                if selected_file is None:
+                    raise RuntimeError("RoFormer DeEcho produced no dry candidate")
+
+                log.audio(f"RoFormer DeEcho selected vocal output: {selected_file.name}")
+                return str(selected_file)
+            except Exception as exc:
+                last_error = exc
+                log.warning(f"RoFormer DeEcho 模型失败，尝试回退: {model_name} ({exc})")
+            finally:
+                if separator is not None:
+                    del separator
+                gc.collect()
+                empty_device_cache()
+
+        if last_error is not None:
+            log.warning(f"RoFormer DeEcho 不可用，将回退到UVR/旧预处理: {last_error}")
+        return None
 
     @staticmethod
     def _score_uvr_deecho_candidate(reference_path: str, candidate_path: Path) -> Optional[Tuple[float, Dict[str, float]]]:
@@ -548,6 +696,213 @@ class CoverPipeline:
                 )
         except Exception as e:
             log.warning(f"Quality debug capture failed at {stage}: {e}")
+
+    @staticmethod
+    def _load_debug_mono(path: str, target_sr: Optional[int] = None) -> Tuple[np.ndarray, int]:
+        import librosa
+        import soundfile as sf
+
+        audio, sr = sf.read(path, always_2d=True)
+        audio = np.asarray(audio, dtype=np.float32)
+        mono = audio.mean(axis=1).astype(np.float32)
+        if target_sr is not None and int(sr) != int(target_sr):
+            mono = librosa.resample(
+                mono,
+                orig_sr=int(sr),
+                target_sr=int(target_sr),
+            ).astype(np.float32)
+            sr = int(target_sr)
+        return mono, int(sr)
+
+    @staticmethod
+    def _debug_frame_rms(
+        audio: np.ndarray,
+        frame_length: int = 2048,
+        hop_length: int = 512,
+    ) -> np.ndarray:
+        import librosa
+
+        audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+        if audio.size == 0:
+            return np.zeros(0, dtype=np.float32)
+        return librosa.feature.rms(
+            y=audio,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0].astype(np.float32)
+
+    @staticmethod
+    def _debug_voiceband_rms(
+        audio: np.ndarray,
+        sr: int,
+        frame_length: int = 2048,
+        hop_length: int = 512,
+        fmin: float = 120.0,
+        fmax: float = 7000.0,
+    ) -> np.ndarray:
+        import librosa
+
+        audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+        if audio.size == 0:
+            return np.zeros(0, dtype=np.float32)
+        spectrum = np.abs(
+            librosa.stft(
+                audio,
+                n_fft=frame_length,
+                hop_length=hop_length,
+                win_length=frame_length,
+                center=True,
+            )
+        ).astype(np.float32)
+        freqs = librosa.fft_frequencies(sr=int(sr), n_fft=frame_length)
+        band_mask = (freqs >= float(fmin)) & (freqs <= min(float(fmax), int(sr) / 2.0))
+        if not np.any(band_mask):
+            return np.zeros(spectrum.shape[1], dtype=np.float32)
+        return np.sqrt(np.mean(np.square(spectrum[band_mask, :]), axis=0) + 1e-12).astype(np.float32)
+
+    def _record_stem_metric_debug(
+        self,
+        session_dir: Path,
+        stage: str,
+        candidate_path: Optional[str],
+        reference_path: Optional[str],
+        analysis: Dict[str, object],
+        extra: Optional[Dict[str, object]] = None,
+    ) -> None:
+        entry: Dict[str, object] = {
+            "stage": stage,
+            "candidate_path": str(candidate_path) if candidate_path else None,
+            "reference_path": str(reference_path) if reference_path else None,
+            "preprocess_mode": self._last_vc_preprocess_mode,
+            "analysis": analysis,
+        }
+        if extra:
+            entry["extra"] = extra
+        self._append_quality_debug_entry(session_dir, entry)
+
+    def _record_accompaniment_purity_debug(
+        self,
+        session_dir: Path,
+        accompaniment_path: str,
+        vocal_reference_path: str,
+    ) -> None:
+        try:
+            accompaniment, sr = self._load_debug_mono(accompaniment_path)
+            vocal, _ = self._load_debug_mono(vocal_reference_path, target_sr=sr)
+            aligned_len = min(accompaniment.size, vocal.size)
+            if aligned_len <= 2048:
+                return
+            accompaniment_voiceband = self._debug_voiceband_rms(accompaniment[:aligned_len], sr)
+            vocal_voiceband = self._debug_voiceband_rms(vocal[:aligned_len], sr)
+            analysis = compute_accompaniment_leakage_metrics(
+                accompaniment_voiceband_rms=accompaniment_voiceband,
+                vocal_voiceband_rms=vocal_voiceband,
+            )
+            self._record_stem_metric_debug(
+                session_dir=session_dir,
+                stage="accompaniment_purity",
+                candidate_path=accompaniment_path,
+                reference_path=vocal_reference_path,
+                analysis=analysis,
+                extra={"metric_scope": "pure exported accompaniment vs separated vocal stem"},
+            )
+            log.detail(
+                "Quality[accompaniment_purity]: "
+                f"leakage={analysis['leakage_risk_score']:.3f}, "
+                f"corr={analysis['vocal_activity_correlation']:.3f}, "
+                f"active/quiet={analysis['active_to_quiet_voiceband_db']:.2f}dB, "
+                f"relative={analysis['relative_vocal_band_db']:.2f}dB"
+            )
+        except Exception as e:
+            log.warning(f"Accompaniment purity metrics failed: {e}")
+
+    def _record_karaoke_split_debug(
+        self,
+        session_dir: Path,
+        lead_vocals_path: str,
+        backing_vocals_path: str,
+        original_vocals_path: str,
+    ) -> None:
+        try:
+            lead, sr = self._load_debug_mono(lead_vocals_path)
+            backing, _ = self._load_debug_mono(backing_vocals_path, target_sr=sr)
+            aligned_len = min(lead.size, backing.size)
+            if aligned_len <= 2048:
+                return
+            lead_rms = self._debug_frame_rms(lead[:aligned_len])
+            backing_rms = self._debug_frame_rms(backing[:aligned_len])
+            analysis = compute_karaoke_stem_separation_metrics(
+                lead_rms=lead_rms,
+                backing_rms=backing_rms,
+            )
+            self._record_stem_metric_debug(
+                session_dir=session_dir,
+                stage="karaoke_split",
+                candidate_path=lead_vocals_path,
+                reference_path=backing_vocals_path,
+                analysis=analysis,
+                extra={
+                    "metric_scope": "lead/backing split proxy; high duplication means copied or leaked stems",
+                    "source_vocals_path": original_vocals_path,
+                },
+            )
+            log.detail(
+                "Quality[karaoke_split]: "
+                f"duplication={analysis['duplication_risk_score']:.3f}, "
+                f"corr={analysis['envelope_correlation']:.3f}, "
+                f"mutual={analysis['mutual_active_ratio']:.3f}, "
+                f"leadLeak={analysis['backing_vs_lead_db_when_lead_dominant']:.2f}dB"
+            )
+        except Exception as e:
+            log.warning(f"Karaoke split metrics failed: {e}")
+
+    def _record_mix_fusion_debug(
+        self,
+        session_dir: Path,
+        lead_vocals_path: str,
+        backing_vocals_path: Optional[str],
+        bed_path: str,
+    ) -> None:
+        try:
+            lead, sr = self._load_debug_mono(lead_vocals_path)
+            bed, _ = self._load_debug_mono(bed_path, target_sr=sr)
+            if backing_vocals_path and Path(backing_vocals_path).exists():
+                backing, _ = self._load_debug_mono(backing_vocals_path, target_sr=sr)
+            else:
+                backing = np.zeros_like(lead, dtype=np.float32)
+
+            aligned_len = min(lead.size, backing.size, bed.size)
+            if aligned_len <= 2048:
+                return
+            lead_rms = self._debug_frame_rms(lead[:aligned_len])
+            backing_rms = self._debug_frame_rms(backing[:aligned_len])
+            bed_rms = self._debug_frame_rms(bed[:aligned_len])
+            analysis = compute_mix_fusion_metrics(
+                lead_rms=lead_rms,
+                backing_rms=backing_rms,
+                bed_rms=bed_rms,
+            )
+            self._record_stem_metric_debug(
+                session_dir=session_dir,
+                stage="mix_fusion",
+                candidate_path=bed_path,
+                reference_path=lead_vocals_path,
+                analysis=analysis,
+                extra={
+                    "metric_scope": "pre-final-mix bed continuity and harmony balance",
+                    "backing_vocals_path": backing_vocals_path,
+                },
+            )
+            log.detail(
+                "Quality[mix_fusion]: "
+                f"ducking={analysis['ducking_risk_score']:.3f}, "
+                f"bed_delta={analysis['bed_active_vs_quiet_db']:.2f}dB, "
+                f"backing/lead={analysis['backing_to_lead_db_overlap']:.2f}dB, "
+                f"backing_excess={analysis['backing_excess_frame_ratio']:.3f}"
+            )
+        except Exception as e:
+            log.warning(f"Mix fusion metrics failed: {e}")
 
     @staticmethod
     def _load_quality_stage_analysis(
@@ -1529,6 +1884,226 @@ class CoverPipeline:
                 f"out={out_active_rms:.6f}, gain={gain:.3f}"
             )
 
+    def _apply_residual_quiet_hf_cleanup(
+        self,
+        source_vocals_path: str,
+        converted_vocals_path: str,
+    ) -> None:
+        """Suppress final quiet high-frequency residue without touching vocal body."""
+        import librosa
+        import soundfile as sf
+
+        def _preemphasis_rms(audio: np.ndarray, frame_length: int, hop_length: int) -> np.ndarray:
+            audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+            if audio.size == 0:
+                return np.zeros(0, dtype=np.float32)
+            residual = np.empty_like(audio)
+            residual[0] = audio[0]
+            residual[1:] = audio[1:] - 0.97 * audio[:-1]
+            return librosa.feature.rms(
+                y=residual,
+                frame_length=frame_length,
+                hop_length=hop_length,
+                center=True,
+            )[0].astype(np.float32)
+
+        source_audio, source_sr = librosa.load(source_vocals_path, sr=None, mono=True)
+        converted_audio, converted_sr = sf.read(converted_vocals_path)
+        if converted_audio.ndim > 1:
+            converted_audio = converted_audio.mean(axis=1)
+        source_audio = np.asarray(source_audio, dtype=np.float32)
+        converted_audio = np.asarray(converted_audio, dtype=np.float32)
+
+        if source_sr != converted_sr:
+            source_audio = librosa.resample(
+                source_audio,
+                orig_sr=source_sr,
+                target_sr=converted_sr,
+            ).astype(np.float32)
+
+        aligned_len = min(len(source_audio), len(converted_audio))
+        if aligned_len <= 2048:
+            return
+
+        source_main = source_audio[:aligned_len]
+        converted_main = converted_audio[:aligned_len]
+        frame_length = 2048
+        hop_length = 512
+
+        source_rms = librosa.feature.rms(
+            y=source_main,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0].astype(np.float32)
+        converted_rms = librosa.feature.rms(
+            y=converted_main,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0].astype(np.float32)
+        source_hf = _preemphasis_rms(source_main, frame_length, hop_length)
+        converted_hf = _preemphasis_rms(converted_main, frame_length, hop_length)
+        frame_count = min(source_rms.size, converted_rms.size, source_hf.size, converted_hf.size)
+        if frame_count <= 4:
+            return
+
+        max_blend = 0.84
+        blend_curve = compute_residual_quiet_hf_blend_curve(
+            source_rms=source_rms[:frame_count],
+            converted_rms=converted_rms[:frame_count],
+            source_hf=source_hf[:frame_count],
+            converted_hf=converted_hf[:frame_count],
+            max_blend=max_blend,
+        )
+        if blend_curve.size <= 0:
+            return
+
+        smooth_kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
+        smooth_kernel /= np.sum(smooth_kernel)
+        blend_curve = np.convolve(blend_curve, smooth_kernel, mode="same")
+        blend_curve = self._hold_activity_curve(
+            blend_curve,
+            max(1, int(0.055 * converted_sr / hop_length)),
+        )
+        blend_curve = np.clip(blend_curve, 0.0, max_blend).astype(np.float32)
+        cleaned_frames = int(np.sum(blend_curve > 0.18))
+        if cleaned_frames <= 0:
+            return
+
+        sample_blend = self._frame_curve_to_sample_gain(
+            blend_curve,
+            aligned_len,
+            hop_length,
+        )[:aligned_len]
+        sample_blend = np.clip(sample_blend, 0.0, max_blend).astype(np.float32)
+        cleaned_main = (
+            converted_main * (1.0 - sample_blend)
+            + source_main * sample_blend
+        ).astype(np.float32)
+
+        if len(converted_audio) > aligned_len:
+            converted_audio = np.concatenate([cleaned_main, converted_audio[aligned_len:]])
+        else:
+            converted_audio = cleaned_main
+
+        sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr)
+        log.detail(
+            "Residual quiet-HF cleanup: "
+            f"blended {cleaned_frames}/{frame_count} frames "
+            f"(avg={float(np.mean(blend_curve)):.3f}, max={float(np.max(blend_curve)):.3f})"
+        )
+
+    def _apply_midquiet_transition_hf_cleanup(
+        self,
+        source_vocals_path: str,
+        converted_vocals_path: str,
+    ) -> None:
+        """Tame transition fizz in mid-quiet phrase edges before final residual pass."""
+        import librosa
+        import soundfile as sf
+
+        def _preemphasis_rms(audio: np.ndarray, frame_length: int, hop_length: int) -> np.ndarray:
+            audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+            if audio.size == 0:
+                return np.zeros(0, dtype=np.float32)
+            residual = np.empty_like(audio)
+            residual[0] = audio[0]
+            residual[1:] = audio[1:] - 0.97 * audio[:-1]
+            return librosa.feature.rms(
+                y=residual,
+                frame_length=frame_length,
+                hop_length=hop_length,
+                center=True,
+            )[0].astype(np.float32)
+
+        source_audio, source_sr = librosa.load(source_vocals_path, sr=None, mono=True)
+        converted_audio, converted_sr = sf.read(converted_vocals_path)
+        if converted_audio.ndim > 1:
+            converted_audio = converted_audio.mean(axis=1)
+        source_audio = np.asarray(source_audio, dtype=np.float32)
+        converted_audio = np.asarray(converted_audio, dtype=np.float32)
+
+        if source_sr != converted_sr:
+            source_audio = librosa.resample(
+                source_audio,
+                orig_sr=source_sr,
+                target_sr=converted_sr,
+            ).astype(np.float32)
+
+        aligned_len = min(len(source_audio), len(converted_audio))
+        if aligned_len <= 2048:
+            return
+
+        source_main = source_audio[:aligned_len]
+        converted_main = converted_audio[:aligned_len]
+        frame_length = 2048
+        hop_length = 512
+
+        source_rms = librosa.feature.rms(
+            y=source_main,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0].astype(np.float32)
+        converted_rms = librosa.feature.rms(
+            y=converted_main,
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True,
+        )[0].astype(np.float32)
+        source_hf = _preemphasis_rms(source_main, frame_length, hop_length)
+        converted_hf = _preemphasis_rms(converted_main, frame_length, hop_length)
+        frame_count = min(source_rms.size, converted_rms.size, source_hf.size, converted_hf.size)
+        if frame_count <= 4:
+            return
+
+        max_blend = 0.46
+        blend_curve = compute_midquiet_transition_hf_blend_curve(
+            source_rms=source_rms[:frame_count],
+            converted_rms=converted_rms[:frame_count],
+            source_hf=source_hf[:frame_count],
+            converted_hf=converted_hf[:frame_count],
+            max_blend=max_blend,
+        )
+        if blend_curve.size <= 0:
+            return
+
+        smooth_kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
+        smooth_kernel /= np.sum(smooth_kernel)
+        blend_curve = np.convolve(blend_curve, smooth_kernel, mode="same")
+        blend_curve = self._hold_activity_curve(
+            blend_curve,
+            max(1, int(0.045 * converted_sr / hop_length)),
+        )
+        blend_curve = np.clip(blend_curve, 0.0, max_blend).astype(np.float32)
+        cleaned_frames = int(np.sum(blend_curve > 0.14))
+        if cleaned_frames <= 0:
+            return
+
+        sample_blend = self._frame_curve_to_sample_gain(
+            blend_curve,
+            aligned_len,
+            hop_length,
+        )[:aligned_len]
+        sample_blend = np.clip(sample_blend, 0.0, max_blend).astype(np.float32)
+        cleaned_main = (
+            converted_main * (1.0 - sample_blend)
+            + source_main * sample_blend
+        ).astype(np.float32)
+
+        if len(converted_audio) > aligned_len:
+            converted_audio = np.concatenate([cleaned_main, converted_audio[aligned_len:]])
+        else:
+            converted_audio = cleaned_main
+
+        sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr)
+        log.detail(
+            "Midquiet transition-HF cleanup: "
+            f"blended {cleaned_frames}/{frame_count} frames "
+            f"(avg={float(np.mean(blend_curve)):.3f}, max={float(np.max(blend_curve)):.3f})"
+        )
+
     def _restore_active_vocal_loudness(
         self,
         reference_vocals_path: str,
@@ -2341,6 +2916,14 @@ class CoverPipeline:
             source_vocals_path=source_vocals_path,
             converted_vocals_path=converted_vocals_path,
         )
+        self._apply_midquiet_transition_hf_cleanup(
+            source_vocals_path=source_vocals_path,
+            converted_vocals_path=converted_vocals_path,
+        )
+        self._apply_residual_quiet_hf_cleanup(
+            source_vocals_path=source_vocals_path,
+            converted_vocals_path=converted_vocals_path,
+        )
         log.detail("Source gap suppression: refined after source-guided reconstruction")
 
     @staticmethod
@@ -2629,7 +3212,11 @@ class CoverPipeline:
             mono_resolved = False
 
             if preprocess_mode in {"auto", "uvr_deecho"}:
-                preprocess_input = self._apply_uvr_deecho_for_vc(vocals_path, session_dir) or vocals_path
+                preprocess_input = (
+                    self._apply_roformer_deecho_for_vc(vocals_path, session_dir)
+                    or self._apply_uvr_deecho_for_vc(vocals_path, session_dir)
+                    or vocals_path
+                )
 
             if preprocess_input == vocals_path:
                 if preprocess_mode in {"auto", "uvr_deecho"}:
@@ -2811,7 +3398,7 @@ class CoverPipeline:
         lead_audio: np.ndarray,
         backing_audio: np.ndarray,
         sr: int,
-        base_gain: float = 0.92,
+        base_gain: float = 0.96,
     ) -> Tuple[np.ndarray, Dict[str, float]]:
         """Keep backing present while making room for the lead on overlap sections."""
         import librosa
@@ -2937,6 +3524,62 @@ class CoverPipeline:
             "max_duck_db": float(max_duck_db * float(np.max(sample_curve))),
         }
 
+    def _blend_backing_into_accompaniment_bed(
+        self,
+        backing_audio: np.ndarray,
+        sr: int,
+        bed_gain: float = 0.92,
+    ) -> Tuple[np.ndarray, Dict[str, float]]:
+        """Make backing vocals behave like part of the instrumental bed, not a dry lead clone."""
+        backing_audio = self._ensure_2d(backing_audio).astype(np.float32)
+        if backing_audio.shape[1] <= 0:
+            return backing_audio, {
+                "bed_gain": float(bed_gain),
+                "ambience_wet": 0.0,
+                "width": 1.0,
+                "peak_guard": 1.0,
+            }
+
+        bed = backing_audio.copy() * float(bed_gain)
+        channel_count = bed.shape[0]
+        ambience_wet = 0.055
+        width = 1.06
+
+        if channel_count >= 2:
+            left = bed[0].copy()
+            right = bed[1].copy()
+            mid = 0.5 * (left + right)
+            side = 0.5 * (left - right)
+            bed[0] = mid + width * side
+            bed[1] = mid - width * side
+
+            delay_left = max(1, int(0.014 * sr))
+            delay_right = max(1, int(0.021 * sr))
+            ambience = np.zeros_like(bed[:2])
+            if delay_left < bed.shape[1]:
+                ambience[0, delay_left:] += bed[1, :-delay_left]
+            if delay_right < bed.shape[1]:
+                ambience[1, delay_right:] += bed[0, :-delay_right]
+            bed[:2] = bed[:2] + ambience_wet * ambience
+        else:
+            delay = max(1, int(0.018 * sr))
+            if delay < bed.shape[1]:
+                ambience = np.zeros_like(bed[0])
+                ambience[delay:] = bed[0, :-delay]
+                bed[0] = bed[0] + ambience_wet * ambience
+
+        original_peak = float(np.max(np.abs(backing_audio))) + 1e-12
+        bed_peak = float(np.max(np.abs(bed))) + 1e-12
+        peak_guard = min(1.0, (original_peak * 0.98) / bed_peak)
+        bed *= peak_guard
+
+        return bed.astype(np.float32), {
+            "bed_gain": float(bed_gain),
+            "ambience_wet": float(ambience_wet),
+            "width": float(width if channel_count >= 2 else 1.0),
+            "peak_guard": float(peak_guard),
+        }
+
     def _merge_backing_into_accompaniment(
         self,
         backing_vocals_path: str,
@@ -2973,17 +3616,8 @@ class CoverPipeline:
                 backing_audio=backing,
             )
 
-        duck_reference = None
         if duck_reference_path and Path(duck_reference_path).exists():
-            duck_reference, duck_sr = librosa.load(duck_reference_path, sr=None, mono=False)
-            duck_reference = self._ensure_2d(duck_reference).astype(np.float32)
-            if duck_sr != accompaniment_sr:
-                duck_reference = self._resample_audio(
-                    duck_reference,
-                    orig_sr=duck_sr,
-                    target_sr=accompaniment_sr,
-                )
-            duck_reference = self._match_channels(duck_reference, backing.shape[0])
+            log.detail("和声融合: 保持伴奏床连续，不再按主唱动态压低和声")
 
         accompaniment = self._match_channels(accompaniment, backing.shape[0])
         max_len = max(accompaniment.shape[1], backing.shape[1])
@@ -2994,9 +3628,17 @@ class CoverPipeline:
         if backing.shape[1] < max_len:
             backing = np.pad(backing, ((0, 0), (0, max_len - backing.shape[1])), mode="constant")
 
-        backing_gain = 1.00
-        backing = backing * backing_gain
-        log.detail(f"和声混入伴奏增益: {backing_gain:.2f}")
+        backing, blend_metrics = self._blend_backing_into_accompaniment_bed(
+            backing,
+            sr=accompaniment_sr,
+        )
+        log.detail(
+            "和声融入伴奏: "
+            f"bed_gain={blend_metrics['bed_gain']:.2f}, "
+            f"ambience={blend_metrics['ambience_wet']:.3f}, "
+            f"width={blend_metrics['width']:.2f}, "
+            f"peak_guard={blend_metrics['peak_guard']:.3f}"
+        )
         mixed = accompaniment + backing
         mixed = soft_clip(mixed, threshold=0.92, ceiling=0.98)
 
@@ -3350,8 +3992,8 @@ class CoverPipeline:
         pitch_shift: int = 0,
         index_ratio: float = 0.5,
         filter_radius: int = 3,
-        rms_mix_rate: float = 0.25,
-        protect: float = 0.33,
+        rms_mix_rate: float = 0.75,
+        protect: float = 0.50,
         speaker_id: int = 0,
         f0_method: str = "rmvpe",
         demucs_model: str = "htdemucs",
@@ -3426,19 +4068,44 @@ class CoverPipeline:
         if normalized_vc_pipeline_mode not in {"current", "official"}:
             normalized_vc_pipeline_mode = "current"
         effective_official_mode = normalized_vc_pipeline_mode == "official"
-        effective_separator = "uvr5" if effective_official_mode else separator
-        effective_karaoke_separation = False if effective_official_mode else karaoke_separation
-        effective_karaoke_merge_backing = False if effective_official_mode else karaoke_merge_backing_into_accompaniment
+        official_profile = get_official_cover_vc_profile() if effective_official_mode else {}
+        effective_separator = official_profile.get("separator", "uvr5") if effective_official_mode else separator
+        effective_karaoke_separation = (
+            bool(official_profile.get("karaoke_separation", False))
+            if effective_official_mode
+            else karaoke_separation
+        )
+        effective_karaoke_merge_backing = (
+            bool(official_profile.get("karaoke_merge_backing_into_accompaniment", False))
+            if effective_official_mode
+            else karaoke_merge_backing_into_accompaniment
+        )
         effective_use_official = True if effective_official_mode else use_official
 
-        # 官方模式：强制使用官方推荐参数，确保1:1纯净推理
+        # 官方模式：切换到上游官方单文件推理默认 profile。
         if effective_official_mode:
-            if f0_method != "rmvpe":
-                log.warning(f"官方模式：F0方法从 {f0_method} 强制切换为 rmvpe（抗噪性最佳）")
-                f0_method = "rmvpe"
-            if protect != 0.33:
-                log.warning(f"官方模式：保护系数从 {protect} 强制设为 0.33（官方推荐值）")
-                protect = 0.33
+            requested_profile = {
+                "f0_method": f0_method,
+                "filter_radius": filter_radius,
+                "protect": protect,
+            }
+            f0_method = str(official_profile["f0_method"])
+            filter_radius = int(official_profile["filter_radius"])
+            protect = float(official_profile["protect"])
+            vc_preprocess_mode = str(official_profile["vc_preprocess_mode"])
+            source_constraint_mode = str(official_profile["source_constraint_mode"])
+            if requested_profile["f0_method"] != f0_method:
+                log.warning(
+                    f"官方模式：F0方法从 {requested_profile['f0_method']} 切换为 {f0_method}"
+                )
+            if int(requested_profile["filter_radius"]) != filter_radius:
+                log.warning(
+                    f"官方模式：滤波半径从 {requested_profile['filter_radius']} 切换为 {filter_radius}"
+                )
+            if float(requested_profile["protect"]) != protect:
+                log.warning(
+                    f"官方模式：保护系数从 {requested_profile['protect']} 切换为 {protect}"
+                )
 
         total_steps = 5 if effective_karaoke_separation else 4
         step_karaoke = 2 if effective_karaoke_separation else None
@@ -3469,7 +4136,12 @@ class CoverPipeline:
         log.config(f"说话人ID: {speaker_id}")
         log.config(f"VC管线模式: {normalized_vc_pipeline_mode}")
         if effective_official_mode:
-            log.config("官方模式: 强制UVR5分离 + 去混响预处理 + 官方VC (rmvpe, protect=0.33)")
+            log.config(
+                "官方模式: 官方UVR5分离 + 原始人声直通官方VC "
+                f"(rmvpe, index={float(index_ratio):.2f}, "
+                f"official_rms={1.0 - float(rms_mix_rate):.2f}, "
+                f"protect={float(protect):.2f})"
+            )
         log.config(f"人声分离器: {effective_separator}")
         if effective_separator == "uvr5":
             log.config(f"UVR5模型: {uvr5_model or '自动选择'}")
@@ -3552,10 +4224,19 @@ class CoverPipeline:
             empty_device_cache()
             log.detail("已清理设备缓存")
 
+            # Exported accompaniment should remain the separator's pure instrumental.
+            # Karaoke backing is added only to the cover mix bed below.
+            pure_accompaniment_path = accompaniment_path
+
             # ===== 步骤 1.5: Karaoke 分离（主唱/和声）=====
             original_vocals_path = vocals_path
             lead_vocals_path = None
             backing_vocals_path = None
+            self._record_accompaniment_purity_debug(
+                session_dir=session_dir,
+                accompaniment_path=accompaniment_path,
+                vocal_reference_path=original_vocals_path,
+            )
 
             if effective_karaoke_separation:
                 report_progress("正在分离主唱和和声...", step_karaoke)
@@ -3568,6 +4249,12 @@ class CoverPipeline:
                 backing_size = Path(backing_vocals_path).stat().st_size if Path(backing_vocals_path).exists() else 0
                 log.audio(f"主唱文件: {Path(lead_vocals_path).name} ({_format_size(lead_size)})")
                 log.audio(f"和声文件: {Path(backing_vocals_path).name} ({_format_size(backing_size)})")
+                self._record_karaoke_split_debug(
+                    session_dir=session_dir,
+                    lead_vocals_path=lead_vocals_path,
+                    backing_vocals_path=backing_vocals_path,
+                    original_vocals_path=original_vocals_path,
+                )
                 vocals_path = lead_vocals_path
 
             normalized_vc_preprocess_mode = str(vc_preprocess_mode or "auto").strip().lower()
@@ -3581,22 +4268,25 @@ class CoverPipeline:
                     log.config("Mature DeEcho模型: 未找到，将回退到主唱直通")
             log.config(f"源约束模式: {normalized_source_constraint_mode}")
 
-            # 官方模式也必须经过去混响预处理，确保输入RVC的是纯净干声
-            # 官方模式下如果用户选了 direct，强制提升为 auto（带混响的人声会破坏F0提取）
             effective_preprocess_mode = normalized_vc_preprocess_mode
-            if normalized_vc_pipeline_mode == "official" and effective_preprocess_mode == "direct":
-                effective_preprocess_mode = "auto"
-                log.warning("官方模式：direct预处理已提升为auto，确保去混响后再进入RVC推理")
-
             vc_input_path = vocals_path
             vc_preprocessed = False
-            try:
-                prepared_path = self._prepare_vocals_for_vc(vocals_path, session_dir, preprocess_mode=effective_preprocess_mode)
-                vc_input_path = prepared_path
-                vc_preprocessed = True
-                log.audio(f"VC预处理输入: {Path(vc_input_path).name}")
-            except Exception as e:
-                log.warning(f"VC预处理失败，回退原始输入: {e}")
+            if effective_official_mode and not singing_repair:
+                effective_preprocess_mode = "direct"
+                self._last_vc_preprocess_mode = "direct"
+                log.detail("官方模式：跳过本项目 VC 预处理，直接交给官方音频加载")
+            else:
+                try:
+                    prepared_path = self._prepare_vocals_for_vc(
+                        vocals_path,
+                        session_dir,
+                        preprocess_mode=effective_preprocess_mode,
+                    )
+                    vc_input_path = prepared_path
+                    vc_preprocessed = True
+                    log.audio(f"VC预处理输入: {Path(vc_input_path).name}")
+                except Exception as e:
+                    log.warning(f"VC预处理失败，回退原始输入: {e}")
 
             report_progress("正在转换人声...", step_convert)
             self._record_quality_debug(
@@ -3641,7 +4331,7 @@ class CoverPipeline:
                     snapshot_label="debug_converted_raw_upstream",
                     extra={"source_constraint_mode": normalized_source_constraint_mode},
                 )
-                log.detail("内置官方模式：去混响干声 -> 官方RVC推理（纯净管道）")
+                log.detail("内置官方模式：原始分离人声 -> 官方RVC推理（一比一管道）")
                 log.success("内置官方VC转换完成")
             elif normalized_vc_pipeline_mode == "official" and singing_repair:
                 log.detail("使用官方兼容唱歌修复链进行转换")
@@ -3970,6 +4660,7 @@ class CoverPipeline:
             log.audio(f"转换后人声: {Path(converted_vocals_path).name} ({_format_size(converted_size)})")
 
             mix_vocals_path = converted_vocals_path
+            mix_accompaniment_path = accompaniment_path
             if backing_mix > 0:
                 try:
                     blended_path = str(session_dir / "converted_vocals_blend.wav")
@@ -3988,14 +4679,21 @@ class CoverPipeline:
                 and effective_karaoke_merge_backing
                 and backing_vocals_path
             ):
-                accompaniment_path = self._merge_backing_into_accompaniment(
+                mix_accompaniment_path = self._merge_backing_into_accompaniment(
                     backing_vocals_path=backing_vocals_path,
                     accompaniment_path=accompaniment_path,
                     session_dir=session_dir,
                     lead_vocals_path=lead_vocals_path,
                     duck_reference_path=mix_vocals_path,
                 )
-                log.detail("已将和声混入伴奏轨道")
+                log.detail("已将和声混入最终混音伴奏床；导出的伴奏保持不含和声")
+
+            self._record_mix_fusion_debug(
+                session_dir=session_dir,
+                lead_vocals_path=mix_vocals_path,
+                backing_vocals_path=backing_vocals_path,
+                bed_path=mix_accompaniment_path,
+            )
 
             # ===== 步骤 3: 混音 =====
             report_progress("正在混合人声和伴奏...", step_mix)
@@ -4006,7 +4704,7 @@ class CoverPipeline:
 
             mix_vocals_and_accompaniment(
                 vocals_path=mix_vocals_path,
-                accompaniment_path=accompaniment_path,
+                accompaniment_path=mix_accompaniment_path,
                 output_path=cover_path,
                 vocals_volume=vocals_volume,
                 accompaniment_volume=accompaniment_volume,
@@ -4057,8 +4755,8 @@ class CoverPipeline:
                 shutil.copy(original_vocals_path, final_vocals)
                 log.detail(f"复制转换人声: {final_converted}")
                 shutil.copy(converted_vocals_path, final_converted)
-                log.detail(f"复制伴奏文件: {final_accompaniment}")
-                shutil.copy(accompaniment_path, final_accompaniment)
+                log.detail(f"复制纯伴奏文件(不含和声): {final_accompaniment}")
+                shutil.copy(pure_accompaniment_path, final_accompaniment)
 
                 if effective_karaoke_separation and lead_vocals_path and backing_vocals_path:
                     log.detail(f"复制主唱文件: {final_lead}")
@@ -4086,7 +4784,7 @@ class CoverPipeline:
                     "cover": cover_path,
                     "vocals": original_vocals_path,
                     "converted_vocals": converted_vocals_path,
-                    "accompaniment": accompaniment_path,
+                    "accompaniment": pure_accompaniment_path,
                     "all_files_dir": str(session_dir),
                 }
                 if effective_karaoke_separation and lead_vocals_path and backing_vocals_path:

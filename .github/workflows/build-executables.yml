@@ -130,7 +130,7 @@ jobs:
         os.makedirs(model_dir, exist_ok=True)
         # Vocal separation model
         sep = Separator(output_dir='.', model_file_dir=model_dir)
-        sep.load_model('vocals_mel_band_roformer.ckpt')
+        sep.load_model('model_bs_roformer_ep_317_sdr_12.9755.ckpt')
         del sep
         # Karaoke model
         sep2 = Separator(output_dir='.', model_file_dir=model_dir)

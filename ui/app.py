@@ -10,6 +10,7 @@ import gradio as gr
 from pathlib import Path
 from typing import Optional, Tuple, Dict, List
 
+from infer.quality_policy import get_official_cover_vc_profile
 from lib.logger import log
 from lib.runtime_build import get_runtime_build_label
 
@@ -169,6 +170,65 @@ def update_singing_repair_visibility(vc_pipeline_mode: str):
         str(vc_pipeline_mode or "").strip().lower(),
     )
     return gr.update(visible=(normalized == "official"))
+
+
+def _cover_fraction_to_percent(value, fallback: float) -> int:
+    return _to_int(round(_to_float(value, fallback) * 100), int(round(fallback * 100)))
+
+
+def _get_current_cover_vc_profile() -> Dict[str, object]:
+    cover_cfg = config.get("cover", {})
+    return {
+        "karaoke_separation": bool(cover_cfg.get("karaoke_separation", True)),
+        "karaoke_merge_backing_into_accompaniment": bool(
+            cover_cfg.get("karaoke_merge_backing_into_accompaniment", True)
+        ),
+        "vc_preprocess_mode": str(cover_cfg.get("vc_preprocess_mode", "auto")),
+        "source_constraint_mode": str(cover_cfg.get("source_constraint_mode", "auto")),
+        "index_rate": _to_float(cover_cfg.get("index_rate", config.get("index_rate", 0.50)), 0.50),
+        "rms_mix_rate": _to_float(cover_cfg.get("rms_mix_rate", config.get("rms_mix_rate", 0.75)), 0.75),
+        "singing_repair": False,
+    }
+
+
+def get_cover_vc_pipeline_profile_updates(vc_pipeline_mode: str):
+    """Apply the full cover profile when switching VC pipeline modes."""
+    pipeline_label_to_value, _ = get_vc_pipeline_mode_option_maps()
+    normalized = pipeline_label_to_value.get(
+        str(vc_pipeline_mode),
+        str(vc_pipeline_mode or "").strip().lower(),
+    )
+    is_official = normalized == "official"
+    profile = get_official_cover_vc_profile() if is_official else _get_current_cover_vc_profile()
+
+    vc_label_to_value, vc_value_to_label = get_vc_preprocess_option_maps()
+    source_label_to_value, source_value_to_label = get_source_constraint_option_maps()
+    preprocess_value = str(profile.get("vc_preprocess_mode", "auto")).strip().lower()
+    source_value = str(profile.get("source_constraint_mode", "auto")).strip().lower()
+
+    return (
+        gr.update(
+            value=vc_value_to_label.get(preprocess_value, list(vc_label_to_value.keys())[0]),
+            interactive=not is_official,
+        ),
+        gr.update(
+            value=source_value_to_label.get(source_value, list(source_label_to_value.keys())[0]),
+            interactive=not is_official,
+        ),
+        gr.update(value=_cover_fraction_to_percent(profile.get("index_rate"), 0.75 if is_official else 0.50)),
+        gr.update(value=_cover_fraction_to_percent(profile.get("rms_mix_rate"), 0.75)),
+        gr.update(value=bool(profile.get("karaoke_separation", False)), interactive=not is_official),
+        gr.update(
+            value=bool(profile.get("karaoke_merge_backing_into_accompaniment", False)),
+            interactive=not is_official,
+        ),
+        gr.update(
+            value=bool(profile.get("singing_repair", False)),
+            visible=is_official,
+            interactive=True,
+        ),
+        gr.update(value=get_cover_vc_route_status(preprocess_value, normalized)),
+    )
 
 
 def init_pipeline():
@@ -555,13 +615,13 @@ def process_cover(
         use_official = bool(cover_cfg.get("use_official", True))
         f0_method = cover_cfg.get("f0_method", config.get("f0_method", "rmvpe"))
         filter_radius = cover_cfg.get("filter_radius", config.get("filter_radius", 3))
-        protect = cover_cfg.get("protect", config.get("protect", 0.33))
+        protect = cover_cfg.get("protect", config.get("protect", 0.50))
         silence_gate = cover_cfg.get("silence_gate", True)
         silence_threshold_db = cover_cfg.get("silence_threshold_db", -40.0)
         silence_smoothing_ms = cover_cfg.get("silence_smoothing_ms", 50.0)
         silence_min_duration_ms = cover_cfg.get("silence_min_duration_ms", 200.0)
         hubert_layer = cover_cfg.get("hubert_layer", config.get("hubert_layer", 12))
-        karaoke_model = cover_cfg.get("karaoke_model", "mel_band_roformer_karaoke_gabox.ckpt")
+        karaoke_model = cover_cfg.get("karaoke_model", "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt")
         default_vc_preprocess_mode = str(cover_cfg.get("vc_preprocess_mode", "auto"))
         default_source_constraint_mode = str(cover_cfg.get("source_constraint_mode", "auto"))
         default_vc_pipeline_mode = str(cover_cfg.get("vc_pipeline_mode", "current"))
@@ -721,8 +781,8 @@ def get_cover_vc_route_status(
     if pipeline_mode == "official":
         return newline.join([
             "当前使用内置官方 RVC 实现",
-            "流程：主唱分离 → 官方音频加载 / 官方 VC → 混音",
-            "说明：跳过本项目自定义 VC 预处理、源约束与静音门限后处理",
+            "流程：官方UVR5分离 → 官方音频加载 / 官方 VC → 混音",
+            "联动：关闭Karaoke/DeEcho/源约束，使用官方 index/RMS/protect 默认",
             build_label,
         ])
 
@@ -1744,12 +1804,12 @@ def create_ui() -> gr.Blocks:
                                     _to_float(
                                         cover_cfg.get(
                                             "rms_mix_rate",
-                                            config.get("rms_mix_rate", 0.15),
+                                            config.get("rms_mix_rate", 0.75),
                                         ),
-                                        0.15,
+                                        0.75,
                                     ) * 100
                                 ),
-                                15,
+                                75,
                             ),
                             step=5,
                             info=t("rms_mix_rate_info", "cover"),
@@ -1953,14 +2013,18 @@ def create_ui() -> gr.Blocks:
                 )
 
                 cover_vc_pipeline_mode.change(
-                    fn=get_cover_vc_route_status,
-                    inputs=[cover_vc_preprocess_mode, cover_vc_pipeline_mode],
-                    outputs=[cover_vc_route_status]
-                )
-                cover_vc_pipeline_mode.change(
-                    fn=update_singing_repair_visibility,
+                    fn=get_cover_vc_pipeline_profile_updates,
                     inputs=[cover_vc_pipeline_mode],
-                    outputs=[cover_singing_repair]
+                    outputs=[
+                        cover_vc_preprocess_mode,
+                        cover_source_constraint_mode,
+                        cover_index_rate,
+                        cover_rms_mix_rate,
+                        cover_karaoke,
+                        cover_karaoke_merge_backing,
+                        cover_singing_repair,
+                        cover_vc_route_status,
+                    ]
                 )
 
                 cover_btn.click(

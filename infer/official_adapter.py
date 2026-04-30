@@ -580,32 +580,35 @@ def convert_vocals_official_upstream(
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
 
-    command = [
-        sys.executable,
-        str(runner_path),
-        "--sid",
-        sid,
-        "--vocals-path",
-        str(vocals_path),
-        "--output-path",
-        str(output_path),
-        "--f0-method",
-        str(effective_f0_method),
-        "--pitch-shift",
-        str(int(pitch_shift)),
-        "--index-path",
-        str(official_index or ""),
-        "--index-rate",
-        str(float(index_rate)),
-        "--filter-radius",
-        str(int(filter_radius)),
-        "--rms-mix-rate",
-        str(float(official_rms_mix_rate)),
-        "--protect",
-        str(float(protect)),
-        "--speaker-id",
-        str(int(speaker_id)),
-    ]
+    def _build_command(selected_index_path: Optional[str], selected_index_rate: float) -> list[str]:
+        return [
+            sys.executable,
+            str(runner_path),
+            "--sid",
+            sid,
+            "--vocals-path",
+            str(vocals_path),
+            "--output-path",
+            str(output_path),
+            "--f0-method",
+            str(effective_f0_method),
+            "--pitch-shift",
+            str(int(pitch_shift)),
+            "--index-path",
+            str(selected_index_path or ""),
+            "--index-rate",
+            str(float(selected_index_rate)),
+            "--filter-radius",
+            str(int(filter_radius)),
+            "--rms-mix-rate",
+            str(float(official_rms_mix_rate)),
+            "--protect",
+            str(float(protect)),
+            "--speaker-id",
+            str(int(speaker_id)),
+        ]
+
+    command = _build_command(official_index, index_rate)
 
     log.progress("开始内置官方VC转换...")
     log.detail(f"官方模型SID: {sid}")
@@ -621,6 +624,7 @@ def convert_vocals_official_upstream(
         )
     log.detail(f"官方RMS混合率: {official_rms_mix_rate}")
 
+    used_index_fallback = False
     try:
         subprocess.run(
             command,
@@ -629,13 +633,43 @@ def convert_vocals_official_upstream(
             check=True,
         )
     except subprocess.CalledProcessError as exc:
-        raise RuntimeError(f"内置官方VC转换失败，退出码: {exc.returncode}") from exc
+        should_retry_without_index = bool(official_index) and float(index_rate) > 0.0
+        if not should_retry_without_index:
+            raise RuntimeError(f"内置官方VC转换失败，退出码: {exc.returncode}") from exc
+
+        log.warning("内置官方VC索引推理失败，正在自动禁用索引重试；上方 traceback 来自第一次索引尝试，可忽略。")
+        log.detail(f"失败索引: {official_index}")
+
+        output_file = Path(output_path)
+        if output_file.exists():
+            try:
+                output_file.unlink()
+                log.detail(f"已删除失败尝试残留输出: {output_path}")
+            except OSError as cleanup_exc:
+                log.warning(f"清理失败输出文件时出错，继续重试: {cleanup_exc}")
+
+        retry_command = _build_command(None, 0.0)
+        log.detail("回退设置: index_path=<empty>, index_rate=0.0")
+        try:
+            subprocess.run(
+                retry_command,
+                cwd=env_paths["official_root"],
+                env=env,
+                check=True,
+            )
+        except subprocess.CalledProcessError as retry_exc:
+            raise RuntimeError(
+                f"内置官方VC转换失败，索引回退后仍退出码: {retry_exc.returncode}"
+            ) from retry_exc
+        used_index_fallback = True
 
     output_file = Path(output_path)
     if not output_file.exists():
         raise RuntimeError(f"内置官方VC未生成输出文件: {output_path}")
 
     output_size = output_file.stat().st_size
+    if used_index_fallback:
+        log.warning("内置官方VC检测到异常索引，本次已自动改为无索引完成转换")
     log.success(f"内置官方VC转换完成: {output_path}")
     log.audio(f"输出文件大小: {output_size / 1024 / 1024:.2f} MB")
     return output_path

@@ -9,7 +9,7 @@
 ## 功能特点
 
 - **AI 歌曲翻唱**：上传歌曲自动分离人声、转换音色、混合伴奏，一键生成翻唱
-- **人声分离**：默认 Mel-Band Roformer (KimberleyJensen)，在 MVSEP 公开 Multisong 指标中为 Vocals SDR 11.01 / Instrum SDR 17.32；可选 UVR5、Demucs
+- **人声分离**：默认 BS-RoFormer 强模型（`model_bs_roformer_ep_317_sdr_12.9755.ckpt`），保留 KimberleyJensen Mel-Band RoFormer 作为稳定回退；可选 UVR5、Demucs
 - **音色转换**：RVC v2 架构 + 官方 VC 管道，适配角色模型 + FAISS 检索增强流程
 - **RMVPE 音高提取**：按 RMVPE 论文报告，在公开基准上优于 CREPE / pYIN / SWIPE 等基线并具备更好噪声鲁棒性
 - **角色模型**：内置可下载角色清单 117 项（以 `tools/character_models.py` 为准）
@@ -316,24 +316,24 @@ python run.py
 
 | 环节 | 模型 | 用途 |
 |------|------|------|
-| 人声分离 | Mel-Band Roformer (KimberleyJensen) | 从混音中分离人声与伴奏 |
+| 人声分离 | BS-RoFormer + Mel-Band RoFormer 回退 | 从混音中分离人声与伴奏 |
 | 特征提取 | HuBERT Base | 提取语音内容特征供 RVC 使用 |
 | 音高提取 | RMVPE | 从人声中提取 F0 基频曲线 |
 | 语音转换 | RVC v2 | 将人声音色转换为目标角色 |
 
 ---
 
-### 人声分离模型：Mel-Band Roformer (KimberleyJensen)
+### 人声分离模型：BS-RoFormer（默认）+ Mel-Band RoFormer（回退）
 
 默认使用 **Mel-Band Roformer** 进行人声/伴奏分离，通过 [audio-separator](https://github.com/nomadkaraoke/python-audio-separator) 库调用。
 
 | 项目 | 详情 |
 |------|------|
-| 模型全称 | Mel-Band RoFormer |
+| 模型全称 | BS-RoFormer / Mel-Band RoFormer fallback |
 | 论文 | [Mel-Band RoFormer for Music Source Separation](https://arxiv.org/abs/2310.01809) (ByteDance) |
-| 检查点 | `mel_band_roformer_vocals_model_KimberleyJensen.ckpt` |
-| 训练者 | [KimberleyJensen](https://huggingface.co/KimberleyJSN/melbandroformer) |
-| 公开对比（Multisong） | Vocals SDR **11.01** / Instrum SDR **17.32**（[MVSEP](https://mvsep.com/algorithms/49)） |
+| 默认检查点 | `model_bs_roformer_ep_317_sdr_12.9755.ckpt` |
+| 回退检查点 | `model_bs_roformer_ep_368_sdr_12.9628.ckpt` → `vocals_mel_band_roformer.ckpt` |
+| 公开对比 | audio-separator 本地模型列表中 `model_bs_roformer_ep_317_sdr_12.9755.ckpt` 的 Instrumental SDR 为 **16.5**，适合翻唱链路保持更干净伴奏 |
 | 模型文件体积 | 由上游发布决定（会变化）；首次运行自动下载到 `assets/separator_models/` |
 | 调用方式 | 通过 [audio-separator](https://github.com/nomadkaraoke/python-audio-separator) 库封装 |
 | 首次使用 | 自动下载并缓存到 `assets/separator_models/` |
@@ -349,10 +349,10 @@ python run.py
 | `htdemucs` | 8.38 | 16.31 | Demucs 基线 |
 | `htdemucs_ft` | 9.40 | 16.86 | Demucs 微调版 |
 | `bs_roformer_viperx_1053` | 10.87 | 17.17 | BS-Roformer |
-| `mel_band_roformer_vocals_kimberleyjensen` | 11.01 | 17.32 | 本仓库当前默认 |
-| `bs_roformer_ep_368_sdr_12.9628` | 11.89 | 17.84 | 可作为可选替代 |
+| `mel_band_roformer_vocals_kimberleyjensen` | 11.01 | 17.32 | 稳定回退 |
+| `bs_roformer_ep_368_sdr_12.9628` | 11.89 | 17.84 | BS-RoFormer 强候选 |
 
-> 说明：不同数据集/协议不可直接横比；本仓库默认保持 KimberleyJensen 配置，优先稳定可复现。
+> 说明：不同数据集/协议不可直接横比；本仓库默认改为本地可运行的 BS-RoFormer 强模型，并保留 KimberleyJensen 作为兼容回退。
 
 ---
 
@@ -429,8 +429,8 @@ python run.py
 | F0 提取方法 | 音高提取算法 | rmvpe（默认） |
 | 索引比率 | 越高越像训练音色 | 0.1-0.5 (10-50%) |
 | 滤波半径 | 中值滤波，减少气音抖动 | 3 |
-| 保护系数 | 防止撕裂伪影，越小保护越强 | 0.33 |
-| RMS 混合率 | 音量包络匹配程度 | 0.15 (15%) |
+| 保护系数 | 防止撕裂伪影，越小保护越强 | 0.50 |
+| RMS 混合率 | 音量包络匹配程度 | 0.75 (75%) |
 
 ### 混音参数（翻唱）
 
@@ -472,7 +472,7 @@ python run.py
 | 模式 | 说明 | 特点 |
 |------|------|------|
 | 当前实现 | 使用项目自定义 VC 流程 | 支持完整的预处理和后处理 |
-| 官方实现 | 使用内置官方 RVC | 跳过自定义预处理，支持唱歌修复 |
+| 官方实现 | 使用内置官方 RVC | 切换到官方UVR5 + 原始分离人声直通官方VC，并关闭 Karaoke / DeEcho / 源约束 |
 
 ### 人声分离参数 (config.json)
 
@@ -482,7 +482,7 @@ python run.py
 | uvr5_model | UVR5 模型 | HP2_all_vocals |
 | uvr5_agg | UVR5 激进度 (1-10) | 6-8（高音问题可降低） |
 | demucs_model | Demucs 模型 | htdemucs |
-| karaoke_model | 卡拉OK分离模型 | mel_band_roformer_karaoke_gabox.ckpt |
+| karaoke_model | 卡拉OK分离模型 | mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt |
 
 ## 配置文件
 
@@ -494,11 +494,12 @@ python run.py
   "f0_method": "rmvpe",
   "index_rate": 0.1,
   "filter_radius": 3,
-  "protect": 0.33,
   "cover": {
     "separator": "roformer",
     "uvr5_model": "HP2_all_vocals",
     "uvr5_agg": 8,
+    "rms_mix_rate": 0.75,
+    "protect": 0.50,
     "backing_mix": 0.0
   }
 }
@@ -572,7 +573,7 @@ AI-RVC/
 
 这通常是 F0 提取不稳定导致的，尝试：
 - 降低 UVR5 激进度（`uvr5_agg`: 8 → 6-7）
-- 降低保护系数（`protect`: 0.33 → 0.2）
+- 若仍有撕裂，将保护系数从默认 `0.50` 逐步降到 `0.33` / `0.2`
 - 增大滤波半径（`filter_radius`: 3 → 5）
 - 使用更干净的输入音频
 
@@ -605,12 +606,12 @@ python -c "import torch; print(torch.cuda.is_available())"
 
 以下外部数据已在 2026-03-06 复核，README 中涉及的关键数字以这些来源为准：
 
-- MVSEP 算法页（Multisong 指标与模型分数）：https://mvsep.com/algorithms  
-- MVSEP 算法详情（KimberleyJensen 模型）：https://mvsep.com/algorithms/49  
-- RVC 官方仓库与许可证：https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI  
-- 第三方模型聚合计数（voice-models 列表页）：https://voice-models.com/models  
-- RMVPE 论文：https://arxiv.org/abs/2306.15412  
-- FCPE 论文：https://arxiv.org/html/2509.15140  
+- MVSEP 算法页（Multisong 指标与模型分数）：https://mvsep.com/algorithms
+- MVSEP 算法详情（KimberleyJensen / BS-RoFormer 对照）：https://mvsep.com/algorithms/49
+- RVC 官方仓库与许可证：https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI
+- 第三方模型聚合计数（voice-models 列表页）：https://voice-models.com/models
+- RMVPE 论文：https://arxiv.org/abs/2306.15412
+- FCPE 论文：https://arxiv.org/html/2509.15140
 - PyTorch 安装页面（当前 CUDA wheel 选择）：https://pytorch.org/get-started/locally/
 
 ## 贡献

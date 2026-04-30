@@ -15,6 +15,26 @@ FALLBACK_HYBRID_MODES = {
     "hybrid-fallback",
 }
 
+OFFICIAL_COVER_VC_PROFILE = {
+    "separator": "uvr5",
+    "karaoke_separation": False,
+    "karaoke_merge_backing_into_accompaniment": False,
+    "vc_preprocess_mode": "direct",
+    "source_constraint_mode": "off",
+    "f0_method": "rmvpe",
+    "index_rate": 0.75,
+    "filter_radius": 3,
+    # App/UI value. The upstream official runner receives 1 - this value.
+    "rms_mix_rate": 0.75,
+    "official_rms_mix_rate": 0.25,
+    "protect": 0.33,
+    "singing_repair": False,
+}
+
+
+def get_official_cover_vc_profile() -> dict:
+    return dict(OFFICIAL_COVER_VC_PROFILE)
+
 
 @dataclass(frozen=True)
 class F0RoutingPolicy:
@@ -245,6 +265,354 @@ def compute_source_cleanup_budget(
     allowed_boost = 0.35 + 1.00 * energy_guard
     cleanup_floor = 0.62 + 0.16 * phrase_activity
     return allowed_boost.astype(np.float32), cleanup_floor.astype(np.float32)
+
+
+def compute_residual_quiet_hf_blend_curve(
+    source_rms: np.ndarray,
+    converted_rms: np.ndarray,
+    source_hf: np.ndarray,
+    converted_hf: np.ndarray,
+    max_blend: float = 0.68,
+) -> np.ndarray:
+    """Target residual high-frequency VC artifacts outside strong vocal body.
+
+    The curve is intentionally conservative: active vocal-body frames stay near
+    zero even when the converted signal is brighter, while low/mid-energy
+    frames with clear HF/RMS excess receive enough blend pressure for cleanup.
+    """
+    source_rms = np.asarray(source_rms, dtype=np.float32).reshape(-1)
+    converted_rms = np.asarray(converted_rms, dtype=np.float32).reshape(-1)
+    source_hf = np.asarray(source_hf, dtype=np.float32).reshape(-1)
+    converted_hf = np.asarray(converted_hf, dtype=np.float32).reshape(-1)
+
+    n = min(source_rms.size, converted_rms.size, source_hf.size, converted_hf.size)
+    if n <= 0:
+        return np.zeros(0, dtype=np.float32)
+
+    source_rms = source_rms[:n]
+    converted_rms = converted_rms[:n]
+    source_hf = source_hf[:n]
+    converted_hf = converted_hf[:n]
+
+    eps = 1e-8
+    source_db = 20.0 * np.log10(source_rms + eps)
+    ref_db = float(np.percentile(source_db, 95)) if source_db.size else -20.0
+
+    low_mid_pressure = np.clip((ref_db - 10.0 - source_db) / 14.0, 0.0, 1.0)
+    deep_gap_guard = 1.0 - np.clip((ref_db - 45.0 - source_db) / 9.0, 0.0, 1.0)
+    body_guard = 1.0 - np.clip((source_db - (ref_db - 20.0)) / 8.0, 0.0, 1.0)
+
+    hf_excess = np.clip(
+        (converted_hf - 1.08 * source_hf) / (converted_hf + eps),
+        0.0,
+        1.0,
+    )
+    rms_excess = np.clip(
+        (converted_rms - 1.08 * source_rms) / (converted_rms + eps),
+        0.0,
+        1.0,
+    )
+    excess = np.maximum(hf_excess, 0.55 * rms_excess)
+
+    blend = low_mid_pressure * deep_gap_guard * body_guard * excess
+    max_blend = float(np.clip(max_blend, 0.0, 1.0))
+    return np.clip(max_blend * blend, 0.0, max_blend).astype(np.float32)
+
+
+def compute_midquiet_transition_hf_blend_curve(
+    source_rms: np.ndarray,
+    converted_rms: np.ndarray,
+    source_hf: np.ndarray,
+    converted_hf: np.ndarray,
+    max_blend: float = 0.46,
+) -> np.ndarray:
+    """Target mid-quiet transition fizz while leaving body and deep gaps alone."""
+    source_rms = np.asarray(source_rms, dtype=np.float32).reshape(-1)
+    converted_rms = np.asarray(converted_rms, dtype=np.float32).reshape(-1)
+    source_hf = np.asarray(source_hf, dtype=np.float32).reshape(-1)
+    converted_hf = np.asarray(converted_hf, dtype=np.float32).reshape(-1)
+
+    n = min(source_rms.size, converted_rms.size, source_hf.size, converted_hf.size)
+    if n <= 0:
+        return np.zeros(0, dtype=np.float32)
+
+    source_rms = source_rms[:n]
+    converted_rms = converted_rms[:n]
+    source_hf = source_hf[:n]
+    converted_hf = converted_hf[:n]
+
+    eps = 1e-8
+    source_db = 20.0 * np.log10(source_rms + eps)
+    ref_db = float(np.percentile(source_db, 95)) if source_db.size else -20.0
+
+    not_body = np.clip((ref_db - source_db) / 5.0, 0.0, 1.0)
+    not_gap = np.clip((source_db - (ref_db - 38.0)) / 11.0, 0.0, 1.0)
+    not_too_quiet = 1.0 - np.clip((ref_db - source_db - 13.5) / 4.5, 0.0, 1.0)
+    midquiet_focus = not_body * not_gap * not_too_quiet
+
+    hf_excess = np.clip(
+        (converted_hf - 1.04 * source_hf) / (converted_hf + eps),
+        0.0,
+        1.0,
+    )
+    rms_excess = np.clip(
+        (converted_rms - 1.04 * source_rms) / (converted_rms + eps),
+        0.0,
+        1.0,
+    )
+
+    source_delta = np.abs(np.diff(source_rms, prepend=source_rms[:1]))
+    converted_delta = np.abs(np.diff(converted_rms, prepend=converted_rms[:1]))
+    delta_excess = np.clip(
+        (converted_delta - (0.0035 + 1.18 * source_delta)) / (converted_delta + eps),
+        0.0,
+        1.0,
+    )
+
+    pressure = np.maximum(
+        0.72 * hf_excess,
+        np.maximum(0.42 * rms_excess, 0.58 * delta_excess),
+    )
+    blend = midquiet_focus * pressure
+    max_blend = float(np.clip(max_blend, 0.0, 1.0))
+    return np.clip(max_blend * blend, 0.0, max_blend).astype(np.float32)
+
+
+def _metric_vector(values: np.ndarray) -> np.ndarray:
+    return np.asarray(values, dtype=np.float32).reshape(-1)
+
+
+def _masked_rms(values: np.ndarray, mask: np.ndarray) -> float:
+    values = _metric_vector(values)
+    mask = np.asarray(mask, dtype=bool).reshape(-1)
+    n = min(values.size, mask.size)
+    if n <= 0:
+        return 0.0
+    values = values[:n]
+    mask = mask[:n]
+    if not np.any(mask):
+        return 0.0
+    return float(np.sqrt(np.mean(np.square(values[mask])) + 1e-12))
+
+
+def _safe_corr(a: np.ndarray, b: np.ndarray, mask: np.ndarray | None = None) -> float:
+    a = _metric_vector(a)
+    b = _metric_vector(b)
+    n = min(a.size, b.size)
+    if n <= 2:
+        return 0.0
+    a = a[:n]
+    b = b[:n]
+    if mask is not None:
+        mask = np.asarray(mask, dtype=bool).reshape(-1)[:n]
+        if np.sum(mask) <= 2:
+            return 0.0
+        a = a[mask]
+        b = b[mask]
+    if a.size <= 2 or float(np.std(a)) <= 1e-8 or float(np.std(b)) <= 1e-8:
+        return 0.0
+    corr = np.corrcoef(a, b)[0, 1]
+    if not np.isfinite(corr):
+        return 0.0
+    return float(np.clip(corr, -1.0, 1.0))
+
+
+def _activity_masks(reference: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    reference = _metric_vector(reference)
+    if reference.size <= 0:
+        empty = np.zeros(0, dtype=bool)
+        return empty, empty
+    eps = 1e-8
+    ref_db = 20.0 * np.log10(reference + eps)
+    ref_peak = float(np.percentile(ref_db, 95))
+    active = ref_db >= (ref_peak - 24.0)
+    quiet = ref_db <= (ref_peak - 42.0)
+    if not np.any(quiet):
+        quiet = ref_db <= float(np.percentile(ref_db, 25))
+    return active, quiet
+
+
+def _strong_activity_mask(values: np.ndarray, floor_ratio: float = 0.45) -> np.ndarray:
+    values = _metric_vector(values)
+    if values.size <= 0:
+        return np.zeros(0, dtype=bool)
+    peak = float(np.percentile(values, 95))
+    threshold = max(float(np.percentile(values, 60)), peak * float(floor_ratio), 1e-8)
+    return values >= threshold
+
+
+def compute_accompaniment_leakage_metrics(
+    accompaniment_voiceband_rms: np.ndarray,
+    vocal_voiceband_rms: np.ndarray,
+) -> dict[str, float]:
+    """Estimate vocal-shaped leakage in an instrumental stem.
+
+    This is a no-reference proxy: it does not claim SDR. It flags whether the
+    accompaniment voice band follows the separated vocal envelope too closely.
+    """
+    accompaniment = _metric_vector(accompaniment_voiceband_rms)
+    vocal = _metric_vector(vocal_voiceband_rms)
+    n = min(accompaniment.size, vocal.size)
+    if n <= 0:
+        return {
+            "active_frame_ratio": 0.0,
+            "vocal_activity_correlation": 0.0,
+            "active_to_quiet_voiceband_db": 0.0,
+            "relative_vocal_band_db": -120.0,
+            "leakage_risk_score": 0.0,
+        }
+
+    accompaniment = accompaniment[:n]
+    vocal = vocal[:n]
+    active_mask, quiet_mask = _activity_masks(vocal)
+    active_mask = active_mask[:n]
+    quiet_mask = quiet_mask[:n]
+    eps = 1e-8
+
+    acc_active = _masked_rms(accompaniment, active_mask)
+    acc_quiet = _masked_rms(accompaniment, quiet_mask)
+    vocal_active = _masked_rms(vocal, active_mask)
+    vocal_corr = _safe_corr(accompaniment, vocal, active_mask | quiet_mask)
+    active_to_quiet_db = 20.0 * np.log10((acc_active + eps) / (acc_quiet + eps))
+    relative_vocal_db = 20.0 * np.log10((acc_active + eps) / (vocal_active + eps))
+
+    corr_component = np.clip((max(0.0, vocal_corr) - 0.35) / 0.55, 0.0, 1.0)
+    active_excess_component = np.clip((active_to_quiet_db - 3.0) / 9.0, 0.0, 1.0)
+    relative_component = np.clip((relative_vocal_db + 24.0) / 18.0, 0.0, 1.0)
+    leakage_risk = np.clip(
+        0.45 * corr_component + 0.35 * active_excess_component + 0.20 * relative_component,
+        0.0,
+        1.0,
+    )
+
+    return {
+        "active_frame_ratio": float(np.mean(active_mask)) if active_mask.size else 0.0,
+        "vocal_activity_correlation": float(vocal_corr),
+        "active_to_quiet_voiceband_db": float(active_to_quiet_db),
+        "relative_vocal_band_db": float(relative_vocal_db),
+        "leakage_risk_score": float(leakage_risk),
+    }
+
+
+def compute_karaoke_stem_separation_metrics(
+    lead_rms: np.ndarray,
+    backing_rms: np.ndarray,
+) -> dict[str, float]:
+    """Estimate lead/backing stem duplication and mutual leakage risk."""
+    lead = _metric_vector(lead_rms)
+    backing = _metric_vector(backing_rms)
+    n = min(lead.size, backing.size)
+    if n <= 0:
+        return {
+            "envelope_correlation": 0.0,
+            "mutual_active_ratio": 0.0,
+            "backing_vs_lead_db_when_lead_dominant": -120.0,
+            "lead_vs_backing_db_when_backing_dominant": -120.0,
+            "duplication_risk_score": 0.0,
+        }
+
+    lead = lead[:n]
+    backing = backing[:n]
+    eps = 1e-8
+    lead_active = _strong_activity_mask(lead)
+    backing_active = _strong_activity_mask(backing)
+    lead_active = lead_active[:n]
+    backing_active = backing_active[:n]
+    any_active = lead_active | backing_active
+    both_active = lead_active & backing_active
+
+    lead_dominant = lead > (backing * 1.85 + eps)
+    backing_dominant = backing > (lead * 1.85 + eps)
+    backing_vs_lead_db = 20.0 * np.log10(
+        (_masked_rms(backing, lead_dominant) + eps)
+        / (_masked_rms(lead, lead_dominant) + eps)
+    )
+    lead_vs_backing_db = 20.0 * np.log10(
+        (_masked_rms(lead, backing_dominant) + eps)
+        / (_masked_rms(backing, backing_dominant) + eps)
+    )
+    envelope_corr = _safe_corr(lead, backing, any_active)
+    mutual_active_ratio = float(np.sum(both_active) / max(1, int(np.sum(any_active))))
+
+    corr_component = np.clip((max(0.0, envelope_corr) - 0.45) / 0.50, 0.0, 1.0)
+    overlap_component = np.clip((mutual_active_ratio - 0.45) / 0.45, 0.0, 1.0)
+    lead_leak_component = np.clip((backing_vs_lead_db + 18.0) / 18.0, 0.0, 1.0)
+    backing_leak_component = np.clip((lead_vs_backing_db + 18.0) / 18.0, 0.0, 1.0)
+    duplication_risk = np.clip(
+        0.42 * corr_component
+        + 0.28 * overlap_component
+        + 0.18 * lead_leak_component
+        + 0.12 * backing_leak_component,
+        0.0,
+        1.0,
+    )
+
+    return {
+        "envelope_correlation": float(envelope_corr),
+        "mutual_active_ratio": float(mutual_active_ratio),
+        "backing_vs_lead_db_when_lead_dominant": float(backing_vs_lead_db),
+        "lead_vs_backing_db_when_backing_dominant": float(lead_vs_backing_db),
+        "duplication_risk_score": float(duplication_risk),
+    }
+
+
+def compute_mix_fusion_metrics(
+    lead_rms: np.ndarray,
+    backing_rms: np.ndarray,
+    bed_rms: np.ndarray,
+) -> dict[str, float]:
+    """Estimate final-bed pumping and backing-vocal balance."""
+    lead = _metric_vector(lead_rms)
+    backing = _metric_vector(backing_rms)
+    bed = _metric_vector(bed_rms)
+    n = min(lead.size, backing.size, bed.size)
+    if n <= 0:
+        return {
+            "bed_active_vs_quiet_db": 0.0,
+            "bed_lead_correlation": 0.0,
+            "ducking_risk_score": 0.0,
+            "backing_to_lead_db_overlap": -120.0,
+            "backing_excess_frame_ratio": 0.0,
+            "harmony_presence_ratio": 0.0,
+        }
+
+    lead = lead[:n]
+    backing = backing[:n]
+    bed = bed[:n]
+    eps = 1e-8
+    lead_active = _strong_activity_mask(lead)
+    _, lead_quiet = _activity_masks(lead)
+    backing_active = _strong_activity_mask(backing)
+    lead_active = lead_active[:n]
+    lead_quiet = lead_quiet[:n]
+    backing_active = backing_active[:n]
+    overlap = lead_active & backing_active
+
+    bed_active = _masked_rms(bed, lead_active)
+    bed_quiet = _masked_rms(bed, lead_quiet)
+    bed_active_vs_quiet_db = 20.0 * np.log10((bed_active + eps) / (bed_quiet + eps))
+    bed_lead_corr = _safe_corr(bed, lead, lead_active | lead_quiet)
+
+    duck_delta_component = np.clip((-1.0 - bed_active_vs_quiet_db) / 5.0, 0.0, 1.0)
+    negative_corr_component = np.clip((-0.10 - bed_lead_corr) / 0.55, 0.0, 1.0)
+    ducking_risk = np.clip(0.68 * duck_delta_component + 0.32 * negative_corr_component, 0.0, 1.0)
+
+    backing_to_lead_db = 20.0 * np.log10(
+        (_masked_rms(backing, overlap) + eps)
+        / (_masked_rms(lead, overlap) + eps)
+    )
+    backing_excess = overlap & (backing >= 0.72 * lead)
+    backing_excess_ratio = float(np.sum(backing_excess) / max(1, int(np.sum(overlap))))
+    harmony_presence_ratio = float(np.sum(overlap) / max(1, int(np.sum(lead_active))))
+
+    return {
+        "bed_active_vs_quiet_db": float(bed_active_vs_quiet_db),
+        "bed_lead_correlation": float(bed_lead_corr),
+        "ducking_risk_score": float(ducking_risk),
+        "backing_to_lead_db_overlap": float(backing_to_lead_db),
+        "backing_excess_frame_ratio": float(backing_excess_ratio),
+        "harmony_presence_ratio": float(harmony_presence_ratio),
+    }
 
 
 def compute_breath_preserving_energy_gates(
