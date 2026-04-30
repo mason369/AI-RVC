@@ -25,12 +25,20 @@ class ModelDefaultTests(unittest.TestCase):
             separator.ROFORMER_FALLBACK_MODELS,
         )
 
-    def test_karaoke_default_uses_public_sdr_model_with_legacy_fallbacks(self):
+    def test_karaoke_default_uses_local_sota_robust_ensemble(self):
         from infer import separator
 
         self.assertEqual(
             separator.KARAOKE_DEFAULT_MODEL,
-            "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
+            "sota_karaoke_ensemble",
+        )
+        self.assertEqual(
+            separator.KARAOKE_SOTA_ENSEMBLE_MODELS,
+            [
+                "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
+                "mel_band_roformer_karaoke_gabox_v2.ckpt",
+                "mel_band_roformer_karaoke_becruily.ckpt",
+            ],
         )
         self.assertEqual(
             separator.KARAOKE_FALLBACK_MODELS[:3],
@@ -40,6 +48,20 @@ class ModelDefaultTests(unittest.TestCase):
                 "mel_band_roformer_karaoke_becruily.ckpt",
             ],
         )
+
+    def test_sota_karaoke_ensemble_uses_median_to_reject_local_outlier(self):
+        from infer.separator import KaraokeSeparator
+
+        good_low = np.full(8, 0.001, dtype=np.float32)
+        second_low = np.full(8, 0.002, dtype=np.float32)
+        bad_leak = np.full(8, 0.25, dtype=np.float32)
+
+        fused = KaraokeSeparator._fuse_ensemble_audio(
+            [good_low, second_low, bad_leak],
+            method="median",
+        )
+
+        np.testing.assert_allclose(fused, second_low, rtol=1e-6, atol=1e-6)
 
     def test_vc_preprocess_prefers_local_roformer_deecho_before_uvr_fallback(self):
         from infer import separator

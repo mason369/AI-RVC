@@ -429,8 +429,8 @@ python run.py
 | F0 提取方法 | 音高提取算法 | rmvpe（默认） |
 | 索引比率 | 越高越像训练音色 | 0.1-0.5 (10-50%) |
 | 滤波半径 | 中值滤波，减少气音抖动 | 3 |
-| 保护系数 | 防止撕裂伪影，越小保护越强 | 0.50 |
-| RMS 混合率 | 音量包络匹配程度 | 0.75 (75%) |
+| 保护系数 | 防止撕裂伪影，越小保护越强 | 0.33 |
+| RMS 混合率 | 音量包络匹配程度；默认保留 RVC 歌唱主体 | 0.0 (0%) |
 
 ### 混音参数（翻唱）
 
@@ -482,7 +482,7 @@ python run.py
 | uvr5_model | UVR5 模型 | HP2_all_vocals |
 | uvr5_agg | UVR5 激进度 (1-10) | 6-8（高音问题可降低） |
 | demucs_model | Demucs 模型 | htdemucs |
-| karaoke_model | 卡拉OK分离模型 | mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt |
+| karaoke_model | 卡拉OK分离模型 | sota_karaoke_ensemble（AUFR33 + GABOX v2 + Becruily，本地SOTA median ensemble） |
 
 ## 配置文件
 
@@ -496,10 +496,11 @@ python run.py
   "filter_radius": 3,
   "cover": {
     "separator": "roformer",
+    "karaoke_model": "sota_karaoke_ensemble",
     "uvr5_model": "HP2_all_vocals",
     "uvr5_agg": 8,
-    "rms_mix_rate": 0.75,
-    "protect": 0.50,
+    "rms_mix_rate": 0.0,
+    "protect": 0.33,
     "backing_mix": 0.0
   }
 }
@@ -573,7 +574,7 @@ AI-RVC/
 
 这通常是 F0 提取不稳定导致的，尝试：
 - 降低 UVR5 激进度（`uvr5_agg`: 8 → 6-7）
-- 若仍有撕裂，将保护系数从默认 `0.50` 逐步降到 `0.33` / `0.2`
+- 若仍有撕裂，将保护系数从默认 `0.33` 逐步降到 `0.2`
 - 增大滤波半径（`filter_radius`: 3 → 5）
 - 使用更干净的输入音频
 

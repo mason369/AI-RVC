@@ -34,19 +34,28 @@ except ImportError:
     AUDIO_SEPARATOR_AVAILABLE = False
 
 
-# Local, public audio-separator defaults selected by published SDR/model-list
-# evidence while keeping older stable models as fallbacks.
+# Local defaults combine public model-list evidence with song-level regression
+# checks. The local SOTA karaoke option mirrors audio-separator's public
+# 3-model karaoke ensemble, but uses median fusion so one bad local onset does
+# not leak original lead vocals back into the backing stem.
 ROFORMER_DEFAULT_MODEL = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
 ROFORMER_FALLBACK_MODELS = [
     "model_bs_roformer_ep_368_sdr_12.9628.ckpt",
     "vocals_mel_band_roformer.ckpt",
 ]
 
-KARAOKE_DEFAULT_MODEL = "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt"
+KARAOKE_SOTA_ENSEMBLE_MODEL = "sota_karaoke_ensemble"
+KARAOKE_SOTA_ENSEMBLE_MODELS = [
+    "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
+    "mel_band_roformer_karaoke_gabox_v2.ckpt",
+    "mel_band_roformer_karaoke_becruily.ckpt",
+]
+KARAOKE_DEFAULT_MODEL = KARAOKE_SOTA_ENSEMBLE_MODEL
 KARAOKE_FALLBACK_MODELS = [
     "mel_band_roformer_karaoke_gabox.ckpt",
     "mel_band_roformer_karaoke_gabox_v2.ckpt",
     "mel_band_roformer_karaoke_becruily.ckpt",
+    "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
 ]
 
 ROFORMER_DEECHO_DEFAULT_MODEL = "dereverb-echo_mel_band_roformer_sdr_13.4843_v2.ckpt"
@@ -288,6 +297,7 @@ class KaraokeSeparator:
                 "请安装 audio-separator: pip install audio-separator[gpu]"
             )
         self.device = str(get_device(device))
+        self.model_filename = model_filename
         self.separator = None
         self.active_model = None
 
@@ -295,6 +305,15 @@ class KaraokeSeparator:
             model_filename,
             KARAOKE_FALLBACK_MODELS,
         )
+
+    @staticmethod
+    def _is_sota_ensemble_model(model_name: str) -> bool:
+        normalized = str(model_name or "").strip().lower()
+        return normalized in {
+            KARAOKE_SOTA_ENSEMBLE_MODEL,
+            "karaoke_ensemble",
+            "audio_separator_karaoke_ensemble",
+        }
 
     def load_model(self, output_dir: str = ""):
         """加载 Karaoke 模型（主模型失败时自动回退）"""
@@ -304,6 +323,12 @@ class KaraokeSeparator:
         target_dir = output_dir or str(
             Path(__file__).parent.parent / "temp" / "separator"
         )
+
+        if self._is_sota_ensemble_model(self.model_filename):
+            self._init_output_dir = target_dir
+            self.active_model = KARAOKE_SOTA_ENSEMBLE_MODEL
+            log.info("Karaoke SOTA ensemble 已启用")
+            return
 
         # Recreate the Separator when output_dir changes
         if self.separator is not None:
@@ -369,6 +394,138 @@ class KaraokeSeparator:
             return "backing"
         return None
 
+    @staticmethod
+    def _fuse_ensemble_audio(
+        audio_arrays: list[np.ndarray],
+        method: str = "median",
+    ) -> np.ndarray:
+        if not audio_arrays:
+            raise ValueError("No ensemble audio arrays to fuse.")
+
+        output_1d = all(np.asarray(audio).ndim == 1 for audio in audio_arrays)
+        arrays = []
+        max_channels = 1
+        for audio in audio_arrays:
+            arr = np.asarray(audio, dtype=np.float32)
+            if arr.ndim == 1:
+                arr = arr[:, None]
+            if arr.ndim != 2 or arr.size == 0:
+                raise ValueError("Invalid ensemble audio array.")
+            arrays.append(arr)
+            max_channels = max(max_channels, arr.shape[1])
+
+        normalized = []
+        for arr in arrays:
+            if arr.shape[1] == 1 and max_channels > 1:
+                arr = np.repeat(arr, max_channels, axis=1)
+            elif arr.shape[1] > max_channels:
+                arr = arr[:, :max_channels]
+            normalized.append(arr)
+
+        min_len = min(arr.shape[0] for arr in normalized)
+        stack = np.stack([arr[:min_len] for arr in normalized], axis=0)
+        if method == "mean":
+            fused = np.mean(stack, axis=0)
+        else:
+            fused = np.median(stack, axis=0)
+
+        peak = float(np.max(np.abs(fused))) if fused.size else 0.0
+        if peak > 0.99:
+            fused = fused * (0.99 / peak)
+
+        fused = fused.astype(np.float32, copy=False)
+        if output_1d:
+            return fused[:, 0]
+        return fused
+
+    @staticmethod
+    def _read_audio(path: str) -> tuple[np.ndarray, int]:
+        audio, sr = sf.read(path, dtype="float32", always_2d=True)
+        return np.asarray(audio, dtype=np.float32), int(sr)
+
+    def _separate_sota_ensemble(self, audio_path: str, output_path: Path) -> Tuple[str, str]:
+        ensemble_root = output_path / "_sota_karaoke_ensemble"
+        ensemble_root.mkdir(parents=True, exist_ok=True)
+
+        lead_arrays: list[np.ndarray] = []
+        backing_arrays: list[np.ndarray] = []
+        sample_rate: Optional[int] = None
+        used_models: list[str] = []
+        errors: list[str] = []
+
+        log.info(
+            "使用本地SOTA Karaoke ensemble: "
+            + ", ".join(KARAOKE_SOTA_ENSEMBLE_MODELS)
+        )
+
+        for model_name in KARAOKE_SOTA_ENSEMBLE_MODELS:
+            candidate_dir = ensemble_root / Path(model_name).stem
+            candidate_dir.mkdir(parents=True, exist_ok=True)
+            separator = KaraokeSeparator(model_filename=model_name, device=self.device)
+            separator.model_candidates = [model_name]
+            try:
+                lead_path, backing_path = separator.separate(audio_path, str(candidate_dir))
+                lead_audio, lead_sr = self._read_audio(lead_path)
+                backing_audio, backing_sr = self._read_audio(backing_path)
+                if lead_sr != backing_sr:
+                    raise ValueError(
+                        f"{model_name} 输出采样率不一致: lead={lead_sr}, backing={backing_sr}"
+                    )
+                if sample_rate is None:
+                    sample_rate = lead_sr
+                elif lead_sr != sample_rate:
+                    raise ValueError(
+                        f"{model_name} 输出采样率 {lead_sr} 与 ensemble 采样率 {sample_rate} 不一致"
+                    )
+                lead_arrays.append(lead_audio)
+                backing_arrays.append(backing_audio)
+                used_models.append(model_name)
+            except Exception as exc:
+                errors.append(f"{model_name}: {exc}")
+                log.warning(f"SOTA Karaoke ensemble 子模型失败: {model_name} ({exc})")
+            finally:
+                separator.unload_model()
+
+        if not lead_arrays or not backing_arrays or sample_rate is None:
+            log.warning(
+                "SOTA Karaoke ensemble 全部失败，回退到稳定 GABOX 单模型: "
+                + "; ".join(errors)
+            )
+            fallback = KaraokeSeparator(
+                model_filename="mel_band_roformer_karaoke_gabox.ckpt",
+                device=self.device,
+            )
+            fallback.model_candidates = ["mel_band_roformer_karaoke_gabox.ckpt"]
+            try:
+                return fallback.separate(audio_path, str(output_path))
+            finally:
+                fallback.unload_model()
+
+        fused_lead = self._fuse_ensemble_audio(lead_arrays, method="median")
+        fused_backing = self._fuse_ensemble_audio(backing_arrays, method="median")
+
+        final_lead = str(output_path / "lead_vocals.wav")
+        final_backing = str(output_path / "backing_vocals.wav")
+        sf.write(final_lead, fused_lead, sample_rate)
+        sf.write(final_backing, fused_backing, sample_rate)
+
+        self.active_model = KARAOKE_SOTA_ENSEMBLE_MODEL
+        log.detail(
+            "SOTA Karaoke ensemble 融合完成: "
+            f"models={used_models}, fusion=median, "
+            f"failed={len(errors)}"
+        )
+
+        lead_rms, lead_peak, lead_nonzero = _get_audio_activity_stats(final_lead)
+        backing_rms, backing_peak, backing_nonzero = _get_audio_activity_stats(final_backing)
+        log.detail(
+            "Karaoke ensemble输出能量检测: "
+            f"lead_rms={lead_rms:.6f}, lead_peak={lead_peak:.6f}, lead_nonzero={lead_nonzero}; "
+            f"backing_rms={backing_rms:.6f}, backing_peak={backing_peak:.6f}, backing_nonzero={backing_nonzero}"
+        )
+
+        return final_lead, final_backing
+
     def separate(self, audio_path: str, output_dir: str) -> Tuple[str, str]:
         """
         分离主唱和和声
@@ -378,6 +535,9 @@ class KaraokeSeparator:
         """
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
+
+        if self._is_sota_ensemble_model(self.model_filename):
+            return self._separate_sota_ensemble(audio_path, output_path)
 
         self.load_model(output_dir=str(output_path))
         self.separator.output_dir = str(output_path)

@@ -186,7 +186,7 @@ def _get_current_cover_vc_profile() -> Dict[str, object]:
         "vc_preprocess_mode": str(cover_cfg.get("vc_preprocess_mode", "auto")),
         "source_constraint_mode": str(cover_cfg.get("source_constraint_mode", "auto")),
         "index_rate": _to_float(cover_cfg.get("index_rate", config.get("index_rate", 0.50)), 0.50),
-        "rms_mix_rate": _to_float(cover_cfg.get("rms_mix_rate", config.get("rms_mix_rate", 0.75)), 0.75),
+        "rms_mix_rate": _to_float(cover_cfg.get("rms_mix_rate", config.get("rms_mix_rate", 0.0)), 0.0),
         "singing_repair": False,
     }
 
@@ -216,7 +216,7 @@ def get_cover_vc_pipeline_profile_updates(vc_pipeline_mode: str):
             interactive=not is_official,
         ),
         gr.update(value=_cover_fraction_to_percent(profile.get("index_rate"), 0.75 if is_official else 0.50)),
-        gr.update(value=_cover_fraction_to_percent(profile.get("rms_mix_rate"), 0.75)),
+        gr.update(value=_cover_fraction_to_percent(profile.get("rms_mix_rate"), 0.75 if is_official else 0.0)),
         gr.update(value=bool(profile.get("karaoke_separation", False)), interactive=not is_official),
         gr.update(
             value=bool(profile.get("karaoke_merge_backing_into_accompaniment", False)),
@@ -615,13 +615,13 @@ def process_cover(
         use_official = bool(cover_cfg.get("use_official", True))
         f0_method = cover_cfg.get("f0_method", config.get("f0_method", "rmvpe"))
         filter_radius = cover_cfg.get("filter_radius", config.get("filter_radius", 3))
-        protect = cover_cfg.get("protect", config.get("protect", 0.50))
+        protect = cover_cfg.get("protect", config.get("protect", 0.33))
         silence_gate = cover_cfg.get("silence_gate", True)
         silence_threshold_db = cover_cfg.get("silence_threshold_db", -40.0)
         silence_smoothing_ms = cover_cfg.get("silence_smoothing_ms", 50.0)
         silence_min_duration_ms = cover_cfg.get("silence_min_duration_ms", 200.0)
         hubert_layer = cover_cfg.get("hubert_layer", config.get("hubert_layer", 12))
-        karaoke_model = cover_cfg.get("karaoke_model", "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt")
+        karaoke_model = cover_cfg.get("karaoke_model", "sota_karaoke_ensemble")
         default_vc_preprocess_mode = str(cover_cfg.get("vc_preprocess_mode", "auto"))
         default_source_constraint_mode = str(cover_cfg.get("source_constraint_mode", "auto"))
         default_vc_pipeline_mode = str(cover_cfg.get("vc_pipeline_mode", "current"))
@@ -1804,12 +1804,12 @@ def create_ui() -> gr.Blocks:
                                     _to_float(
                                         cover_cfg.get(
                                             "rms_mix_rate",
-                                            config.get("rms_mix_rate", 0.75),
+                                            config.get("rms_mix_rate", 0.0),
                                         ),
-                                        0.75,
+                                        0.0,
                                     ) * 100
                                 ),
-                                75,
+                                0,
                             ),
                             step=5,
                             info=t("rms_mix_rate_info", "cover"),

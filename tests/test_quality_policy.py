@@ -386,29 +386,28 @@ class SourceRegressionTests(unittest.TestCase):
         self.assertRegex(source, r'"unvoiced_feature_gate_floor"\s*:\s*0\.28')
         self.assertRegex(source, r'"breath_active_margin_db"\s*:\s*52\.0')
 
-    def test_cover_default_rms_mix_uses_balanced_envelope_following(self):
+    def test_cover_default_rms_mix_preserves_fb61a20_vocal_body(self):
         config = json.loads((REPO_ROOT / "configs" / "config.json").read_text(encoding="utf-8"))
         cover_source = (REPO_ROOT / "infer" / "cover_pipeline.py").read_text(encoding="utf-8")
 
-        self.assertAlmostEqual(float(config["cover"]["rms_mix_rate"]), 0.75, places=6)
-        self.assertIn("rms_mix_rate: float = 0.75", cover_source)
+        self.assertAlmostEqual(float(config["cover"]["rms_mix_rate"]), 0.0, places=6)
+        self.assertIn("rms_mix_rate: float = 0.0", cover_source)
 
-    def test_cover_default_protect_uses_measured_artifact_guard(self):
+    def test_cover_default_protect_uses_fb61a20_artifact_guard(self):
         config = json.loads((REPO_ROOT / "configs" / "config.json").read_text(encoding="utf-8"))
         cover_source = (REPO_ROOT / "infer" / "cover_pipeline.py").read_text(encoding="utf-8")
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
-        self.assertAlmostEqual(float(config["cover"]["protect"]), 0.50, places=6)
-        self.assertIn("protect: float = 0.50", cover_source)
-        self.assertIn("| 保护系数 | 防止撕裂伪影，越小保护越强 | 0.50 |", readme)
+        self.assertAlmostEqual(float(config["cover"]["protect"]), 0.33, places=6)
+        self.assertIn("protect: float = 0.33", cover_source)
+        self.assertIn("| 保护系数 | 防止撕裂伪影，越小保护越强 | 0.33 |", readme)
 
     def test_readme_cover_config_snippet_matches_measured_defaults(self):
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
-        self.assertIn('"rms_mix_rate": 0.75', readme)
-        self.assertIn('"protect": 0.50', readme)
-        self.assertNotIn('"protect": 0.33', readme)
-        self.assertNotIn("`protect`: 0.33 → 0.2", readme)
+        self.assertIn('"rms_mix_rate": 0.0', readme)
+        self.assertIn('"protect": 0.33', readme)
+        self.assertNotIn('"protect": 0.50', readme)
 
     def test_karaoke_backing_merge_uses_bed_blend_without_dynamic_ducking(self):
         source = (REPO_ROOT / "infer" / "cover_pipeline.py").read_text(encoding="utf-8")
@@ -473,8 +472,8 @@ class SourceRegressionTests(unittest.TestCase):
         ui_source = (REPO_ROOT / "ui" / "app.py").read_text(encoding="utf-8")
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
-        self.assertIn('config.get("rms_mix_rate", 0.75)', ui_source)
-        self.assertIn("0.75 (75%)", readme)
+        self.assertIn('config.get("rms_mix_rate", 0.0)', ui_source)
+        self.assertIn("0.0 (0%)", readme)
 
     def test_upstream_official_adapter_routes_hybrid_to_conservative_vc_method(self):
         source = (REPO_ROOT / "infer" / "official_adapter.py").read_text(encoding="utf-8")
