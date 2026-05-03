@@ -32,7 +32,14 @@ PACKAGES = {
     "soundfile": {"import": "soundfile", "name": "soundfile", "pip": "soundfile"},
     "av": {"import": "av", "name": "PyAV", "pip": "av"},
     "scipy": {"import": "scipy", "name": "scipy", "pip": "scipy"},
-    "numpy": {"import": "numpy", "name": "numpy", "pip": "numpy"},
+    "numpy": {
+        "import": "numpy",
+        "name": "numpy",
+        "pip": "numpy<2,>=1.23.0",
+        "dist": "numpy",
+        "min_version": "1.23.0",
+        "max_exclusive_version": "2.0.0",
+    },
     "parselmouth": {"import": "parselmouth", "name": "praat-parselmouth", "pip": "praat-parselmouth"},
     "pyworld": {"import": "pyworld", "name": "pyworld", "pip": "pyworld"},
     "torchcrepe": {"import": "torchcrepe", "name": "torchcrepe", "pip": "torchcrepe"},
@@ -43,7 +50,13 @@ PACKAGES = {
     "colorama": {"import": "colorama", "name": "colorama", "pip": "colorama"},
     "mcp": {"import": "mcp", "name": "mcp", "pip": "mcp"},
     "demucs": {"import": "demucs", "name": "demucs", "pip": "demucs"},
-    "audio_separator": {"import": "audio_separator", "name": "audio-separator", "pip": "audio-separator"},
+    "audio_separator": {
+        "import": "audio_separator",
+        "name": "audio-separator",
+        "pip": "audio-separator",
+        "dist": "audio-separator",
+        "min_version": "0.44.1",
+    },
     "huggingface_hub": {"import": "huggingface_hub", "name": "huggingface_hub", "pip": "huggingface_hub"},
     "pedalboard": {"import": "pedalboard", "name": "pedalboard", "pip": "pedalboard"},
     "ffmpeg": {"import": "ffmpeg", "name": "ffmpeg-python", "pip": "ffmpeg-python"},
@@ -117,6 +130,52 @@ def check_package(venv_py, import_name):
     return r.returncode == 0
 
 
+def get_installed_version(venv_py, distribution_name):
+    """返回虚拟环境中已安装发行包版本；无法读取时返回 None。"""
+    code = (
+        "from importlib.metadata import PackageNotFoundError, version\n"
+        f"dist = {distribution_name!r}\n"
+        "try:\n"
+        "    print(version(dist))\n"
+        "except PackageNotFoundError:\n"
+        "    raise SystemExit(1)\n"
+    )
+    r = subprocess.run([venv_py, "-c", code], capture_output=True, text=True)
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip() or None
+
+
+def _version_parts(version_text):
+    parts = []
+    for part in str(version_text or "").split("."):
+        digits = ""
+        for char in part:
+            if not char.isdigit():
+                break
+            digits += char
+        parts.append(int(digits or 0))
+    return tuple(parts)
+
+
+def _version_at_least(installed, required):
+    installed_parts = _version_parts(installed)
+    required_parts = _version_parts(required)
+    width = max(len(installed_parts), len(required_parts))
+    installed_parts += (0,) * (width - len(installed_parts))
+    required_parts += (0,) * (width - len(required_parts))
+    return installed_parts >= required_parts
+
+
+def _version_less_than(installed, upper_bound):
+    installed_parts = _version_parts(installed)
+    upper_parts = _version_parts(upper_bound)
+    width = max(len(installed_parts), len(upper_parts))
+    installed_parts += (0,) * (width - len(installed_parts))
+    upper_parts += (0,) * (width - len(upper_parts))
+    return installed_parts < upper_parts
+
+
 def detect_cuda_version():
     """检测系统 CUDA 版本，返回对应的 PyTorch index-url"""
     try:
@@ -152,9 +211,9 @@ def detect_cuda_version():
     return None
 
 
-def pip_install(venv_py, package, extra="", index_url=None, no_deps=False):
+def pip_install(venv_py, package, extra="", index_url=None, no_deps=False, version_spec=""):
     """用虚拟环境的 pip 安装包"""
-    target = f"{package}[{extra}]" if extra else package
+    target = f"{package}[{extra}]{version_spec}" if extra else f"{package}{version_spec}"
     print(f"  安装 {target} ...")
     cmd = [venv_py, "-m", "pip", "install", target]
     if index_url:
@@ -185,6 +244,37 @@ def check_all(venv_py):
     for key, info in PACKAGES.items():
         ok = check_package(venv_py, info["import"])
         status = "OK" if ok else "未安装"
+        min_version = info.get("min_version")
+        max_exclusive_version = info.get("max_exclusive_version")
+        if ok and (min_version or max_exclusive_version):
+            installed_version = get_installed_version(
+                venv_py,
+                info.get("dist", info["pip"]),
+            )
+            if not installed_version:
+                ok = False
+                requirements = []
+                if min_version:
+                    requirements.append(f">= {min_version}")
+                if max_exclusive_version:
+                    requirements.append(f"< {max_exclusive_version}")
+                status = f"需更新 (无法读取版本，要求 {' 且 '.join(requirements)})"
+            elif (
+                (not min_version or _version_at_least(installed_version, min_version))
+                and (
+                    not max_exclusive_version
+                    or _version_less_than(installed_version, max_exclusive_version)
+                )
+            ):
+                status = f"OK ({installed_version})"
+            else:
+                ok = False
+                requirements = []
+                if min_version:
+                    requirements.append(f">= {min_version}")
+                if max_exclusive_version:
+                    requirements.append(f"< {max_exclusive_version}")
+                status = f"需更新 ({installed_version} 不满足 {' 且 '.join(requirements)})"
         mark = "[v]" if ok else "[x]"
         print(f"  {mark} {info['name']:30s} {status}")
         if not ok:
@@ -223,7 +313,19 @@ def install_all(venv_py, gpu=True):
             else:
                 ok = pip_install(venv_py, pip_name, index_url="https://download.pytorch.org/whl/cpu")
         elif pip_name == "audio-separator":
-            ok = pip_install(venv_py, pip_name, extra="gpu" if gpu else "cpu")
+            version_spec = f">={info['min_version']}" if info.get("min_version") else ""
+            ok = pip_install(
+                venv_py,
+                pip_name,
+                extra="gpu" if gpu else "cpu",
+                version_spec=version_spec,
+            )
+            if ok:
+                # audio-separator 0.31+ declares numpy>=2, while the current
+                # Gradio 3.x UI stack is pinned to numpy 1.x. The separator
+                # model table and runtime imports work with numpy 1.26, so
+                # restore the app-compatible numpy line after separator install.
+                ok = pip_install(venv_py, "numpy<2,>=1.23.0")
         else:
             ok = pip_install(venv_py, pip_name)
         if not ok:

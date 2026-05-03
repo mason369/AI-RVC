@@ -9,7 +9,7 @@
 ## 功能特点
 
 - **AI 歌曲翻唱**：上传歌曲自动分离人声、转换音色、混合伴奏，一键生成翻唱
-- **人声分离**：默认 BS-RoFormer 强模型（`model_bs_roformer_ep_317_sdr_12.9755.ckpt`），保留 KimberleyJensen Mel-Band RoFormer 作为稳定回退；可选 UVR5、Demucs
+- **人声分离**：默认 `audio-separator` 0.44.1 公开 scored SOTA（`vocals_mel_band_roformer.ckpt`，Vocals SDR 12.6）；可选 UVR5、Demucs
 - **音色转换**：RVC v2 架构 + 官方 VC 管道，适配角色模型 + FAISS 检索增强流程
 - **RMVPE 音高提取**：按 RMVPE 论文报告，在公开基准上优于 CREPE / pYIN / SWIPE 等基线并具备更好噪声鲁棒性
 - **角色模型**：内置可下载角色清单 117 项（以 `tools/character_models.py` 为准）
@@ -229,8 +229,10 @@ python run.py
 | torchaudio | >= 2.0.0 | 与 PyTorch 版本对应 |
 | CUDA | 与 torch wheel 匹配 | 常见 11.8 / 12.1 / 12.4 / 12.6（可选） |
 | fairseq | 0.12.2 | HuBERT 特征提取 |
-| audio-separator | latest | Mel-Band Roformer 人声分离 |
+| audio-separator | >= 0.44.1 | Mel-Band Roformer / RoFormer 公开 scored SOTA 分离 |
 | demucs | >= 4.0.0 | Demucs 人声分离（可选） |
+
+> 建议使用 `python install.py` 安装依赖。`audio-separator` 0.44.1 的上游包元数据会请求 NumPy 2.x，但当前 Gradio 3.x/RVC 栈仍以 NumPy 1.x 最稳；安装脚本会在安装分离器后恢复 `numpy<2`。
 
 ## 使用方法
 
@@ -316,43 +318,46 @@ python run.py
 
 | 环节 | 模型 | 用途 |
 |------|------|------|
-| 人声分离 | BS-RoFormer + Mel-Band RoFormer 回退 | 从混音中分离人声与伴奏 |
+| 人声分离 | audio-separator public scored SOTA | 从混音中分离人声与伴奏 |
 | 特征提取 | HuBERT Base | 提取语音内容特征供 RVC 使用 |
 | 音高提取 | RMVPE | 从人声中提取 F0 基频曲线 |
 | 语音转换 | RVC v2 | 将人声音色转换为目标角色 |
 
 ---
 
-### 人声分离模型：BS-RoFormer（默认）+ Mel-Band RoFormer（回退）
+### 人声分离模型：audio-separator public scored SOTA
 
-默认使用 **Mel-Band Roformer** 进行人声/伴奏分离，通过 [audio-separator](https://github.com/nomadkaraoke/python-audio-separator) 库调用。
+默认使用最新 `audio-separator` 0.44.1 公开模型表中带分数的最高 Vocals SDR 单模型，通过 [audio-separator](https://github.com/nomadkaraoke/python-audio-separator) 库调用。翻唱链路、VC、混音逻辑保持不变，只替换分离模型默认值。
 
 | 项目 | 详情 |
 |------|------|
-| 模型全称 | BS-RoFormer / Mel-Band RoFormer fallback |
-| 论文 | [Mel-Band RoFormer for Music Source Separation](https://arxiv.org/abs/2310.01809) (ByteDance) |
-| 默认检查点 | `model_bs_roformer_ep_317_sdr_12.9755.ckpt` |
-| 回退检查点 | `model_bs_roformer_ep_368_sdr_12.9628.ckpt` → `vocals_mel_band_roformer.ckpt` |
-| 公开对比 | audio-separator 本地模型列表中 `model_bs_roformer_ep_317_sdr_12.9755.ckpt` 的 Instrumental SDR 为 **16.5**，适合翻唱链路保持更干净伴奏 |
+| 模型全称 | MelBand Roformer Vocals by Kimberley Jensen |
+| 论文/架构 | Mel-Band RoFormer / RoFormer 系列 |
+| 检查点 | `vocals_mel_band_roformer.ckpt` |
+| 公开模型表 | audio-separator 0.44.1 model list / models-scores.json |
+| 公开标注 | Vocals SDR **12.6**（highest scored vocals model in audio-separator 0.44.1） |
 | 模型文件体积 | 由上游发布决定（会变化）；首次运行自动下载到 `assets/separator_models/` |
 | 调用方式 | 通过 [audio-separator](https://github.com/nomadkaraoke/python-audio-separator) 库封装 |
 | 首次使用 | 自动下载并缓存到 `assets/separator_models/` |
 
-核心思想：将频谱按 mel-scale 频段划分后独立建模，用 RoPE 增强时序建模，相比 BS-RoFormer 的线性频段划分更符合人耳感知特性。
+核心思想：在 RoFormer 系列时频建模上使用公开模型表中最高 Vocals SDR 的 scored 权重，优先保证进入 RVC 的主唱人声质量。
 
-#### MVSEP 公开 Multisong 指标摘录（2026-03-06）
+#### audio-separator 0.44.1 公开模型表摘录（2026-05-02）
 
-> 统一记法：`Vocals SDR / Instrum SDR`（dB）。
+> 统一记法：`Vocals SDR / Instrumental SDR`（dB）。只列带公开分数、且可通过 audio-separator 模型名直接调用的模型。
 
 | 模型 | Vocals SDR | Instrum SDR | 备注 |
 |------|------------|-------------|------|
 | `htdemucs` | 8.38 | 16.31 | Demucs 基线 |
 | `htdemucs_ft` | 9.40 | 16.86 | Demucs 微调版 |
 | `bs_roformer_viperx_1053` | 10.87 | 17.17 | BS-Roformer |
-| `mel_band_roformer_vocals_kimberleyjensen` | 11.01 | 17.32 | 稳定回退 |
-| `bs_roformer_ep_368_sdr_12.9628` | 11.89 | 17.84 | BS-RoFormer 强候选 |
+| `vocals_mel_band_roformer` | 12.6 | other | 本仓库当前默认，audio-separator 0.44.1 scored vocals 第一 |
+| `melband_roformer_big_beta4` | 12.5 | other | fallback |
+| `mel_band_roformer_kim_ft_unwa` | 12.4 | other | fallback |
+| `model_bs_roformer_ep_368_sdr_12.9628` | 12.1 | 16.3 | fallback，双 stem scored |
+| `model_bs_roformer_ep_317_sdr_12.9755` | 11.8 | 16.5 | fallback，双 stem scored |
 
-> 说明：不同数据集/协议不可直接横比；本仓库默认改为本地可运行的 BS-RoFormer 强模型，并保留 KimberleyJensen 作为兼容回退。
+> 说明：不同数据集/协议不可直接横比；这里采用最新 audio-separator 公开模型表中可直接调用、且带公开分数的最高 Vocals SDR 单模型。MVSEP 在线 ensemble 不一定等同于本地可稳定自动下载的 ckpt。
 
 ---
 
@@ -430,7 +435,7 @@ python run.py
 | 索引比率 | 越高越像训练音色 | 0.1-0.5 (10-50%) |
 | 滤波半径 | 中值滤波，减少气音抖动 | 3 |
 | 保护系数 | 防止撕裂伪影，越小保护越强 | 0.33 |
-| RMS 混合率 | 音量包络匹配程度；默认保留 RVC 歌唱主体 | 0.0 (0%) |
+| RMS 混合率 | 音量包络匹配程度 | 0.15 (15%) |
 
 ### 混音参数（翻唱）
 
@@ -472,7 +477,7 @@ python run.py
 | 模式 | 说明 | 特点 |
 |------|------|------|
 | 当前实现 | 使用项目自定义 VC 流程 | 支持完整的预处理和后处理 |
-| 官方实现 | 使用内置官方 RVC | 切换到官方UVR5 + 原始分离人声直通官方VC，并关闭 Karaoke / DeEcho / 源约束 |
+| 官方实现 | 使用内置官方 RVC | 跳过自定义预处理，支持唱歌修复 |
 
 ### 人声分离参数 (config.json)
 
@@ -482,7 +487,27 @@ python run.py
 | uvr5_model | UVR5 模型 | HP2_all_vocals |
 | uvr5_agg | UVR5 激进度 (1-10) | 6-8（高音问题可降低） |
 | demucs_model | Demucs 模型 | htdemucs |
-| karaoke_model | 卡拉OK分离模型 | sota_karaoke_ensemble（AUFR33 + GABOX v2 + Becruily，本地SOTA median ensemble） |
+| karaoke_model | 卡拉OK分离模型 | mel_band_roformer_karaoke_gabox.ckpt |
+
+### 分离质量评估
+
+真实量化指标需要参考 stem。项目提供 `tools/evaluate_karaoke_models.py` 用于对比本地 Karaoke 模型：
+
+```powershell
+python tools/evaluate_karaoke_models.py --vocals-path vocals.wav --output-dir outputs/karaoke_eval
+```
+
+无参考 stem 时，报告里的 `score` 只是诊断代理分数，用于检查重建误差、主唱/伴唱相关性、能量比例和长度覆盖率，不能代表最终听感。若有人工标注或数据集参考 stem，可加入参考主唱/伴唱，此时报告会输出论文中常用的 SI-SDR / SDR：
+
+```powershell
+python tools/evaluate_karaoke_models.py `
+  --vocals-path vocals.wav `
+  --reference-lead refs/lead.wav `
+  --reference-backing refs/backing.wav `
+  --output-dir outputs/karaoke_eval
+```
+
+实践建议：当前默认使用最新 audio-separator 公开 scored SOTA 分离模型；若某首歌出现主唱变薄或和声泄漏，可以在评估工具中加入参考 stem 使用 SI-SDR/SDR 排名，或手动把 `karaoke_model` 临时改为 `mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt` 做 A/B。
 
 ## 配置文件
 
@@ -494,13 +519,13 @@ python run.py
   "f0_method": "rmvpe",
   "index_rate": 0.1,
   "filter_radius": 3,
+  "protect": 0.33,
   "cover": {
     "separator": "roformer",
-    "karaoke_model": "sota_karaoke_ensemble",
+    "karaoke_model": "mel_band_roformer_karaoke_gabox.ckpt",
     "uvr5_model": "HP2_all_vocals",
     "uvr5_agg": 8,
     "rms_mix_rate": 0.0,
-    "protect": 0.33,
     "backing_mix": 0.0
   }
 }
@@ -574,7 +599,7 @@ AI-RVC/
 
 这通常是 F0 提取不稳定导致的，尝试：
 - 降低 UVR5 激进度（`uvr5_agg`: 8 → 6-7）
-- 若仍有撕裂，将保护系数从默认 `0.33` 逐步降到 `0.2`
+- 降低保护系数（`protect`: 0.33 → 0.2）
 - 增大滤波半径（`filter_radius`: 3 → 5）
 - 使用更干净的输入音频
 
@@ -603,12 +628,15 @@ python -c "import torch; print(torch.cuda.is_available())"
 
 项目路径中不能包含中文或特殊字符（如 `C:\新建文件夹\AI-RVC`），否则 PyTorch/torchaudio 的 C++ 库无法正确加载。请将项目放在纯英文路径下，例如 `C:\AI-RVC` 或 `D:\AI-RVC`。
 
-## 数据核验说明（2026-03-06）
+## 数据核验说明（2026-05-02）
 
-以下外部数据已在 2026-03-06 复核，README 中涉及的关键数字以这些来源为准：
+以下外部数据已在 2026-05-02 复核，README 中涉及的关键数字以这些来源为准：
 
 - MVSEP 算法页（Multisong 指标与模型分数）：https://mvsep.com/algorithms
-- MVSEP 算法详情（KimberleyJensen / BS-RoFormer 对照）：https://mvsep.com/algorithms/49
+- audio-separator 公开模型表：https://pypi.org/project/audio-separator/
+- MVSEP 算法详情（KimberleyJensen 模型）：https://mvsep.com/algorithms/49
+- SI-SDR 指标讨论（Le Roux et al., 2019）：https://arxiv.org/abs/1811.02508
+- BSS Eval / museval 源分离评估工具链：https://github.com/sigsep/sigsep-mus-eval
 - RVC 官方仓库与许可证：https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI
 - 第三方模型聚合计数（voice-models 列表页）：https://voice-models.com/models
 - RMVPE 论文：https://arxiv.org/abs/2306.15412

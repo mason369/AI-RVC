@@ -9,11 +9,11 @@ gradio==3.50.2
 jinja2<3.1.5            # Gradio 3.x 与 Jinja2 >=3.1.5 不兼容 (unhashable type: 'dict')
 
 # 音频处理
-librosa>=0.9.0
+librosa>=0.10.0
 soundfile>=0.12.0
 av>=10.0.0
 scipy>=1.10.0
-numpy>=1.23.0
+numpy<2,>=1.23.0     # Gradio 3.x / RVC stack compatibility
 praat-parselmouth>=0.4.3
 pyworld>=0.3.4
 torchcrepe>=0.0.20
@@ -32,7 +32,7 @@ mcp>=1.0.0
 
 # AI 翻唱功能
 demucs>=4.0.0          # 人声分离 (Demucs)
-audio-separator[gpu]   # 人声分离 (Mel-Band Roformer)
+audio-separator[gpu]>=0.44.1   # 人声分离 (Mel-Band Roformer / RoFormer SOTA); install.py restores numpy<2
 huggingface_hub>=0.19.0 # 模型下载
 pedalboard>=0.7.0      # 音频效果(混响)
 imageio-ffmpeg>=0.5.1  # 便携 ffmpeg 运行时

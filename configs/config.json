@@ -30,7 +30,7 @@
     "cover": {
         "separator": "roformer",
         "karaoke_separation": true,
-        "karaoke_model": "sota_karaoke_ensemble",
+        "karaoke_model": "mel_band_roformer_karaoke_gabox.ckpt",
         "karaoke_merge_backing_into_accompaniment": true,
         "uvr5_model": "HP2_all_vocals",
         "uvr5_agg": 10,

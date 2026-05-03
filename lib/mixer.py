@@ -179,29 +179,12 @@ def _apply_adaptive_vocal_ducking(
     duck_curve = activity * (0.50 + 0.50 * dense_backing) * (0.45 + 0.55 * duck_need)
     duck_curve = np.convolve(duck_curve, smooth_kernel, mode="same")
 
-    # Avoid abrupt accompaniment drops exactly when vocals enter.
-    activity_delta = np.diff(activity, prepend=activity[:1])
-    onset_curve = np.clip(activity_delta / 0.12, 0.0, 1.0).astype(np.float32)
-    onset_curve = np.convolve(onset_curve, smooth_kernel, mode="same")
-    duck_curve *= (1.0 - 0.38 * onset_curve)
-
-    attack_frames = max(2, int(0.18 * sr / hop_length))
-    release_frames = max(4, int(0.30 * sr / hop_length))
-    attack_step = 1.0 / float(attack_frames)
-    release_step = 1.0 / float(release_frames)
-    smoothed_curve = np.empty_like(duck_curve, dtype=np.float32)
-    smoothed_curve[0] = float(np.clip(duck_curve[0], 0.0, 1.0))
     for i in range(1, duck_curve.size):
-        target = float(np.clip(duck_curve[i], 0.0, 1.0))
-        previous = float(smoothed_curve[i - 1])
-        if target > previous:
-            smoothed_curve[i] = min(target, previous + attack_step)
-        else:
-            smoothed_curve[i] = max(target, previous - release_step)
+        duck_curve[i] = max(duck_curve[i], duck_curve[i - 1] * 0.96)
 
-    duck_curve = np.clip(smoothed_curve, 0.0, 1.0).astype(np.float32)
+    duck_curve = np.clip(duck_curve, 0.0, 1.0).astype(np.float32)
     sample_curve = _frame_curve_to_sample_curve(duck_curve, accompaniment.shape[-1], hop_length)
-    max_duck_db = 1.5 + 1.4 * duck_need
+    max_duck_db = 1.8 + 1.8 * duck_need
     gain_curve = np.power(10.0, -(max_duck_db * sample_curve) / 20.0).astype(np.float32)
 
     ducked = accompaniment.copy().astype(np.float32)
@@ -212,8 +195,7 @@ def _apply_adaptive_vocal_ducking(
             "Adaptive mix ducking: "
             f"balance={balance_ratio:.3f}, "
             f"avg_duck={max_duck_db * float(np.mean(sample_curve)):.2f}dB, "
-            f"max_duck={max_duck_db * float(np.max(sample_curve)):.2f}dB, "
-            f"onset_suppression={float(np.max(onset_curve)):.2f}"
+            f"max_duck={max_duck_db * float(np.max(sample_curve)):.2f}dB"
         )
 
     return ducked
@@ -291,8 +273,6 @@ def mix_vocals_and_accompaniment(
 
     vocals = adjust_audio_length(vocals, target_len)
     accompaniment = adjust_audio_length(accompaniment, target_len)
-    if log:
-        log.detail("默认混音保持伴奏电平连续，跳过自动人声侧链压低")
 
     if log:
         log.progress("混合音轨...")
