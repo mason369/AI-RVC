@@ -12,6 +12,7 @@ from typing import Optional, Tuple, Dict, List
 
 from lib.logger import log
 from lib.runtime_build import get_runtime_build_label
+from infer.separator import ROFORMER_DEFAULT_MODEL, KARAOKE_DEFAULT_MODEL
 
 # 项目根目录
 ROOT_DIR = Path(__file__).parent.parent
@@ -549,6 +550,7 @@ def process_cover(
         demucs_overlap = float(cover_cfg.get("demucs_overlap", 0.25))
         demucs_split = bool(cover_cfg.get("demucs_split", True))
         separator = cover_cfg.get("separator", "roformer")
+        roformer_model = cover_cfg.get("roformer_model", ROFORMER_DEFAULT_MODEL)
         uvr5_model = cover_cfg.get("uvr5_model")
         uvr5_agg = int(cover_cfg.get("uvr5_agg", 10))
         uvr5_format = cover_cfg.get("uvr5_format", "wav")
@@ -563,7 +565,7 @@ def process_cover(
         hubert_layer = cover_cfg.get("hubert_layer", config.get("hubert_layer", 12))
         karaoke_model = cover_cfg.get(
             "karaoke_model",
-            "mel_band_roformer_karaoke_gabox.ckpt",
+            KARAOKE_DEFAULT_MODEL,
         )
         default_vc_preprocess_mode = str(cover_cfg.get("vc_preprocess_mode", "auto"))
         default_source_constraint_mode = str(cover_cfg.get("source_constraint_mode", "auto"))
@@ -611,6 +613,7 @@ def process_cover(
             demucs_shifts=demucs_shifts,
             demucs_overlap=demucs_overlap,
             demucs_split=demucs_split,
+            roformer_model=roformer_model,
             separator=separator,
             uvr5_model=uvr5_model,
             uvr5_agg=uvr5_agg,
@@ -672,21 +675,33 @@ def process_cover(
 def check_mature_deecho_status() -> str:
     """Check mature DeEcho model availability."""
     from tools.download_models import MATURE_DEECHO_MODELS, check_model, get_preferred_mature_deecho_model
+    from infer.separator import ROFORMER_DEREVERB_DEFAULT_MODEL, check_roformer_available
 
     status_lines = []
+    roformer_ready = check_roformer_available()
+    icon = "✅" if roformer_ready else "❌"
+    status_lines.append(
+        f"{icon} {ROFORMER_DEREVERB_DEFAULT_MODEL}  ← 当前自动模式优先使用"
+    )
+    if roformer_ready:
+        status_lines.append("  RoFormer 模型由 audio-separator 首次运行时自动下载到 assets/separator_models")
+
     preferred = get_preferred_mature_deecho_model()
     for name in MATURE_DEECHO_MODELS:
         exists = check_model(name)
         icon = "✅" if exists else "❌"
-        suffix = "  ← 当前自动模式优先使用" if preferred == name else ""
+        suffix = "  ← RoFormer 不可用时回退使用" if preferred == name else ""
         status_lines.append(f"{icon} {name}{suffix}")
 
-    if preferred:
+    if roformer_ready:
+        status_lines.append("")
+        status_lines.append(f"当前优先学习型 DeEcho: RoFormer {ROFORMER_DEREVERB_DEFAULT_MODEL}")
+    elif preferred:
         status_lines.append("")
         status_lines.append(f"当前可用学习型 DeEcho: {preferred}")
     else:
         status_lines.append("")
-        status_lines.append("当前未检测到学习型 DeEcho 模型；翻唱自动模式将回退为主唱直通 RVC")
+        status_lines.append("当前未检测到学习型 DeEcho 模型；翻唱自动模式将回退到 advanced dereverb")
 
     return "\n".join(status_lines)
 
@@ -710,6 +725,7 @@ def get_cover_vc_route_status(
 ) -> str:
     """Return the active VC route shown in the cover UI."""
     from tools.download_models import get_preferred_mature_deecho_model
+    from infer.separator import ROFORMER_DEREVERB_DEFAULT_MODEL, check_roformer_available
 
     mode = str(vc_preprocess_mode or config.get("cover", {}).get("vc_preprocess_mode", "auto")).strip().lower()
     pipeline_mode = str(vc_pipeline_mode or config.get("cover", {}).get("vc_pipeline_mode", "current")).strip().lower()
@@ -717,7 +733,11 @@ def get_cover_vc_route_status(
     pipeline_label_to_value, _ = get_vc_pipeline_mode_option_maps()
     mode = vc_label_to_value.get(mode, mode)
     pipeline_mode = pipeline_label_to_value.get(pipeline_mode, pipeline_mode)
-    preferred = get_preferred_mature_deecho_model()
+    preferred = (
+        f"RoFormer {ROFORMER_DEREVERB_DEFAULT_MODEL}"
+        if check_roformer_available()
+        else get_preferred_mature_deecho_model()
+    )
     newline = chr(10)
     build_label = get_runtime_build_label()
 
@@ -748,7 +768,7 @@ def get_cover_vc_route_status(
             return newline.join([
                 "✅ 当前固定优先使用学习型 DeEcho / DeReverb",
                 f"当前命中模型: {preferred}",
-                "流程: 主唱分离 → UVR DeEcho/DeReverb → RVC → 混音",
+                "流程: 主唱分离 → 学习型 DeEcho/DeReverb → RVC → 混音",
                 build_label,
             ])
         return newline.join([
@@ -762,7 +782,7 @@ def get_cover_vc_route_status(
         return newline.join([
             "✅ 自动模式当前会优先使用学习型 DeEcho / DeReverb",
             f"当前命中模型: {preferred}",
-            "流程: 主唱分离 → UVR DeEcho/DeReverb → RVC → 混音",
+            "流程: 主唱分离 → 学习型 DeEcho/DeReverb → RVC → 混音",
             build_label,
         ])
     return newline.join([

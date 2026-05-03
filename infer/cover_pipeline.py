@@ -16,8 +16,10 @@ from typing import Optional, Callable, Dict, Tuple, List
 from infer.separator import (
     VocalSeparator,
     RoformerSeparator,
+    RoformerDereverbSeparator,
     KaraokeSeparator,
     ROFORMER_DEFAULT_MODEL,
+    ROFORMER_DEREVERB_DEFAULT_MODEL,
     KARAOKE_DEFAULT_MODEL,
     check_demucs_available,
     check_roformer_available,
@@ -107,6 +109,49 @@ class CoverPipeline:
             if model_path.exists():
                 return model_name
         return None
+
+    @staticmethod
+    def _get_preferred_deecho_model_label() -> Optional[str]:
+        """Return the highest-quality learned deecho route available to this install."""
+        if check_roformer_available():
+            return f"RoFormer:{ROFORMER_DEREVERB_DEFAULT_MODEL}"
+        uvr_model = CoverPipeline._get_available_uvr_deecho_model()
+        if uvr_model:
+            return f"UVR:{uvr_model}"
+        return None
+
+    def _apply_roformer_deecho_for_vc(self, vocals_path: str, session_dir: Path) -> Optional[str]:
+        """Use the public RoFormer dereverb/deecho model before legacy UVR DeEcho."""
+        if not check_roformer_available():
+            return None
+
+        deecho_dir = session_dir / "vc_roformer_deecho"
+        separator = RoformerDereverbSeparator(device=self.device)
+
+        try:
+            log.model(
+                "VC预处理使用 RoFormer De-Reverb SOTA 模型: "
+                f"{ROFORMER_DEREVERB_DEFAULT_MODEL}"
+            )
+            dry_path = separator.separate_dry(vocals_path, str(deecho_dir))
+            scored = self._score_uvr_deecho_candidate(vocals_path, Path(dry_path))
+            if scored is not None:
+                _, metrics = scored
+                self._uvr_deecho_metrics = metrics
+                log.detail(
+                    "RoFormer De-Reverb candidate: "
+                    f"{Path(dry_path).name}, score={metrics['score']:.2f}, "
+                    f"sep={metrics['separation_db']:.2f}dB, corr={metrics['corr']:.3f}, "
+                    f"ratio={metrics['active_ratio']:.3f}, "
+                    f"reduction={metrics['reduction_ratio']:.3f}"
+                )
+            log.audio(f"RoFormer De-Reverb selected dry vocal output: {Path(dry_path).name}")
+            return dry_path
+        except Exception as exc:
+            log.warning(f"RoFormer De-Reverb 预处理失败，回退 UVR DeEcho: {exc}")
+            return None
+        finally:
+            separator.unload_model()
 
     def _apply_uvr_deecho_for_vc(self, vocals_path: str, session_dir: Path) -> Optional[str]:
         """如果本地已有 UVR DeEcho 模型，则优先用学习型方法清理回声。"""
@@ -625,7 +670,8 @@ class CoverPipeline:
         model_name: str = "htdemucs",
         shifts: int = 2,
         overlap: float = 0.25,
-        split: bool = True
+        split: bool = True,
+        roformer_model: str = ROFORMER_DEFAULT_MODEL,
     ):
         """初始化人声分离器 (Demucs 或 Roformer)"""
         # Roformer 模式
@@ -637,12 +683,16 @@ class CoverPipeline:
             if (
                 self.separator is not None
                 and isinstance(self.separator, RoformerSeparator)
+                and getattr(self.separator, "model_filename", None) == roformer_model
             ):
                 return
             if self.separator is not None:
                 self.separator.unload_model()
                 self.separator = None
-            self.separator = RoformerSeparator(device=self.device)
+            self.separator = RoformerSeparator(
+                model_filename=roformer_model,
+                device=self.device,
+            )
             return
 
         # Demucs 模式
@@ -686,7 +736,7 @@ class CoverPipeline:
         if (
             self.karaoke_separator is not None
             and isinstance(self.karaoke_separator, KaraokeSeparator)
-            and model_name in getattr(self.karaoke_separator, "model_candidates", [])
+            and getattr(self.karaoke_separator, "model_candidates", [None])[0] == model_name
         ):
             return
 
@@ -2669,9 +2719,9 @@ class CoverPipeline:
         Prepare vocals for VC using a mature-project-friendly routing strategy.
 
         Modes:
-        - auto: prefer learned UVR DeEcho/DeReverb, otherwise advanced dereverb -> RVC
+        - auto: prefer public RoFormer De-Reverb, then UVR DeEcho, otherwise advanced dereverb -> RVC
         - direct: pass separated lead directly to RVC
-        - uvr_deecho: require learned UVR DeEcho if available, else fallback to advanced dereverb
+        - uvr_deecho: require learned DeEcho/DeReverb if available, else fallback to advanced dereverb
         - advanced_dereverb: use binary residual masking to separate dry/wet, convert dry only
         - legacy: old hand-crafted dereverb + tail gating chain
         """
@@ -2718,17 +2768,21 @@ class CoverPipeline:
             mono_resolved = False
 
             if preprocess_mode in {"auto", "uvr_deecho"}:
-                preprocess_input = self._apply_uvr_deecho_for_vc(vocals_path, session_dir) or vocals_path
+                preprocess_input = (
+                    self._apply_roformer_deecho_for_vc(vocals_path, session_dir)
+                    or self._apply_uvr_deecho_for_vc(vocals_path, session_dir)
+                    or vocals_path
+                )
 
             if preprocess_input == vocals_path:
                 if preprocess_mode in {"auto", "uvr_deecho"}:
-                    # auto / uvr_deecho 模式在 UVR 模型缺失时都回退到 advanced_dereverb
+                    # auto / uvr_deecho 模式在学习型模型缺失时都回退到 advanced_dereverb
                     audio, sr = librosa.load(vocals_path, sr=None, mono=False)
                     audio = self._ensure_2d(audio).astype(np.float32)
                     mono = self._select_mono_for_vc(audio, sr)
 
                     fallback_name = "auto" if preprocess_mode == "auto" else "uvr_deecho"
-                    log.detail(f"VC preprocess ({fallback_name}): UVR DeEcho not available, using advanced dereverb")
+                    log.detail(f"VC preprocess ({fallback_name}): learned DeEcho not available, using advanced dereverb")
                     dry_signal, reverb_tail = advanced_dereverb(mono, sr)
 
                     # 保存混响用于后处理
@@ -2746,7 +2800,7 @@ class CoverPipeline:
                     log.detail("VC preprocess: direct lead -> mono select")
             else:
                 self._last_vc_preprocess_mode = "uvr_deecho"
-                log.detail("VC preprocess: UVR learned DeEcho/DeReverb -> mono select")
+                log.detail("VC preprocess: learned DeEcho/DeReverb -> mono select")
 
             # 最终 mono 确定（仅在 mono 未被上面解决时执行）
             if not mono_resolved:
@@ -3447,6 +3501,7 @@ class CoverPipeline:
         demucs_shifts: int = 2,
         demucs_overlap: float = 0.25,
         demucs_split: bool = True,
+        roformer_model: str = ROFORMER_DEFAULT_MODEL,
         separator: str = "uvr5",
         uvr5_model: Optional[str] = None,
         uvr5_agg: int = 10,
@@ -3491,6 +3546,7 @@ class CoverPipeline:
             demucs_shifts: Demucs shifts 参数
             demucs_overlap: Demucs overlap 参数
             demucs_split: Demucs split 参数
+            roformer_model: RoFormer / audio-separator 模型或 ensemble preset
             hubert_layer: HuBERT 输出层
             silence_gate: 是否启用静音门限
             silence_threshold_db: 静音阈值 (dB, 相对峰值)
@@ -3564,7 +3620,7 @@ class CoverPipeline:
             log.config(f"UVR5模型: {uvr5_model or '自动选择'}")
             log.config(f"UVR5激进度: {uvr5_agg}")
         elif effective_separator == "roformer":
-            log.config(f"Roformer模型: {ROFORMER_DEFAULT_MODEL}")
+            log.config(f"Roformer模型: {roformer_model}")
         else:
             log.config(f"Demucs模型: {demucs_model}")
             log.config(f"Demucs shifts: {demucs_shifts}")
@@ -3617,13 +3673,16 @@ class CoverPipeline:
                 )
                 log.success("UVR5分离完成")
             elif effective_separator == "roformer":
-                log.model("使用 Mel-Band Roformer 进行人声分离")
-                self._init_separator("roformer")
+                log.model("使用公开 SOTA RoFormer ensemble 进行人声分离")
+                self._init_separator(
+                    "roformer",
+                    roformer_model=roformer_model,
+                )
                 vocals_path, accompaniment_path = self.separator.separate(
                     input_audio,
                     str(session_dir)
                 )
-                log.success("Mel-Band Roformer 分离完成")
+                log.success("RoFormer ensemble 分离完成")
             else:
                 log.model(f"使用Demucs进行人声分离: {demucs_model}")
                 self._init_separator(
@@ -3661,13 +3720,13 @@ class CoverPipeline:
 
             normalized_vc_preprocess_mode = str(vc_preprocess_mode or "auto").strip().lower()
             normalized_source_constraint_mode = str(source_constraint_mode or "auto").strip().lower()
-            available_uvr_deecho_model = self._get_available_uvr_deecho_model()
+            available_deecho_model = self._get_preferred_deecho_model_label()
             log.config(f"VC预处理模式: {normalized_vc_preprocess_mode}")
             if normalized_vc_preprocess_mode in {"auto", "uvr_deecho"}:
-                if available_uvr_deecho_model:
-                    log.config(f"Mature DeEcho模型: {available_uvr_deecho_model}")
+                if available_deecho_model:
+                    log.config(f"Mature DeEcho模型: {available_deecho_model}")
                 else:
-                    log.config("Mature DeEcho模型: 未找到，将回退到主唱直通")
+                    log.config("Mature DeEcho模型: 未找到，将回退到 advanced dereverb")
             log.config(f"源约束模式: {normalized_source_constraint_mode}")
 
             # 官方模式也必须经过去混响预处理，确保输入RVC的是纯净干声

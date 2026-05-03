@@ -18,31 +18,50 @@ class ModelDefaultTests(unittest.TestCase):
 
         self.assertEqual(
             separator.ROFORMER_DEFAULT_MODEL,
-            "vocals_mel_band_roformer.ckpt",
+            "ensemble:vocal_rvc",
+        )
+        self.assertEqual(
+            separator.ROFORMER_SOTA_MODELS,
+            [
+                "melband_roformer_big_beta6x.ckpt",
+                "mel_band_roformer_vocals_fv4_gabox.ckpt",
+            ],
         )
         self.assertIn(
-            "melband_roformer_big_beta4.ckpt",
+            "vocals_mel_band_roformer.ckpt",
             separator.ROFORMER_FALLBACK_MODELS,
         )
 
-    def test_karaoke_default_uses_public_sota_gabox_model(self):
+    def test_karaoke_default_uses_public_sota_ensemble(self):
         from infer import separator
 
         self.assertEqual(
             separator.KARAOKE_DEFAULT_MODEL,
-            "mel_band_roformer_karaoke_gabox.ckpt",
+            "ensemble:karaoke",
         )
         self.assertEqual(
             separator.KARAOKE_SOTA_MODEL,
-            "mel_band_roformer_karaoke_gabox.ckpt",
+            "ensemble:karaoke",
+        )
+        self.assertEqual(
+            separator.KARAOKE_SOTA_MODELS,
+            [
+                "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
+                "mel_band_roformer_karaoke_gabox_v2.ckpt",
+                "mel_band_roformer_karaoke_becruily.ckpt",
+            ],
         )
         self.assertEqual(
             separator.KARAOKE_FALLBACK_MODELS[:1],
-            ["mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt"],
+            ["mel_band_roformer_karaoke_gabox.ckpt"],
         )
-        self.assertNotEqual(
-            separator.KARAOKE_DEFAULT_MODEL,
-            "sota_karaoke_ensemble",
+
+    def test_deecho_default_uses_public_roformer_dereverb_model(self):
+        from infer import separator
+
+        self.assertEqual(
+            separator.ROFORMER_DEREVERB_DEFAULT_MODEL,
+            "dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt",
         )
 
 
