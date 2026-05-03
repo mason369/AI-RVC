@@ -29,7 +29,7 @@ class ModelDefaultTests(unittest.TestCase):
         )
         self.assertIn(
             "vocals_mel_band_roformer.ckpt",
-            separator.ROFORMER_FALLBACK_MODELS,
+            separator.ROFORMER_LEGACY_SINGLE_MODEL,
         )
 
     def test_karaoke_default_uses_public_sota_ensemble(self):
@@ -52,8 +52,8 @@ class ModelDefaultTests(unittest.TestCase):
             ],
         )
         self.assertEqual(
-            separator.KARAOKE_FALLBACK_MODELS[:1],
-            ["mel_band_roformer_karaoke_gabox.ckpt"],
+            separator.KARAOKE_LEGACY_SINGLE_MODEL,
+            "mel_band_roformer_karaoke_gabox.ckpt",
         )
 
     def test_deecho_default_uses_public_roformer_dereverb_model(self):
@@ -63,6 +63,13 @@ class ModelDefaultTests(unittest.TestCase):
             separator.ROFORMER_DEREVERB_DEFAULT_MODEL,
             "dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt",
         )
+
+    def test_strict_sota_defaults_do_not_expose_model_fallback_lists(self):
+        from infer import separator
+
+        self.assertFalse(hasattr(separator, "ROFORMER_FALLBACK_MODELS"))
+        self.assertFalse(hasattr(separator, "KARAOKE_FALLBACK_MODELS"))
+        self.assertFalse(hasattr(separator, "ROFORMER_DEREVERB_FALLBACK_MODELS"))
 
 
 class KaraokeCandidateScoringTests(unittest.TestCase):

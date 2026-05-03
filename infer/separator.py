@@ -49,15 +49,6 @@ ROFORMER_SOTA_MODELS = [
     "melband_roformer_big_beta6x.ckpt",
     "mel_band_roformer_vocals_fv4_gabox.ckpt",
 ]
-ROFORMER_FALLBACK_MODELS = [
-    ROFORMER_LEGACY_SINGLE_MODEL,
-    "melband_roformer_big_beta4.ckpt",
-    "mel_band_roformer_kim_ft_unwa.ckpt",
-    "melband_roformer_big_beta5e.ckpt",
-    "MelBandRoformerBigSYHFTV1.ckpt",
-    "model_bs_roformer_ep_368_sdr_12.9628.ckpt",
-    "model_bs_roformer_ep_317_sdr_12.9755.ckpt",
-]
 
 KARAOKE_LEGACY_SINGLE_MODEL = "mel_band_roformer_karaoke_gabox.ckpt"
 KARAOKE_SOTA_PRESET = "karaoke"
@@ -68,19 +59,12 @@ KARAOKE_SOTA_MODELS = [
     "mel_band_roformer_karaoke_gabox_v2.ckpt",
     "mel_band_roformer_karaoke_becruily.ckpt",
 ]
-KARAOKE_FALLBACK_MODELS = [
-    KARAOKE_LEGACY_SINGLE_MODEL,
-    "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
-]
 KARAOKE_EXPERIMENTAL_MODELS = [
     "mel_band_roformer_karaoke_gabox_v2.ckpt",
     "mel_band_roformer_karaoke_becruily.ckpt",
 ]
 
 ROFORMER_DEREVERB_DEFAULT_MODEL = "dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt"
-ROFORMER_DEREVERB_FALLBACK_MODELS = [
-    "dereverb-echo_mel_band_roformer_sdr_13.4843_v2.ckpt",
-]
 
 
 def _model_spec_key(model_spec: ModelSpec) -> tuple[str, ...]:
@@ -126,29 +110,6 @@ def _load_audio_separator_model(
     else:
         separator.load_model(list(model_spec) if isinstance(model_spec, tuple) else model_spec)
     return separator
-
-
-def _unique_model_candidates(primary: ModelSpec, fallbacks: list[ModelSpec]) -> list[ModelSpec]:
-    models = [primary]
-    seen = {_model_spec_key(primary)}
-    for fallback in fallbacks:
-        key = _model_spec_key(fallback)
-        if key not in seen:
-            models.append(fallback)
-            seen.add(key)
-    return models
-
-
-def _without_model_candidate(
-    candidates: list[ModelSpec],
-    failed_model: ModelSpec,
-) -> list[ModelSpec]:
-    failed_key = _model_spec_key(failed_model)
-    return [
-        candidate
-        for candidate in candidates
-        if _model_spec_key(candidate) != failed_key
-    ]
 
 
 def _resolve_output_files(output_files, output_dir: Path) -> list[str]:
@@ -198,16 +159,13 @@ class RoformerSeparator:
                 "请安装 audio-separator: pip install audio-separator[gpu]"
         )
         self.model_filename = model_filename
-        self.model_candidates = _unique_model_candidates(
-            model_filename,
-            ROFORMER_FALLBACK_MODELS,
-        )
+        self.model_candidates = [model_filename]
         self.device = str(get_device(device))
         self.separator = None
         self.active_model = None
 
     def load_model(self, output_dir: str = ""):
-        """加载 Roformer 模型"""
+        """加载指定 RoFormer 模型；严格 SOTA 模式下不自动降级。"""
         model_dir = str(
             Path(__file__).parent.parent / "assets" / "separator_models"
         )
@@ -227,34 +185,23 @@ class RoformerSeparator:
             self.separator = None
             gc.collect()
 
-        last_error = None
-        for model_name in self.model_candidates:
-            try:
-                log.info(
-                    "正在加载公开 SOTA RoFormer 分离模型: "
-                    f"{_model_spec_label(model_name)}"
-                )
-                separator = _load_audio_separator_model(
-                    model_spec=model_name,
-                    output_dir=target_dir,
-                    model_dir=model_dir,
-                )
-                self.separator = separator
-                self._init_output_dir = target_dir
-                self.active_model = model_name
-                log.info(
-                    "RoFormer 分离模型已加载: "
-                    f"{_model_spec_label(model_name)}"
-                )
-                return
-            except Exception as exc:
-                last_error = exc
-                log.warning(
-                    "Roformer 模型加载失败: "
-                    f"{_model_spec_label(model_name)} ({exc})"
-                )
-
-        raise RuntimeError(f"无法加载 Roformer 模型: {last_error}")
+        model_name = self.model_filename
+        log.info(
+            "正在加载公开 SOTA RoFormer 分离模型: "
+            f"{_model_spec_label(model_name)}"
+        )
+        separator = _load_audio_separator_model(
+            model_spec=model_name,
+            output_dir=target_dir,
+            model_dir=model_dir,
+        )
+        self.separator = separator
+        self._init_output_dir = target_dir
+        self.active_model = model_name
+        log.info(
+            "RoFormer 分离模型已加载: "
+            f"{_model_spec_label(model_name)}"
+        )
 
     def separate(
         self,
@@ -277,35 +224,10 @@ class RoformerSeparator:
         if progress_callback:
             progress_callback("正在使用 RoFormer 分离人声...", 0.3)
 
-        last_error = None
-        while self.model_candidates:
-            self.load_model(output_dir=str(output_path))
-            # audio-separator 需要 output_dir 在实例上设置
-            self.separator.output_dir = str(output_path)
-
-            try:
-                output_files = self.separator.separate(audio_path)
-                break
-            except Exception as exc:
-                last_error = exc
-                failed_model = self.active_model or self.model_candidates[0]
-                log.warning(
-                    "RoFormer 分离执行失败，尝试回退模型: "
-                    f"{_model_spec_label(failed_model)} ({exc})"
-                )
-                self.model_candidates = _without_model_candidate(
-                    self.model_candidates,
-                    failed_model,
-                )
-                if self.separator is not None:
-                    del self.separator
-                    self.separator = None
-                self.active_model = None
-                self._init_output_dir = None
-                gc.collect()
-                empty_device_cache()
-        else:
-            raise RuntimeError(f"RoFormer 分离执行失败: {last_error}")
+        self.load_model(output_dir=str(output_path))
+        # audio-separator 需要 output_dir 在实例上设置
+        self.separator.output_dir = str(output_path)
+        output_files = self.separator.separate(audio_path)
 
         # audio-separator 返回的可能是纯文件名，需要拼上 output_dir
         resolved_files = []
@@ -315,7 +237,7 @@ class RoformerSeparator:
                 p = output_path / p
             resolved_files.append(str(p))
 
-        # Fallback: if resolved files don't exist, search the output dir
+        # Recovery: if resolved files don't exist, search the output dir
         # for freshly created files. This handles cases where audio-separator
         # writes to a slightly different path (e.g. after output_dir update
         # on a reused Separator instance).
@@ -408,14 +330,11 @@ class KaraokeSeparator:
         self.device = str(get_device(device))
         self.separator = None
         self.active_model = None
-
-        self.model_candidates = _unique_model_candidates(
-            model_filename,
-            KARAOKE_FALLBACK_MODELS,
-        )
+        self.model_filename = model_filename
+        self.model_candidates = [model_filename]
 
     def load_model(self, output_dir: str = ""):
-        """加载 Karaoke 模型（主模型失败时自动回退）"""
+        """加载指定 Karaoke 模型；严格 SOTA 模式下不自动降级。"""
         model_dir = str(Path(__file__).parent.parent / "assets" / "separator_models")
         Path(model_dir).mkdir(parents=True, exist_ok=True)
 
@@ -432,34 +351,23 @@ class KaraokeSeparator:
             self.active_model = None
             gc.collect()
 
-        last_error = None
-        for model_name in self.model_candidates:
-            try:
-                log.info(
-                    "正在加载公开 SOTA Karaoke 模型: "
-                    f"{_model_spec_label(model_name)}"
-                )
-                separator = _load_audio_separator_model(
-                    model_spec=model_name,
-                    output_dir=target_dir,
-                    model_dir=model_dir,
-                )
-                self.separator = separator
-                self._init_output_dir = target_dir
-                self.active_model = model_name
-                log.info(
-                    "Karaoke 模型已加载: "
-                    f"{_model_spec_label(model_name)}"
-                )
-                return
-            except Exception as exc:
-                last_error = exc
-                log.warning(
-                    "Karaoke 模型加载失败: "
-                    f"{_model_spec_label(model_name)} ({exc})"
-                )
-
-        raise RuntimeError(f"无法加载 Karaoke 模型: {last_error}")
+        model_name = self.model_filename
+        log.info(
+            "正在加载公开 SOTA Karaoke 模型: "
+            f"{_model_spec_label(model_name)}"
+        )
+        separator = _load_audio_separator_model(
+            model_spec=model_name,
+            output_dir=target_dir,
+            model_dir=model_dir,
+        )
+        self.separator = separator
+        self._init_output_dir = target_dir
+        self.active_model = model_name
+        log.info(
+            "Karaoke 模型已加载: "
+            f"{_model_spec_label(model_name)}"
+        )
 
     @staticmethod
     def _classify_stem(file_name: str) -> Optional[str]:
@@ -505,33 +413,9 @@ class KaraokeSeparator:
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
-        last_error = None
-        while self.model_candidates:
-            self.load_model(output_dir=str(output_path))
-            self.separator.output_dir = str(output_path)
-            try:
-                output_files = self.separator.separate(audio_path)
-                break
-            except Exception as exc:
-                last_error = exc
-                failed_model = self.active_model or self.model_candidates[0]
-                log.warning(
-                    "Karaoke 分离执行失败，尝试回退模型: "
-                    f"{_model_spec_label(failed_model)} ({exc})"
-                )
-                self.model_candidates = _without_model_candidate(
-                    self.model_candidates,
-                    failed_model,
-                )
-                if self.separator is not None:
-                    del self.separator
-                    self.separator = None
-                self.active_model = None
-                self._init_output_dir = None
-                gc.collect()
-                empty_device_cache()
-        else:
-            raise RuntimeError(f"Karaoke 分离执行失败: {last_error}")
+        self.load_model(output_dir=str(output_path))
+        self.separator.output_dir = str(output_path)
+        output_files = self.separator.separate(audio_path)
 
         resolved_files = _resolve_output_files(output_files, output_path)
         log.detail(
@@ -613,10 +497,8 @@ class RoformerDereverbSeparator:
         self.device = str(get_device(device))
         self.separator = None
         self.active_model = None
-        self.model_candidates = _unique_model_candidates(
-            model_filename,
-            ROFORMER_DEREVERB_FALLBACK_MODELS,
-        )
+        self.model_filename = model_filename
+        self.model_candidates = [model_filename]
 
     def load_model(self, output_dir: str = ""):
         model_dir = str(Path(__file__).parent.parent / "assets" / "separator_models")
@@ -634,25 +516,17 @@ class RoformerDereverbSeparator:
             self.active_model = None
             gc.collect()
 
-        last_error = None
-        for model_name in self.model_candidates:
-            try:
-                log.info(f"正在加载 RoFormer De-Reverb 模型: {model_name}")
-                separator = _load_audio_separator_model(
-                    model_spec=model_name,
-                    output_dir=target_dir,
-                    model_dir=model_dir,
-                )
-                self.separator = separator
-                self._init_output_dir = target_dir
-                self.active_model = model_name
-                log.info(f"RoFormer De-Reverb 模型已加载: {model_name}")
-                return
-            except Exception as exc:
-                last_error = exc
-                log.warning(f"RoFormer De-Reverb 模型加载失败: {model_name} ({exc})")
-
-        raise RuntimeError(f"无法加载 RoFormer De-Reverb 模型: {last_error}")
+        model_name = self.model_filename
+        log.info(f"正在加载 RoFormer De-Reverb 模型: {model_name}")
+        separator = _load_audio_separator_model(
+            model_spec=model_name,
+            output_dir=target_dir,
+            model_dir=model_dir,
+        )
+        self.separator = separator
+        self._init_output_dir = target_dir
+        self.active_model = model_name
+        log.info(f"RoFormer De-Reverb 模型已加载: {model_name}")
 
     @staticmethod
     def _classify_stem(file_name: str) -> Optional[str]:
@@ -696,33 +570,9 @@ class RoformerDereverbSeparator:
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
-        last_error = None
-        while self.model_candidates:
-            self.load_model(output_dir=str(output_path))
-            self.separator.output_dir = str(output_path)
-            try:
-                output_files = self.separator.separate(audio_path)
-                break
-            except Exception as exc:
-                last_error = exc
-                failed_model = self.active_model or self.model_candidates[0]
-                log.warning(
-                    "RoFormer De-Reverb 执行失败，尝试回退模型: "
-                    f"{_model_spec_label(failed_model)} ({exc})"
-                )
-                self.model_candidates = _without_model_candidate(
-                    self.model_candidates,
-                    failed_model,
-                )
-                if self.separator is not None:
-                    del self.separator
-                    self.separator = None
-                self.active_model = None
-                self._init_output_dir = None
-                gc.collect()
-                empty_device_cache()
-        else:
-            raise RuntimeError(f"RoFormer De-Reverb 执行失败: {last_error}")
+        self.load_model(output_dir=str(output_path))
+        self.separator.output_dir = str(output_path)
+        output_files = self.separator.separate(audio_path)
 
         resolved_files = _resolve_output_files(output_files, output_path)
         log.detail(

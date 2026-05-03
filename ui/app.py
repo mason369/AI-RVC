@@ -690,18 +690,15 @@ def check_mature_deecho_status() -> str:
     for name in MATURE_DEECHO_MODELS:
         exists = check_model(name)
         icon = "✅" if exists else "❌"
-        suffix = "  ← RoFormer 不可用时回退使用" if preferred == name else ""
+        suffix = "  ← 仅保留状态显示，严格SOTA自动模式不使用"
         status_lines.append(f"{icon} {name}{suffix}")
 
     if roformer_ready:
         status_lines.append("")
         status_lines.append(f"当前优先学习型 DeEcho: RoFormer {ROFORMER_DEREVERB_DEFAULT_MODEL}")
-    elif preferred:
-        status_lines.append("")
-        status_lines.append(f"当前可用学习型 DeEcho: {preferred}")
     else:
         status_lines.append("")
-        status_lines.append("当前未检测到学习型 DeEcho 模型；翻唱自动模式将回退到 advanced dereverb")
+        status_lines.append("当前缺少严格SOTA DeEcho运行环境；翻唱自动模式将停止处理而不是降级")
 
     return "\n".join(status_lines)
 
@@ -773,8 +770,8 @@ def get_cover_vc_route_status(
             ])
         return newline.join([
             "⚠️ 当前设为官方 DeEcho 优先，但本地缺少模型",
-            "当前将回退流程: 主唱分离 → 算法去混响 → RVC → 混音",
-            "建议: 下载成熟 DeEcho 模型可获得更好效果",
+            "严格SOTA模式会停止处理，不会降级到 UVR 或算法去混响",
+            "建议: 修复 audio-separator / RoFormer De-Reverb 运行环境",
             build_label,
         ])
 
@@ -786,9 +783,9 @@ def get_cover_vc_route_status(
             build_label,
         ])
     return newline.join([
-        "ℹ️ 自动模式当前使用算法去混响",
-        "原因: 本地未检测到成熟 DeEcho / DeReverb 模型，已回退到 advanced dereverb",
-        "流程: 主唱分离 → 算法去混响 → RVC → 混音",
+        "⚠️ 自动模式缺少严格SOTA DeEcho运行环境",
+        "原因: 未检测到 RoFormer De-Reverb 可运行条件",
+        "流程会停止处理，不会降级到 UVR 或算法去混响",
         build_label,
     ])
 

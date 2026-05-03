@@ -96,34 +96,18 @@ class CoverPipeline:
         return session_dir
 
     @staticmethod
-    def _get_available_uvr_deecho_model() -> Optional[str]:
-        """优先使用学习型 DeEcho / DeReverb，而不是手工频谱去回声。"""
-        root = Path(__file__).parent.parent / "assets" / "uvr5_weights"
-        candidates = [
-            ("VR-DeEchoDeReverb", root / "VR-DeEchoDeReverb.pth"),
-            ("onnx_dereverb_By_FoxJoy", root / "onnx_dereverb_By_FoxJoy" / "vocals.onnx"),
-            ("VR-DeEchoNormal", root / "VR-DeEchoNormal.pth"),
-            ("VR-DeEchoAggressive", root / "VR-DeEchoAggressive.pth"),
-        ]
-        for model_name, model_path in candidates:
-            if model_path.exists():
-                return model_name
-        return None
-
-    @staticmethod
     def _get_preferred_deecho_model_label() -> Optional[str]:
         """Return the highest-quality learned deecho route available to this install."""
         if check_roformer_available():
             return f"RoFormer:{ROFORMER_DEREVERB_DEFAULT_MODEL}"
-        uvr_model = CoverPipeline._get_available_uvr_deecho_model()
-        if uvr_model:
-            return f"UVR:{uvr_model}"
         return None
 
-    def _apply_roformer_deecho_for_vc(self, vocals_path: str, session_dir: Path) -> Optional[str]:
-        """Use the public RoFormer dereverb/deecho model before legacy UVR DeEcho."""
+    def _apply_roformer_deecho_for_vc(self, vocals_path: str, session_dir: Path) -> str:
+        """Use the public RoFormer dereverb/deecho model. Strict SOTA mode does not degrade."""
         if not check_roformer_available():
-            return None
+            raise RuntimeError(
+                "严格SOTA模式需要 audio-separator[gpu] 才能运行 RoFormer De-Reverb"
+            )
 
         deecho_dir = session_dir / "vc_roformer_deecho"
         separator = RoformerDereverbSeparator(device=self.device)
@@ -134,10 +118,10 @@ class CoverPipeline:
                 f"{ROFORMER_DEREVERB_DEFAULT_MODEL}"
             )
             dry_path = separator.separate_dry(vocals_path, str(deecho_dir))
-            scored = self._score_uvr_deecho_candidate(vocals_path, Path(dry_path))
+            scored = self._score_deecho_candidate(vocals_path, Path(dry_path))
             if scored is not None:
                 _, metrics = scored
-                self._uvr_deecho_metrics = metrics
+                self._deecho_metrics = metrics
                 log.detail(
                     "RoFormer De-Reverb candidate: "
                     f"{Path(dry_path).name}, score={metrics['score']:.2f}, "
@@ -147,54 +131,12 @@ class CoverPipeline:
                 )
             log.audio(f"RoFormer De-Reverb selected dry vocal output: {Path(dry_path).name}")
             return dry_path
-        except Exception as exc:
-            log.warning(f"RoFormer De-Reverb 预处理失败，回退 UVR DeEcho: {exc}")
-            return None
         finally:
             separator.unload_model()
 
-    def _apply_uvr_deecho_for_vc(self, vocals_path: str, session_dir: Path) -> Optional[str]:
-        """如果本地已有 UVR DeEcho 模型，则优先用学习型方法清理回声。"""
-        model_name = self._get_available_uvr_deecho_model()
-        if not model_name:
-            return None
-
-        from infer.modules.uvr5.modules import uvr
-
-        root = Path(__file__).parent.parent
-        os.environ["weight_uvr5_root"] = str(root / "assets" / "uvr5_weights")
-
-        input_dir = session_dir / "vc_deecho_input"
-        vocal_dir = session_dir / "vc_deecho_vocal"
-        ins_dir = session_dir / "vc_deecho_ins"
-        input_dir.mkdir(parents=True, exist_ok=True)
-        vocal_dir.mkdir(parents=True, exist_ok=True)
-        ins_dir.mkdir(parents=True, exist_ok=True)
-
-        input_file = input_dir / Path(vocals_path).name
-        shutil.copy2(vocals_path, input_file)
-
-        log.model(f"VC预处理使用UVR DeEcho模型: {model_name}")
-        for _ in uvr(model_name, str(input_dir), str(vocal_dir), [], str(ins_dir), 10, "wav"):
-            pass
-
-        candidate_files = sorted(
-            list(vocal_dir.glob("*.wav")) + list(ins_dir.glob("*.wav")),
-            key=lambda path: path.stat().st_mtime,
-        )
-        if not candidate_files:
-            log.warning("UVR DeEcho produced no usable vocal output; falling back to direct lead input")
-            return None
-
-        selected_file = self._select_best_uvr_deecho_output(vocals_path, candidate_files)
-        if selected_file is None:
-            selected_file = candidate_files[-1]
-        log.audio(f"UVR DeEcho selected vocal output: {selected_file.name}")
-        return str(selected_file)
-
     @staticmethod
-    def _score_uvr_deecho_candidate(reference_path: str, candidate_path: Path) -> Optional[Tuple[float, Dict[str, float]]]:
-        """Score UVR DeEcho candidate for VC: keep direct lead, minimize quiet residuals."""
+    def _score_deecho_candidate(reference_path: str, candidate_path: Path) -> Optional[Tuple[float, Dict[str, float]]]:
+        """Score learned DeEcho candidate for VC: keep direct lead, minimize quiet residuals."""
         import librosa
 
         try:
@@ -276,34 +218,6 @@ class CoverPipeline:
             "active_ratio": active_ratio,
             "reduction_ratio": reduction_ratio,
         }
-
-    def _select_best_uvr_deecho_output(self, reference_path: str, candidate_files: List[Path]) -> Optional[Path]:
-        """Pick the UVR DeEcho branch best suited for VC input."""
-        best_path = None
-        best_score = None
-        best_metrics = None
-
-        for candidate_path in candidate_files:
-            scored = self._score_uvr_deecho_candidate(reference_path, candidate_path)
-            if scored is None:
-                continue
-
-            score, metrics = scored
-            log.detail(
-                "UVR DeEcho candidate: "
-                f"{candidate_path.name}, score={metrics['score']:.2f}, "
-                f"sep={metrics['separation_db']:.2f}dB, corr={metrics['corr']:.3f}, "
-                f"ratio={metrics['active_ratio']:.3f}, "
-                f"reduction={metrics['reduction_ratio']:.3f}"
-            )
-            if best_score is None or score > best_score:
-                best_score = score
-                best_path = candidate_path
-                best_metrics = metrics
-
-        # 保存最佳候选的质量指标，供 blend 决策使用
-        self._uvr_deecho_metrics = best_metrics
-        return best_path
 
     @staticmethod
     def _save_debug_audio_snapshot(
@@ -701,10 +615,7 @@ class CoverPipeline:
 
         available = {m["name"] for m in get_available_models() if m["name"] != "roformer"}
         if model_name not in available:
-            log.warning(
-                f"未知的 Demucs 模型 '{model_name}'，回退到 'htdemucs'"
-            )
-            model_name = "htdemucs"
+            raise ValueError(f"未知的 Demucs 模型 '{model_name}'")
 
         if (
             self.separator is not None
@@ -1992,7 +1903,7 @@ class CoverPipeline:
         converted_vocals_path: str,
         max_source_blend: float = 0.86,
     ) -> None:
-        """Fallback toward dry source only on short segments where final VC still sounds unstable."""
+        """Blend toward dry source only on short segments where final VC still sounds unstable."""
         import librosa
         import soundfile as sf
 
@@ -2402,8 +2313,8 @@ class CoverPipeline:
             return vc_preprocessed
         if normalized_mode == "auto":
             return vc_preprocessed and self._last_vc_preprocess_mode in {
-                "uvr_deecho",
-                "uvr_deecho_plus",
+                "strict_deecho",
+                "strict_deecho_plus",
                 "legacy",
                 "advanced_dereverb",
             }
@@ -2418,11 +2329,11 @@ class CoverPipeline:
         original_vocals_path: Optional[str] = None,
         session_dir: Optional[Path] = None,
     ) -> None:
-        """Apply extra cleanup passes for mature UVR DeEcho routing."""
+        """Apply extra cleanup passes for the strict learned DeEcho routing."""
         normalized_mode = str(source_constraint_mode or "auto").strip().lower()
         if normalized_mode != "auto":
             return
-        if self._last_vc_preprocess_mode not in {"uvr_deecho", "uvr_deecho_plus"}:
+        if self._last_vc_preprocess_mode not in {"strict_deecho", "strict_deecho_plus"}:
             return
 
         self._apply_silence_gate_official(
@@ -2599,7 +2510,7 @@ class CoverPipeline:
         return blended.astype(np.float32)
 
     @staticmethod
-    def _merge_uvr_hotspot_cleanup(
+    def _merge_deecho_hotspot_cleanup(
         direct_mono: np.ndarray,
         deecho_mono: np.ndarray,
         aggressive_mono: np.ndarray,
@@ -2719,9 +2630,9 @@ class CoverPipeline:
         Prepare vocals for VC using a mature-project-friendly routing strategy.
 
         Modes:
-        - auto: prefer public RoFormer De-Reverb, then UVR DeEcho, otherwise advanced dereverb -> RVC
+        - auto: require public RoFormer De-Reverb -> RVC; no model downgrade
         - direct: pass separated lead directly to RVC
-        - uvr_deecho: require learned DeEcho/DeReverb if available, else fallback to advanced dereverb
+        - uvr_deecho: strict alias of the RoFormer De-Reverb path
         - advanced_dereverb: use binary residual masking to separate dry/wet, convert dry only
         - legacy: old hand-crafted dereverb + tail gating chain
         """
@@ -2734,7 +2645,7 @@ class CoverPipeline:
 
         # 保存原始混响用于后处理
         self._original_reverb_path = None
-        self._uvr_deecho_metrics = None
+        self._deecho_metrics = None
 
         if preprocess_mode == "advanced_dereverb":
             # 使用高级去混响：分离干声和混响
@@ -2768,39 +2679,18 @@ class CoverPipeline:
             mono_resolved = False
 
             if preprocess_mode in {"auto", "uvr_deecho"}:
-                preprocess_input = (
-                    self._apply_roformer_deecho_for_vc(vocals_path, session_dir)
-                    or self._apply_uvr_deecho_for_vc(vocals_path, session_dir)
-                    or vocals_path
-                )
+                preprocess_input = self._apply_roformer_deecho_for_vc(vocals_path, session_dir)
 
             if preprocess_input == vocals_path:
                 if preprocess_mode in {"auto", "uvr_deecho"}:
-                    # auto / uvr_deecho 模式在学习型模型缺失时都回退到 advanced_dereverb
-                    audio, sr = librosa.load(vocals_path, sr=None, mono=False)
-                    audio = self._ensure_2d(audio).astype(np.float32)
-                    mono = self._select_mono_for_vc(audio, sr)
-
-                    fallback_name = "auto" if preprocess_mode == "auto" else "uvr_deecho"
-                    log.detail(f"VC preprocess ({fallback_name}): learned DeEcho not available, using advanced dereverb")
-                    dry_signal, reverb_tail = advanced_dereverb(mono, sr)
-
-                    # 保存混响用于后处理
-                    reverb_path = session_dir / "original_reverb.wav"
-                    sf.write(str(reverb_path), reverb_tail, sr)
-                    self._original_reverb_path = str(reverb_path)
-
-                    mono = dry_signal
-                    self._last_vc_preprocess_mode = "advanced_dereverb"
-                    mono_resolved = True
-                    log.detail(f"Dry/Wet separation: dry RMS={np.sqrt(np.mean(dry_signal**2)):.4f}, reverb RMS={np.sqrt(np.mean(reverb_tail**2)):.4f}")
+                    raise RuntimeError("严格SOTA模式下 RoFormer De-Reverb 未产生可用输出")
                 else:
                     # direct 模式
                     self._last_vc_preprocess_mode = "direct"
                     log.detail("VC preprocess: direct lead -> mono select")
             else:
-                self._last_vc_preprocess_mode = "uvr_deecho"
-                log.detail("VC preprocess: learned DeEcho/DeReverb -> mono select")
+                self._last_vc_preprocess_mode = "strict_deecho"
+                log.detail("VC preprocess: strict RoFormer De-Reverb -> mono select")
 
             # 最终 mono 确定（仅在 mono 未被上面解决时执行）
             if not mono_resolved:
@@ -2823,7 +2713,7 @@ class CoverPipeline:
                         ).astype(np.float32)
 
                     # DeEcho 质量检测：用 UVR 候选打分指标判断是否跳过 blend
-                    uvr_metrics = getattr(self, '_uvr_deecho_metrics', None)
+                    deecho_metrics = getattr(self, '_deecho_metrics', None)
                     skip_blend = False
                     secondary_dry_cleanup = False
                     hotspot_cleaned = False
@@ -2833,11 +2723,11 @@ class CoverPipeline:
                         "max_weight": 0.0,
                         "coverage_ratio": 0.0,
                     }
-                    if uvr_metrics:
-                        sep_db = uvr_metrics.get('separation_db', 0.0)
-                        corr = uvr_metrics.get('corr', 0.0)
-                        active_ratio = uvr_metrics.get('active_ratio', 1.0)
-                        reduction_ratio = uvr_metrics.get('reduction_ratio', 0.0)
+                    if deecho_metrics:
+                        sep_db = deecho_metrics.get('separation_db', 0.0)
+                        corr = deecho_metrics.get('corr', 0.0)
+                        active_ratio = deecho_metrics.get('active_ratio', 1.0)
+                        reduction_ratio = deecho_metrics.get('reduction_ratio', 0.0)
                         log.detail(
                             "DeEcho quality: "
                             f"sep={sep_db:.2f}dB, corr={corr:.3f}, "
@@ -2862,7 +2752,7 @@ class CoverPipeline:
                         )
                         delta_ratio = float(delta_rms / (deecho_rms + 1e-12))
                         if delta_ratio > 0.025:
-                            cleaned_mono, hotspot_stats = CoverPipeline._merge_uvr_hotspot_cleanup(
+                            cleaned_mono, hotspot_stats = CoverPipeline._merge_deecho_hotspot_cleanup(
                                 direct_mono=direct_mono,
                                 deecho_mono=deecho_mono,
                                 aggressive_mono=dry_signal.astype(np.float32),
@@ -2872,9 +2762,9 @@ class CoverPipeline:
                                 deecho_mono = cleaned_mono.astype(np.float32)
                                 hotspot_cleaned = True
                         if hotspot_cleaned:
-                            self._last_vc_preprocess_mode = "uvr_deecho_plus"
+                            self._last_vc_preprocess_mode = "strict_deecho_plus"
                             log.detail(
-                                "VC preprocess: UVR deecho active-echo hotspot cleanup "
+                                "VC preprocess: strict DeEcho active-echo hotspot cleanup "
                                 f"(delta_ratio={delta_ratio:.3f}, "
                                 f"hotspot_frames={int(hotspot_stats.get('hotspot_frames', 0.0))}, "
                                 f"coverage={hotspot_stats.get('coverage_ratio', 0.0):.3f}, "
@@ -2884,7 +2774,7 @@ class CoverPipeline:
                         else:
                             log.detail(
                                 "VC preprocess: advanced dereverb second pass had no strong active-echo hotspots, "
-                                f"keeping UVR deecho output (delta_ratio={delta_ratio:.3f})"
+                                f"keeping strict DeEcho output (delta_ratio={delta_ratio:.3f})"
                             )
 
                     if hotspot_cleaned:
@@ -2898,10 +2788,10 @@ class CoverPipeline:
 
                     if skip_blend:
                         mono = deecho_mono
-                        log.detail("VC preprocess: UVR DeEcho quality sufficient, using deecho directly (skip blend)")
+                        log.detail("VC preprocess: strict DeEcho quality sufficient, using deecho directly (skip blend)")
                     else:
                         mono = CoverPipeline._blend_direct_with_deecho(direct_mono, deecho_mono, sr)
-                        log.detail("VC preprocess: blended direct lead with UVR DeEcho (enhanced)")
+                        log.detail("VC preprocess: blended direct lead with strict DeEcho (enhanced)")
 
         mono = soft_clip(mono, threshold=0.9, ceiling=0.99)
 
@@ -3726,7 +3616,7 @@ class CoverPipeline:
                 if available_deecho_model:
                     log.config(f"Mature DeEcho模型: {available_deecho_model}")
                 else:
-                    log.config("Mature DeEcho模型: 未找到，将回退到 advanced dereverb")
+                    log.config("Mature DeEcho模型: 未找到；严格SOTA模式将停止处理")
             log.config(f"源约束模式: {normalized_source_constraint_mode}")
 
             # 官方模式也必须经过去混响预处理，确保输入RVC的是纯净干声
@@ -3738,13 +3628,14 @@ class CoverPipeline:
 
             vc_input_path = vocals_path
             vc_preprocessed = False
-            try:
-                prepared_path = self._prepare_vocals_for_vc(vocals_path, session_dir, preprocess_mode=effective_preprocess_mode)
-                vc_input_path = prepared_path
-                vc_preprocessed = True
-                log.audio(f"VC预处理输入: {Path(vc_input_path).name}")
-            except Exception as e:
-                log.warning(f"VC预处理失败，回退原始输入: {e}")
+            prepared_path = self._prepare_vocals_for_vc(
+                vocals_path,
+                session_dir,
+                preprocess_mode=effective_preprocess_mode,
+            )
+            vc_input_path = prepared_path
+            vc_preprocessed = True
+            log.audio(f"VC预处理输入: {Path(vc_input_path).name}")
 
             report_progress("正在转换人声...", step_convert)
             self._record_quality_debug(

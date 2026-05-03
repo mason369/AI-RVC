@@ -179,7 +179,7 @@ class SourceRegressionTests(unittest.TestCase):
         self.assertNotIn("min_gain=0.95", source)
         self.assertNotIn("max_gain=1.30", source)
         self.assertIn("reduction_ratio", source)
-        self.assertIn("uvr_deecho_plus", source)
+        self.assertIn("strict_deecho_plus", source)
         self.assertIn("_apply_source_breath_cleanup", source)
         self.assertIn("_apply_source_transition_cleanup", source)
         self.assertIn("Source breath cleanup:", source)

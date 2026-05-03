@@ -16,7 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from infer.separator import KARAOKE_DEFAULT_MODEL, KARAOKE_FALLBACK_MODELS, KaraokeSeparator
+from infer.separator import KARAOKE_DEFAULT_MODEL, KaraokeSeparator
 from lib.audio_metrics import evaluate_reference_stems
 
 
@@ -153,7 +153,7 @@ def parse_args() -> argparse.Namespace:
         "--models",
         nargs="*",
         default=None,
-        help="Karaoke model filenames. Defaults to current default plus fallbacks.",
+        help="Karaoke model filenames. Defaults to the current strict SOTA default.",
     )
     parser.add_argument("--reference-lead", default=None, help="Optional ground-truth/reference lead stem.")
     parser.add_argument("--reference-backing", default=None, help="Optional ground-truth/reference backing stem.")
@@ -203,7 +203,7 @@ def main() -> int:
         output_dir = (REPO_ROOT / output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    models = _unique(args.models or [KARAOKE_DEFAULT_MODEL, *KARAOKE_FALLBACK_MODELS])
+    models = _unique(args.models or [KARAOKE_DEFAULT_MODEL])
     results = []
     for model_name in models:
         candidate_dir = output_dir / Path(model_name).stem
