@@ -133,9 +133,7 @@ def get_vc_preprocess_option_maps() -> Tuple[Dict[str, str], Dict[str, str]]:
     """Build VC preprocess dropdown option maps."""
     label_to_value = {
         t("vc_preprocess_auto", "cover"): "auto",
-        t("vc_preprocess_direct", "cover"): "direct",
         t("vc_preprocess_uvr_deecho", "cover"): "uvr_deecho",
-        t("vc_preprocess_legacy", "cover"): "legacy",
     }
     value_to_label = {value: label for label, value in label_to_value.items()}
     return label_to_value, value_to_label
@@ -576,8 +574,8 @@ def process_cover(
         pipeline_label_to_value, pipeline_value_to_label = get_vc_pipeline_mode_option_maps()
 
         vc_preprocess_mode = vc_label_to_value.get(str(vc_preprocess_mode), str(vc_preprocess_mode or default_vc_preprocess_mode).strip().lower())
-        if vc_preprocess_mode not in {"auto", "direct", "uvr_deecho", "legacy"}:
-            vc_preprocess_mode = default_vc_preprocess_mode
+        if vc_preprocess_mode not in {"auto", "uvr_deecho"}:
+            vc_preprocess_mode = "auto"
         source_constraint_mode = source_label_to_value.get(str(source_constraint_mode), str(source_constraint_mode or default_source_constraint_mode).strip().lower())
         if source_constraint_mode not in {"auto", "off", "on"}:
             source_constraint_mode = default_source_constraint_mode
@@ -674,7 +672,7 @@ def process_cover(
 
 def check_mature_deecho_status() -> str:
     """Check mature DeEcho model availability."""
-    from tools.download_models import MATURE_DEECHO_MODELS, check_model, get_preferred_mature_deecho_model
+    from tools.download_models import MATURE_DEECHO_MODELS, check_model
     from infer.separator import ROFORMER_DEREVERB_DEFAULT_MODEL, check_roformer_available
 
     status_lines = []
@@ -686,7 +684,6 @@ def check_mature_deecho_status() -> str:
     if roformer_ready:
         status_lines.append("  RoFormer 模型由 audio-separator 首次运行时自动下载到 assets/separator_models")
 
-    preferred = get_preferred_mature_deecho_model()
     for name in MATURE_DEECHO_MODELS:
         exists = check_model(name)
         icon = "✅" if exists else "❌"
@@ -721,7 +718,6 @@ def get_cover_vc_route_status(
     vc_pipeline_mode: Optional[str] = None,
 ) -> str:
     """Return the active VC route shown in the cover UI."""
-    from tools.download_models import get_preferred_mature_deecho_model
     from infer.separator import ROFORMER_DEREVERB_DEFAULT_MODEL, check_roformer_available
 
     mode = str(vc_preprocess_mode or config.get("cover", {}).get("vc_preprocess_mode", "auto")).strip().lower()
@@ -730,11 +726,8 @@ def get_cover_vc_route_status(
     pipeline_label_to_value, _ = get_vc_pipeline_mode_option_maps()
     mode = vc_label_to_value.get(mode, mode)
     pipeline_mode = pipeline_label_to_value.get(pipeline_mode, pipeline_mode)
-    preferred = (
-        f"RoFormer {ROFORMER_DEREVERB_DEFAULT_MODEL}"
-        if check_roformer_available()
-        else get_preferred_mature_deecho_model()
-    )
+    roformer_ready = check_roformer_available()
+    preferred = f"RoFormer {ROFORMER_DEREVERB_DEFAULT_MODEL}" if roformer_ready else None
     newline = chr(10)
     build_label = get_runtime_build_label()
 
@@ -746,40 +739,26 @@ def get_cover_vc_route_status(
             build_label,
         ])
 
-    if mode == "direct":
-        return newline.join([
-            "ℹ️ 当前固定为主唱直通 RVC",
-            "流程: 主唱分离 → 直接进入 RVC → 混音",
-            "说明: 不使用学习型 DeEcho，也不走旧版手工链",
-            build_label,
-        ])
-    if mode == "legacy":
-        return newline.join([
-            "⚠️ 当前固定为旧版手工链",
-            "流程: 主唱分离 → 手工去回声链 → RVC → 混音",
-            "说明: 仅用于对比，不是默认推荐路径",
-            build_label,
-        ])
     if mode == "uvr_deecho":
         if preferred:
             return newline.join([
-                "✅ 当前固定优先使用学习型 DeEcho / DeReverb",
+                "✅ 当前固定使用严格 SOTA RoFormer De-Reverb",
                 f"当前命中模型: {preferred}",
-                "流程: 主唱分离 → 学习型 DeEcho/DeReverb → RVC → 混音",
+                "流程: 主唱分离 → RoFormer De-Reverb → RVC → 混音",
                 build_label,
             ])
         return newline.join([
-            "⚠️ 当前设为官方 DeEcho 优先，但本地缺少模型",
-            "严格SOTA模式会停止处理，不会降级到 UVR 或算法去混响",
+            "⚠️ 当前设为严格 SOTA RoFormer De-Reverb，但运行环境不可用",
+            "流程会停止处理，不会降级到 UVR 或算法去混响",
             "建议: 修复 audio-separator / RoFormer De-Reverb 运行环境",
             build_label,
         ])
 
     if preferred:
         return newline.join([
-            "✅ 自动模式当前会优先使用学习型 DeEcho / DeReverb",
+            "✅ 自动模式当前使用严格 SOTA RoFormer De-Reverb",
             f"当前命中模型: {preferred}",
-            "流程: 主唱分离 → 学习型 DeEcho/DeReverb → RVC → 混音",
+            "流程: 主唱分离 → RoFormer De-Reverb → RVC → 混音",
             build_label,
         ])
     return newline.join([

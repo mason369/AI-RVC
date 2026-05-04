@@ -213,38 +213,6 @@ def advanced_dereverb(
 
     return dry_signal.astype(np.float32), reverb_tail.astype(np.float32)
 
-
-def apply_reverb_to_converted(
-    converted_dry: np.ndarray,
-    original_reverb: np.ndarray,
-    mix_ratio: float = 0.8
-) -> np.ndarray:
-    """
-    将原始混响重新应用到转换后的干声上
-
-    Args:
-        converted_dry: 转换后的干声
-        original_reverb: 原始混响尾巴
-        mix_ratio: 混响混合比例 (0-1)
-
-    Returns:
-        wet_signal: 带混响的转换结果
-    """
-    # 对齐长度
-    min_len = min(len(converted_dry), len(original_reverb))
-    converted_dry = converted_dry[:min_len]
-    original_reverb = original_reverb[:min_len]
-
-    # 混合
-    wet_signal = converted_dry + mix_ratio * original_reverb
-
-    # 软限幅
-    from lib.audio import soft_clip
-    wet_signal = soft_clip(wet_signal, threshold=0.9, ceiling=0.99)
-
-    return wet_signal.astype(np.float32)
-
-
 if __name__ == "__main__":
     # 测试
     print("Testing advanced dereverberation...")

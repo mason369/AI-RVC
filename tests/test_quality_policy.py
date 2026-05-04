@@ -217,6 +217,25 @@ class SourceRegressionTests(unittest.TestCase):
         self.assertRegex(source, r'"unvoiced_feature_gate_floor"\s*:\s*0\.28')
         self.assertRegex(source, r'"breath_active_margin_db"\s*:\s*52\.0')
 
+    def test_ui_only_exposes_strict_sota_vc_preprocess_modes(self):
+        ui_source = (REPO_ROOT / "ui" / "app.py").read_text(encoding="utf-8")
+        i18n_source = (REPO_ROOT / "i18n" / "zh_CN.json").read_text(encoding="utf-8")
+        cover_source = (REPO_ROOT / "infer" / "cover_pipeline.py").read_text(encoding="utf-8")
+        dereverb_source = (REPO_ROOT / "infer" / "advanced_dereverb.py").read_text(encoding="utf-8")
+
+        self.assertIn('t("vc_preprocess_auto", "cover"): "auto"', ui_source)
+        self.assertIn('t("vc_preprocess_uvr_deecho", "cover"): "uvr_deecho"', ui_source)
+        self.assertNotIn('t("vc_preprocess_direct", "cover"): "direct"', ui_source)
+        self.assertNotIn('t("vc_preprocess_legacy", "cover"): "legacy"', ui_source)
+        self.assertIn('vc_preprocess_mode not in {"auto", "uvr_deecho"}', ui_source)
+        self.assertIn("不可用时停止，不降级", i18n_source)
+        self.assertNotIn('"vc_preprocess_direct"', i18n_source)
+        self.assertNotIn('"vc_preprocess_legacy"', i18n_source)
+        self.assertNotIn("主唱直通", i18n_source)
+        self.assertNotIn("回退到算法", i18n_source)
+        self.assertNotIn('self._last_vc_preprocess_mode == "direct"', cover_source)
+        self.assertNotIn("apply_reverb_to_converted", dereverb_source)
+
     def test_upstream_official_adapter_routes_hybrid_to_conservative_vc_method(self):
         source = (REPO_ROOT / "infer" / "official_adapter.py").read_text(encoding="utf-8")
 

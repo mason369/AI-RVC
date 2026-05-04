@@ -32,7 +32,7 @@ from infer.official_adapter import (
     convert_vocals_official,
     convert_vocals_official_upstream,
 )
-from infer.advanced_dereverb import advanced_dereverb, apply_reverb_to_converted
+from infer.advanced_dereverb import advanced_dereverb
 from infer.quality_policy import (
     compute_active_source_replace,
     compute_source_cleanup_budget,
@@ -85,7 +85,7 @@ class CoverPipeline:
         self.karaoke_separator = None
         self.rvc_pipeline = None
         self.temp_dir = Path(__file__).parent.parent / "temp" / "cover"
-        self._last_vc_preprocess_mode = "direct"
+        self._last_vc_preprocess_mode = "strict_deecho"
 
     def _get_session_dir(self, session_id: str = None) -> Path:
         """获取会话临时目录"""
@@ -2307,16 +2307,11 @@ class CoverPipeline:
         """Decide whether to run source-guided post constraint."""
         normalized_mode = str(source_constraint_mode or "auto").strip().lower()
         if normalized_mode == "on":
-            if self._last_vc_preprocess_mode == "direct":
-                log.detail("源约束跳过: direct 模式下源未去回音，强制约束会放大回音伪影")
-                return False
             return vc_preprocessed
         if normalized_mode == "auto":
             return vc_preprocessed and self._last_vc_preprocess_mode in {
                 "strict_deecho",
                 "strict_deecho_plus",
-                "legacy",
-                "advanced_dereverb",
             }
         return False
 
@@ -2631,167 +2626,119 @@ class CoverPipeline:
 
         Modes:
         - auto: require public RoFormer De-Reverb -> RVC; no model downgrade
-        - direct: pass separated lead directly to RVC
         - uvr_deecho: strict alias of the RoFormer De-Reverb path
-        - advanced_dereverb: use binary residual masking to separate dry/wet, convert dry only
-        - legacy: old hand-crafted dereverb + tail gating chain
         """
         import librosa
         import soundfile as sf
 
         preprocess_mode = str(preprocess_mode or "auto").strip().lower()
-        if preprocess_mode not in {"auto", "direct", "uvr_deecho", "advanced_dereverb", "legacy"}:
+        if preprocess_mode not in {"auto", "uvr_deecho"}:
+            log.warning(
+                f"严格SOTA模式不再支持 VC 预处理 '{preprocess_mode}'，已改用 RoFormer De-Reverb"
+            )
             preprocess_mode = "auto"
 
-        # 保存原始混响用于后处理
-        self._original_reverb_path = None
         self._deecho_metrics = None
 
-        if preprocess_mode == "advanced_dereverb":
-            # 使用高级去混响：分离干声和混响
-            audio, sr = librosa.load(vocals_path, sr=None, mono=False)
-            audio = self._ensure_2d(audio).astype(np.float32)
-            mono = self._select_mono_for_vc(audio, sr)
+        preprocess_input = self._apply_roformer_deecho_for_vc(vocals_path, session_dir)
+        if preprocess_input == vocals_path:
+            raise RuntimeError("严格SOTA模式下 RoFormer De-Reverb 未产生可用输出")
 
-            log.detail("VC preprocess: advanced dereverb (binary residual masking)")
-            dry_signal, reverb_tail = advanced_dereverb(mono, sr)
+        self._last_vc_preprocess_mode = "strict_deecho"
+        log.detail("VC preprocess: strict RoFormer De-Reverb -> mono select")
 
-            # 保存混响用于后处理
-            reverb_path = session_dir / "original_reverb.wav"
-            sf.write(str(reverb_path), reverb_tail, sr)
-            self._original_reverb_path = str(reverb_path)
+        direct_audio, sr = librosa.load(vocals_path, sr=None, mono=False)
+        deecho_audio, deecho_sr = librosa.load(preprocess_input, sr=None, mono=False)
+        direct_audio = self._ensure_2d(direct_audio).astype(np.float32)
+        deecho_audio = self._ensure_2d(deecho_audio).astype(np.float32)
+        direct_mono = self._select_mono_for_vc(direct_audio, sr)
+        deecho_mono = self._select_mono_for_vc(deecho_audio, deecho_sr)
+        if deecho_sr != sr:
+            deecho_mono = librosa.resample(
+                deecho_mono,
+                orig_sr=deecho_sr,
+                target_sr=sr,
+            ).astype(np.float32)
 
-            mono = dry_signal
-            self._last_vc_preprocess_mode = "advanced_dereverb"
-            log.detail(f"Dry/Wet separation: dry RMS={np.sqrt(np.mean(dry_signal**2)):.4f}, reverb RMS={np.sqrt(np.mean(reverb_tail**2)):.4f}")
+        deecho_metrics = getattr(self, '_deecho_metrics', None)
+        skip_blend = False
+        secondary_dry_cleanup = False
+        hotspot_cleaned = False
+        hotspot_stats = {
+            "hotspot_frames": 0.0,
+            "avg_weight": 0.0,
+            "max_weight": 0.0,
+            "coverage_ratio": 0.0,
+        }
+        if deecho_metrics:
+            sep_db = deecho_metrics.get('separation_db', 0.0)
+            corr = deecho_metrics.get('corr', 0.0)
+            active_ratio = deecho_metrics.get('active_ratio', 1.0)
+            reduction_ratio = deecho_metrics.get('reduction_ratio', 0.0)
+            log.detail(
+                "DeEcho quality: "
+                f"sep={sep_db:.2f}dB, corr={corr:.3f}, "
+                f"active_ratio={active_ratio:.3f}, reduction={reduction_ratio:.3f}"
+            )
+            # sep/corr only mean the output is coherent. Skip blend only when
+            # the strict DeEcho branch is also meaningfully drier than source.
+            if (
+                sep_db > 30.0
+                and corr > 0.9
+                and not (active_ratio > 0.90 and reduction_ratio < 0.25)
+            ):
+                skip_blend = True
+            if active_ratio > 0.93 and reduction_ratio < 0.18:
+                secondary_dry_cleanup = True
 
-        elif preprocess_mode == "legacy":
-            audio, sr = librosa.load(vocals_path, sr=None, mono=False)
-            audio = self._ensure_2d(audio).astype(np.float32)
-            mono = self._select_mono_for_vc(audio, sr)
-            mono_dry = mono.copy()
-            mono = self._dereverb_for_vc(mono, sr)
-            mono = self._gate_echo_tails(mono_dry, mono, sr)
-            self._last_vc_preprocess_mode = "legacy"
-            log.detail("VC preprocess: legacy dereverb chain -> mono select")
-        else:
-            preprocess_input = vocals_path
-            mono_resolved = False
-
-            if preprocess_mode in {"auto", "uvr_deecho"}:
-                preprocess_input = self._apply_roformer_deecho_for_vc(vocals_path, session_dir)
-
-            if preprocess_input == vocals_path:
-                if preprocess_mode in {"auto", "uvr_deecho"}:
-                    raise RuntimeError("严格SOTA模式下 RoFormer De-Reverb 未产生可用输出")
-                else:
-                    # direct 模式
-                    self._last_vc_preprocess_mode = "direct"
-                    log.detail("VC preprocess: direct lead -> mono select")
+        if secondary_dry_cleanup:
+            dry_signal, _ = advanced_dereverb(deecho_mono, sr)
+            deecho_rms = float(np.sqrt(np.mean(np.square(deecho_mono)) + 1e-12))
+            delta_rms = float(
+                np.sqrt(np.mean(np.square(dry_signal.astype(np.float32) - deecho_mono)) + 1e-12)
+            )
+            delta_ratio = float(delta_rms / (deecho_rms + 1e-12))
+            if delta_ratio > 0.025:
+                cleaned_mono, hotspot_stats = CoverPipeline._merge_deecho_hotspot_cleanup(
+                    direct_mono=direct_mono,
+                    deecho_mono=deecho_mono,
+                    aggressive_mono=dry_signal.astype(np.float32),
+                    sr=sr,
+                )
+                if hotspot_stats.get("hotspot_frames", 0.0) > 0:
+                    deecho_mono = cleaned_mono.astype(np.float32)
+                    hotspot_cleaned = True
+            if hotspot_cleaned:
+                self._last_vc_preprocess_mode = "strict_deecho_plus"
+                log.detail(
+                    "VC preprocess: strict DeEcho active-echo hotspot cleanup "
+                    f"(delta_ratio={delta_ratio:.3f}, "
+                    f"hotspot_frames={int(hotspot_stats.get('hotspot_frames', 0.0))}, "
+                    f"coverage={hotspot_stats.get('coverage_ratio', 0.0):.3f}, "
+                    f"avg_weight={hotspot_stats.get('avg_weight', 0.0):.3f}, "
+                    f"max_weight={hotspot_stats.get('max_weight', 0.0):.3f})"
+                )
             else:
-                self._last_vc_preprocess_mode = "strict_deecho"
-                log.detail("VC preprocess: strict RoFormer De-Reverb -> mono select")
+                log.detail(
+                    "VC preprocess: advanced dereverb second pass had no strong active-echo hotspots, "
+                    f"keeping strict DeEcho output (delta_ratio={delta_ratio:.3f})"
+                )
 
-            # 最终 mono 确定（仅在 mono 未被上面解决时执行）
-            if not mono_resolved:
-                if preprocess_input == vocals_path:
-                    audio, sr = librosa.load(preprocess_input, sr=None, mono=False)
-                    audio = self._ensure_2d(audio).astype(np.float32)
-                    mono = self._select_mono_for_vc(audio, sr)
-                else:
-                    direct_audio, sr = librosa.load(vocals_path, sr=None, mono=False)
-                    deecho_audio, deecho_sr = librosa.load(preprocess_input, sr=None, mono=False)
-                    direct_audio = self._ensure_2d(direct_audio).astype(np.float32)
-                    deecho_audio = self._ensure_2d(deecho_audio).astype(np.float32)
-                    direct_mono = self._select_mono_for_vc(direct_audio, sr)
-                    deecho_mono = self._select_mono_for_vc(deecho_audio, deecho_sr)
-                    if deecho_sr != sr:
-                        deecho_mono = librosa.resample(
-                            deecho_mono,
-                            orig_sr=deecho_sr,
-                            target_sr=sr,
-                        ).astype(np.float32)
+        if hotspot_cleaned:
+            skip_blend = False
+            coverage_ratio = float(hotspot_stats.get("coverage_ratio", 0.0))
+            if coverage_ratio > 0.35:
+                log.detail(
+                    "VC preprocess: hotspot cleanup touched a wide region; "
+                    "forcing direct/deecho blend to preserve vocal body"
+                )
 
-                    # DeEcho 质量检测：用 UVR 候选打分指标判断是否跳过 blend
-                    deecho_metrics = getattr(self, '_deecho_metrics', None)
-                    skip_blend = False
-                    secondary_dry_cleanup = False
-                    hotspot_cleaned = False
-                    hotspot_stats = {
-                        "hotspot_frames": 0.0,
-                        "avg_weight": 0.0,
-                        "max_weight": 0.0,
-                        "coverage_ratio": 0.0,
-                    }
-                    if deecho_metrics:
-                        sep_db = deecho_metrics.get('separation_db', 0.0)
-                        corr = deecho_metrics.get('corr', 0.0)
-                        active_ratio = deecho_metrics.get('active_ratio', 1.0)
-                        reduction_ratio = deecho_metrics.get('reduction_ratio', 0.0)
-                        log.detail(
-                            "DeEcho quality: "
-                            f"sep={sep_db:.2f}dB, corr={corr:.3f}, "
-                            f"active_ratio={active_ratio:.3f}, reduction={reduction_ratio:.3f}"
-                        )
-                        # sep/corr only mean the output is coherent. We should skip blend
-                        # only when the DeEcho branch is also meaningfully drier than source.
-                        if (
-                            sep_db > 30.0
-                            and corr > 0.9
-                            and not (active_ratio > 0.90 and reduction_ratio < 0.25)
-                        ):
-                            skip_blend = True
-                        if active_ratio > 0.93 and reduction_ratio < 0.18:
-                            secondary_dry_cleanup = True
-
-                    if secondary_dry_cleanup:
-                        dry_signal, reverb_tail = advanced_dereverb(deecho_mono, sr)
-                        deecho_rms = float(np.sqrt(np.mean(np.square(deecho_mono)) + 1e-12))
-                        delta_rms = float(
-                            np.sqrt(np.mean(np.square(dry_signal.astype(np.float32) - deecho_mono)) + 1e-12)
-                        )
-                        delta_ratio = float(delta_rms / (deecho_rms + 1e-12))
-                        if delta_ratio > 0.025:
-                            cleaned_mono, hotspot_stats = CoverPipeline._merge_deecho_hotspot_cleanup(
-                                direct_mono=direct_mono,
-                                deecho_mono=deecho_mono,
-                                aggressive_mono=dry_signal.astype(np.float32),
-                                sr=sr,
-                            )
-                            if hotspot_stats.get("hotspot_frames", 0.0) > 0:
-                                deecho_mono = cleaned_mono.astype(np.float32)
-                                hotspot_cleaned = True
-                        if hotspot_cleaned:
-                            self._last_vc_preprocess_mode = "strict_deecho_plus"
-                            log.detail(
-                                "VC preprocess: strict DeEcho active-echo hotspot cleanup "
-                                f"(delta_ratio={delta_ratio:.3f}, "
-                                f"hotspot_frames={int(hotspot_stats.get('hotspot_frames', 0.0))}, "
-                                f"coverage={hotspot_stats.get('coverage_ratio', 0.0):.3f}, "
-                                f"avg_weight={hotspot_stats.get('avg_weight', 0.0):.3f}, "
-                                f"max_weight={hotspot_stats.get('max_weight', 0.0):.3f})"
-                            )
-                        else:
-                            log.detail(
-                                "VC preprocess: advanced dereverb second pass had no strong active-echo hotspots, "
-                                f"keeping strict DeEcho output (delta_ratio={delta_ratio:.3f})"
-                            )
-
-                    if hotspot_cleaned:
-                        skip_blend = False
-                        coverage_ratio = float(hotspot_stats.get("coverage_ratio", 0.0))
-                        if coverage_ratio > 0.35:
-                            log.detail(
-                                "VC preprocess: hotspot cleanup touched a wide region; "
-                                "forcing direct/deecho blend to preserve vocal body"
-                            )
-
-                    if skip_blend:
-                        mono = deecho_mono
-                        log.detail("VC preprocess: strict DeEcho quality sufficient, using deecho directly (skip blend)")
-                    else:
-                        mono = CoverPipeline._blend_direct_with_deecho(direct_mono, deecho_mono, sr)
-                        log.detail("VC preprocess: blended direct lead with strict DeEcho (enhanced)")
+        if skip_blend:
+            mono = deecho_mono
+            log.detail("VC preprocess: strict DeEcho quality sufficient, using deecho directly (skip blend)")
+        else:
+            mono = CoverPipeline._blend_direct_with_deecho(direct_mono, deecho_mono, sr)
+            log.detail("VC preprocess: blended direct lead with strict DeEcho (enhanced)")
 
         mono = soft_clip(mono, threshold=0.9, ceiling=0.99)
 
@@ -2839,144 +2786,12 @@ class CoverPipeline:
 
         return cleaned.astype(np.float32)
 
-    def _duck_backing_under_lead(
-        self,
-        lead_audio: np.ndarray,
-        backing_audio: np.ndarray,
-        sr: int,
-        base_gain: float = 0.92,
-    ) -> Tuple[np.ndarray, Dict[str, float]]:
-        """Keep backing present while making room for the lead on overlap sections."""
-        import librosa
-
-        lead_audio = self._ensure_2d(lead_audio).astype(np.float32)
-        backing_audio = self._ensure_2d(backing_audio).astype(np.float32)
-        backing_audio = self._match_channels(backing_audio, lead_audio.shape[0])
-
-        output = backing_audio.copy().astype(np.float32)
-        output *= float(base_gain)
-
-        aligned_len = min(lead_audio.shape[1], backing_audio.shape[1])
-        if aligned_len <= 2048:
-            return output, {
-                "base_gain": float(base_gain),
-                "overlap_ratio": 0.0,
-                "duck_need": 0.0,
-                "avg_duck_db": 0.0,
-                "max_duck_db": 0.0,
-            }
-
-        lead_mono = lead_audio[:, :aligned_len].mean(axis=0).astype(np.float32)
-        backing_mono = backing_audio[:, :aligned_len].mean(axis=0).astype(np.float32)
-
-        lead_weights = self._compute_activity_sample_weights(lead_mono, sr)[:aligned_len]
-        backing_weights = self._compute_activity_sample_weights(backing_mono, sr)[:aligned_len]
-        overlap_weights = np.clip(
-            lead_weights * (0.35 + 0.65 * backing_weights),
-            0.0,
-            1.0,
-        ).astype(np.float32)
-
-        lead_overlap_rms = self._weighted_rms(lead_mono, overlap_weights)
-        backing_overlap_rms = self._weighted_rms(backing_mono, overlap_weights)
-        overlap_ratio = float(backing_overlap_rms / (lead_overlap_rms + 1e-12))
-
-        duck_need = float(np.clip((overlap_ratio - 0.18) / 0.20, 0.0, 1.0))
-        if duck_need <= 0.02:
-            return output, {
-                "base_gain": float(base_gain),
-                "overlap_ratio": overlap_ratio,
-                "duck_need": duck_need,
-                "avg_duck_db": 0.0,
-                "max_duck_db": 0.0,
-            }
-
-        frame_length = 2048
-        hop_length = 512
-        eps = 1e-8
-        lead_rms = librosa.feature.rms(
-            y=lead_mono,
-            frame_length=frame_length,
-            hop_length=hop_length,
-            center=True,
-        )[0].astype(np.float32)
-        backing_rms = librosa.feature.rms(
-            y=backing_mono,
-            frame_length=frame_length,
-            hop_length=hop_length,
-            center=True,
-        )[0].astype(np.float32)
-
-        frame_count = min(lead_rms.size, backing_rms.size)
-        if frame_count <= 4:
-            return output, {
-                "base_gain": float(base_gain),
-                "overlap_ratio": overlap_ratio,
-                "duck_need": duck_need,
-                "avg_duck_db": 0.0,
-                "max_duck_db": 0.0,
-            }
-
-        lead_rms = lead_rms[:frame_count]
-        backing_rms = backing_rms[:frame_count]
-
-        lead_db = 20.0 * np.log10(lead_rms + eps)
-        backing_db = 20.0 * np.log10(backing_rms + eps)
-        lead_peak_db = float(np.percentile(lead_db, 95))
-        backing_peak_db = float(np.percentile(backing_db, 92))
-
-        lead_activity = np.square(
-            np.clip((lead_db - (lead_peak_db - 24.0)) / 11.0, 0.0, 1.0)
-        )
-        backing_density = np.clip(
-            (backing_db - (backing_peak_db - 18.0)) / 10.0,
-            0.0,
-            1.0,
-        )
-
-        smooth_kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
-        smooth_kernel /= np.sum(smooth_kernel)
-        lead_activity = np.convolve(lead_activity, smooth_kernel, mode="same")
-        backing_density = np.convolve(backing_density, smooth_kernel, mode="same")
-        lead_activity = self._hold_activity_curve(
-            lead_activity,
-            max(1, int(0.18 * sr / hop_length)),
-        )
-
-        duck_curve = np.clip(
-            lead_activity * (0.35 + 0.65 * backing_density),
-            0.0,
-            1.0,
-        ).astype(np.float32)
-        sample_curve = self._frame_curve_to_sample_gain(
-            duck_curve,
-            aligned_len,
-            hop_length,
-        )
-
-        max_duck_db = float(1.8 + 3.2 * duck_need)
-        dynamic_gain = np.power(
-            10.0,
-            -(max_duck_db * sample_curve) / 20.0,
-        ).astype(np.float32)
-        output[:, :aligned_len] *= dynamic_gain[np.newaxis, :]
-
-        avg_duck_db = float(max_duck_db * float(np.mean(sample_curve)))
-        return output.astype(np.float32), {
-            "base_gain": float(base_gain),
-            "overlap_ratio": overlap_ratio,
-            "duck_need": duck_need,
-            "avg_duck_db": avg_duck_db,
-            "max_duck_db": float(max_duck_db * float(np.max(sample_curve))),
-        }
-
     def _merge_backing_into_accompaniment(
         self,
         backing_vocals_path: str,
         accompaniment_path: str,
         session_dir: Path,
         lead_vocals_path: Optional[str] = None,
-        duck_reference_path: Optional[str] = None,
     ) -> str:
         """将和声轨混入伴奏轨；可选抑制 backing 内残留主唱"""
         import librosa
@@ -3005,18 +2820,6 @@ class CoverPipeline:
                 lead_audio=lead,
                 backing_audio=backing,
             )
-
-        duck_reference = None
-        if duck_reference_path and Path(duck_reference_path).exists():
-            duck_reference, duck_sr = librosa.load(duck_reference_path, sr=None, mono=False)
-            duck_reference = self._ensure_2d(duck_reference).astype(np.float32)
-            if duck_sr != accompaniment_sr:
-                duck_reference = self._resample_audio(
-                    duck_reference,
-                    orig_sr=duck_sr,
-                    target_sr=accompaniment_sr,
-                )
-            duck_reference = self._match_channels(duck_reference, backing.shape[0])
 
         accompaniment = self._match_channels(accompaniment, backing.shape[0])
         max_len = max(accompaniment.shape[1], backing.shape[1])
@@ -3609,6 +3412,11 @@ class CoverPipeline:
                 vocals_path = lead_vocals_path
 
             normalized_vc_preprocess_mode = str(vc_preprocess_mode or "auto").strip().lower()
+            if normalized_vc_preprocess_mode not in {"auto", "uvr_deecho"}:
+                log.warning(
+                    f"严格SOTA模式不再接受 VC 预处理 '{normalized_vc_preprocess_mode}'，已改用 auto"
+                )
+                normalized_vc_preprocess_mode = "auto"
             normalized_source_constraint_mode = str(source_constraint_mode or "auto").strip().lower()
             available_deecho_model = self._get_preferred_deecho_model_label()
             log.config(f"VC预处理模式: {normalized_vc_preprocess_mode}")
@@ -3620,11 +3428,7 @@ class CoverPipeline:
             log.config(f"源约束模式: {normalized_source_constraint_mode}")
 
             # 官方模式也必须经过去混响预处理，确保输入RVC的是纯净干声
-            # 官方模式下如果用户选了 direct，强制提升为 auto（带混响的人声会破坏F0提取）
             effective_preprocess_mode = normalized_vc_preprocess_mode
-            if normalized_vc_pipeline_mode == "official" and effective_preprocess_mode == "direct":
-                effective_preprocess_mode = "auto"
-                log.warning("官方模式：direct预处理已提升为auto，确保去混响后再进入RVC推理")
 
             vc_input_path = vocals_path
             vc_preprocessed = False
@@ -3836,32 +3640,7 @@ class CoverPipeline:
                     log.warning("VC preprocess unavailable, skipping source-guided reconstruction")
                 log.success("官方VC转换完成")
 
-            # 如果使用了advanced dereverb，重新应用原始混响（仅非官方模式）
-            if (
-                not effective_official_mode
-                and not effective_use_official
-                and hasattr(self, '_original_reverb_path')
-                and self._original_reverb_path
-                and Path(self._original_reverb_path).exists()
-            ):
-                log.detail("重新应用原始混响到转换后的干声...")
-                import librosa
-                import soundfile as sf
-
-                converted_dry, sr = librosa.load(converted_vocals_path, sr=None, mono=True)
-                original_reverb, reverb_sr = librosa.load(self._original_reverb_path, sr=None, mono=True)
-
-                if reverb_sr != sr:
-                    original_reverb = librosa.resample(original_reverb, orig_sr=reverb_sr, target_sr=sr).astype(np.float32)
-
-                # 重新应用混响（80%强度）
-                wet_signal = apply_reverb_to_converted(converted_dry, original_reverb, mix_ratio=0.8)
-
-                # 保存带混响的版本
-                sf.write(converted_vocals_path, wet_signal, sr)
-                log.detail(f"混响重应用完成: mix_ratio=0.8")
-
-            elif not effective_official_mode and not effective_use_official:
+            if not effective_official_mode and not effective_use_official:
                 # 使用自定义VC管道进行转换
                 log.detail("使用自定义VC管道进行转换")
                 self._init_rvc_pipeline()
@@ -4032,7 +3811,6 @@ class CoverPipeline:
                     accompaniment_path=accompaniment_path,
                     session_dir=session_dir,
                     lead_vocals_path=lead_vocals_path,
-                    duck_reference_path=mix_vocals_path,
                 )
                 log.detail("已将和声混入伴奏轨道")
 
