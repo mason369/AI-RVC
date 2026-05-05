@@ -195,16 +195,15 @@ def detect_cuda_version():
             match = re.search(r"CUDA Version:\s*(\d+)\.(\d+)", output)
             if match:
                 major, minor = int(match.group(1)), int(match.group(2))
-                if major >= 12 and minor >= 6:
+                if (major, minor) >= (12, 6):
                     return "https://download.pytorch.org/whl/cu126"
-                elif major >= 12 and minor >= 4:
+                elif (major, minor) >= (12, 4):
                     return "https://download.pytorch.org/whl/cu124"
-                elif major >= 12 and minor >= 1:
+                elif (major, minor) >= (12, 1):
                     return "https://download.pytorch.org/whl/cu121"
-                elif major >= 11 and minor >= 8:
+                elif (major, minor) >= (11, 8):
                     return "https://download.pytorch.org/whl/cu118"
                 else:
-                    # CUDA 版本太旧，回退 CPU
                     return None
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
@@ -301,7 +300,9 @@ def install_all(venv_py, gpu=True):
         if cuda_index_url:
             print(f"\n  检测到 CUDA，使用 PyTorch 源: {cuda_index_url}")
         else:
-            print("\n  未检测到 CUDA，将安装 CPU 版 PyTorch")
+            print("\n  [错误] 未检测到支持的 CUDA，GPU 安装停止。")
+            print("  如需 CPU 版 PyTorch，请显式使用 --cpu。")
+            return False
 
     print(f"\n开始安装 {len(missing)} 个缺失的依赖...\n")
     failed = []

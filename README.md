@@ -9,7 +9,7 @@
 ## 功能特点
 
 - **AI 歌曲翻唱**：上传歌曲自动分离人声、转换音色、混合伴奏，一键生成翻唱
-- **人声分离**：默认 `audio-separator` 0.44.1 公开 scored SOTA（`vocals_mel_band_roformer.ckpt`，Vocals SDR 12.6）；可选 UVR5、Demucs
+- **人声分离**：默认 `audio-separator` 0.44.1 ensemble 预设（`ensemble:vocal_rvc`）；可选卡拉OK预设、UVR5、Demucs
 - **音色转换**：RVC v2 架构 + 官方 VC 管道，适配角色模型 + FAISS 检索增强流程
 - **RMVPE 音高提取**：按 RMVPE 论文报告，在公开基准上优于 CREPE / pYIN / SWIPE 等基线并具备更好噪声鲁棒性
 - **角色模型**：内置可下载角色清单 117 项（以 `tools/character_models.py` 为准）
@@ -26,9 +26,9 @@
 | 平台 | 状态 | 安装方式 | 说明 |
 |------|------|---------|------|
 | Windows 10/11 (x64) | ✅ 已支持 | 可执行文件 / 本地安装 | 推荐使用可执行文件，无需安装 Python |
-| Linux (Ubuntu/Debian) | ✅ 已支持 | 可执行文件 / 本地安装 | 推荐 Ubuntu 22.04+，完全兼容 |
+| Linux (Ubuntu/Debian) | ✅ 按设计支持 | 可执行文件 / 本地安装 | 推荐 Ubuntu 22.04+，需在目标机器验证依赖与 GPU wheel |
 | WSL2 (Windows 11) | ✅ 已支持 | 本地安装 | 可直接通过浏览器访问 `http://127.0.0.1:7860` |
-| Google Colab | ✅ 已支持 | 在线使用 | 免费 GPU 加速（T4/V100） |
+| Google Colab | ⚠️ Notebook 已更新，需登录后实跑验证 | 在线使用 | 使用独立 Python 3.10 环境规避 Colab 默认 Python 版本变化；需在真实 Colab GPU 运行完整流程 |
 | Hugging Face Spaces | ✅ 已支持 | 在线使用 | 免费 CPU / 付费 GPU |
 | macOS | ⚠️ 未充分验证 | 本地安装 | 可尝试 CPU 模式；MPS 路径尚未适配 |
 
@@ -73,11 +73,11 @@
 3. 按顺序执行每个单元格
 4. 启动 Gradio 界面后，点击生成的公共链接访问
 
-**优势**：
-- 无需本地安装，开箱即用
-- 免费 GPU 加速（T4/V100）
-- 自动配置环境和依赖
-- 支持所有功能（翻唱、角色模型下载、混音预设等）
+**当前状态**：
+- `AI_RVC_Colab.ipynb` 已改为在 Colab 内创建独立 Python 3.10 环境
+- 安装流程会调用 `install.py --no-run`，并严格检查 `fairseq==0.12.2`、`audio-separator>=0.44.1`、CUDA、HuBERT、RMVPE 等关键依赖和模型
+- Gradio 启动不再使用 `--skip-check`，启动前会再次检查环境和必需模型
+- 仍需在真实 Colab 登录态 + GPU 运行时中完整跑一遍，才能标记为“已实测完全可用”
 
 ### 方式 3：Hugging Face Spaces（在线体验）
 
@@ -202,12 +202,12 @@ python run.py
 ---
 
 **Linux 兼容性说明**：
-- ✅ 所有核心功能完全兼容 Linux
-- ✅ 路径处理使用 `pathlib.Path`，跨平台兼容
-- ✅ 虚拟环境激活脚本自动适配（`bin/activate` vs `Scripts/Activate.ps1`）
-- ✅ 音频处理库（librosa, soundfile, ffmpeg）在 Linux 上表现更稳定
-- ✅ GPU 加速（CUDA/ROCm）完全支持
-- ⚠️ 部分依赖（如 `fairseq`）在 Linux 上编译更快
+- ✅ 核心代码路径使用 `pathlib.Path` 和跨平台设备检测，按设计支持 Linux / WSL2
+- ✅ 虚拟环境路径自动适配（`bin/python` vs `Scripts/python.exe`）
+- ✅ 音频处理库（librosa, soundfile, ffmpeg）在 Linux 上通常表现稳定
+- ✅ CUDA GPU 路径按 PyTorch Linux wheel 支持；ROCm 取决于本机 AMD 驱动、PyTorch ROCm wheel 与系统版本
+- ⚠️ `fairseq==0.12.2`、`pyworld`、`audio-separator[gpu]` 等依赖在不同 Linux 发行版上可能需要编译工具链和系统音频/FFmpeg 依赖
+- ⚠️ 本仓库的 Windows 环境已做自动化检查；Linux / WSL2 建议在目标机器运行 `python3.10 install.py --check` 和一次实际翻唱流程确认
 
 **安装脚本说明**：
 - `install.py` 会自动检测系统环境（Windows/Linux）并完成以下步骤：
@@ -314,50 +314,61 @@ python run.py
 
 ### 使用的 AI 模型
 
-本项目翻唱流水线由四个核心模型组成：
+本项目翻唱流水线由处理链路模型组成，下面先给出当前默认值，再给出可选与对比项。
 
-| 环节 | 模型 | 用途 |
-|------|------|------|
-| 人声分离 | audio-separator public scored SOTA | 从混音中分离人声与伴奏 |
-| 特征提取 | HuBERT Base | 提取语音内容特征供 RVC 使用 |
-| 音高提取 | RMVPE | 从人声中提取 F0 基频曲线 |
-| 语音转换 | RVC v2 | 将人声音色转换为目标角色 |
+| 环节 | 当前默认 | 作用 |
+|------|----------|------|
+| 人声分离 | `ensemble:vocal_rvc` | 分离主唱与伴奏 |
+| 卡拉OK分离 | `ensemble:karaoke` | 分离主唱与伴唱 |
+| 去混响/去回声 | `dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt` | VC 预处理与严格 DeEcho 路径 |
+| 特征提取 | `hubert_base.pt` | 提取语音内容特征 |
+| 音高提取 | `rmvpe.pt` | 提取 F0 基频曲线 |
+| 语音转换 | RVC v2 | 执行 VC 推理 |
 
 ---
 
-### 人声分离模型：audio-separator public scored SOTA
+### 当前项目在用的模型
 
-默认使用最新 `audio-separator` 0.44.1 公开模型表中带分数的最高 Vocals SDR 单模型，通过 [audio-separator](https://github.com/nomadkaraoke/python-audio-separator) 库调用。翻唱链路、VC、混音逻辑保持不变，只替换分离模型默认值。
+| 模型 | 位置 | 用途 | 状态 |
+|------|------|------|------|
+| `ensemble:vocal_rvc` | `infer/separator.py` / `audio-separator` | 默认人声分离预设，包含 `melband_roformer_big_beta6x.ckpt` + `mel_band_roformer_vocals_fv4_gabox.ckpt`，算法 `avg_wave` | 使用中 |
+| `ensemble:karaoke` | `infer/separator.py` / `audio-separator` | 默认卡拉OK分离预设，包含 `mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt` + `mel_band_roformer_karaoke_gabox_v2.ckpt` + `mel_band_roformer_karaoke_becruily.ckpt`，算法 `avg_wave` | 使用中 |
+| `dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt` | `infer/separator.py` | 严格 DeEcho / 去混响 | 使用中 |
+| `htdemucs` / `htdemucs_ft` | `infer/separator.py` | Demucs 分离后端 | 可选 |
+| `HP2_all_vocals.pth` | `configs/config.json` | 当前 UVR5 预设 | 可选 |
+| `htdemucs_ft` | `configs/config.json` | 当前 Demucs 默认值 | 可选 |
+| `HP2_all_vocals.pth` | `tools/download_models.py` | UVR5 主人声模型；同时在 `REQUIRED_MODELS` 下载清单中 | 需要下载 |
+| `HP3_all_vocals.pth` | `tools/download_models.py` | UVR5 主人声模型 | 可选下载 |
+| `HP5_only_main_vocal.pth` | `tools/download_models.py` | UVR5 主人声模型 | 可选下载 |
+| `VR-DeEchoNormal.pth` | `tools/download_models.py` | 旧版 DeEcho | 可选下载 |
+| `VR-DeEchoAggressive.pth` | `tools/download_models.py` | 旧版强去回声 | 可选下载 |
+| `VR-DeEchoDeReverb.pth` | `tools/download_models.py` | 旧版去混响 | 可选下载 |
+| `onnx_dereverb_By_FoxJoy/vocals.onnx` | `tools/download_models.py` | 旧版 ONNX 去混响 | 可选下载 |
+| `hubert_base.pt` | `tools/download_models.py` | HuBERT 内容特征 | 需要下载 |
+| `rmvpe.pt` | `tools/download_models.py` | RMVPE 音高提取 | 需要下载 |
+| `f0G48k.pth` / `f0D48k.pth` | `tools/download_models.py` | 48k 预训练权重 | 可选下载 |
+| `f0G40k.pth` / `f0D40k.pth` | `tools/download_models.py` | 40k 预训练权重 | 可选下载 |
 
-| 项目 | 详情 |
-|------|------|
-| 模型全称 | MelBand Roformer Vocals by Kimberley Jensen |
-| 论文/架构 | Mel-Band RoFormer / RoFormer 系列 |
-| 检查点 | `vocals_mel_band_roformer.ckpt` |
-| 公开模型表 | audio-separator 0.44.1 model list / models-scores.json |
-| 公开标注 | Vocals SDR **12.6**（highest scored vocals model in audio-separator 0.44.1） |
-| 模型文件体积 | 由上游发布决定（会变化）；首次运行自动下载到 `assets/separator_models/` |
-| 调用方式 | 通过 [audio-separator](https://github.com/nomadkaraoke/python-audio-separator) 库封装 |
-| 首次使用 | 自动下载并缓存到 `assets/separator_models/` |
+---
 
-核心思想：在 RoFormer 系列时频建模上使用公开模型表中最高 Vocals SDR 的 scored 权重，优先保证进入 RVC 的主唱人声质量。
+### 人声分离模型对比
 
-#### audio-separator 0.44.1 公开模型表摘录（2026-05-02）
+本项目当前默认使用 `audio-separator` 的 ensemble 预设，而不是旧版单一 ckpt。以下模型名以当前代码和本地 `audio-separator==0.44.1` 包内 `ensemble_presets.json` / `models.json` 为准。
 
-> 统一记法：`Vocals SDR / Instrumental SDR`（dB）。只列带公开分数、且可通过 audio-separator 模型名直接调用的模型。
+| 模型/预设 | 类型 | 用途 | 状态 | 说明 |
+|-----------|------|------|------|------|
+| `ensemble:vocal_rvc` | RoFormer ensemble | 默认人声分离 | 使用中 | `melband_roformer_big_beta6x.ckpt` + `mel_band_roformer_vocals_fv4_gabox.ckpt`，`avg_wave` |
+| `vocals_mel_band_roformer.ckpt` | 单模型 ckpt | 旧版单模人声分离 | 历史参考 | 旧 README 常写的单模型，不再作为当前默认 |
+| `melband_roformer_big_beta6x.ckpt` | 单模型 ckpt | 人声分离候选 | 可选 | 公开可下载的高质量候选模型 |
+| `mel_band_roformer_vocals_fv4_gabox.ckpt` | 单模型 ckpt | 人声分离候选 | 可选 | 公开可下载的高质量候选模型 |
+| `htdemucs` | Demucs | 人声/伴奏分离 | 可选 | 轻量稳定，适合对比 |
+| `htdemucs_ft` | Demucs | 人声/伴奏分离 | 可选 | 微调版，通常比基线更稳 |
+| `bs_roformer_viperx_1053` | BS-RoFormer | 人声/伴奏分离 | 公开参考 | 不在当前本地 `models.json` 可下载名中，不能直接当作本项目可选模型 |
+| `ensemble:karaoke` | RoFormer ensemble | 卡拉OK 主唱/伴唱分离 | 使用中 | 三模型 ensemble，`avg_wave` |
+| `mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt` | 单模型 ckpt | 卡拉OK 分离 | 可选 | 公开带分数的卡拉OK候选 |
+| `dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt` | 单模型 ckpt | 去混响/去回声 | 使用中 | 当前严格 DeEcho 路线使用的模型 |
 
-| 模型 | Vocals SDR | Instrum SDR | 备注 |
-|------|------------|-------------|------|
-| `htdemucs` | 8.38 | 16.31 | Demucs 基线 |
-| `htdemucs_ft` | 9.40 | 16.86 | Demucs 微调版 |
-| `bs_roformer_viperx_1053` | 10.87 | 17.17 | BS-Roformer |
-| `vocals_mel_band_roformer` | 12.6 | other | 本仓库当前默认，audio-separator 0.44.1 scored vocals 第一 |
-| `melband_roformer_big_beta4` | 12.5 | other | fallback |
-| `mel_band_roformer_kim_ft_unwa` | 12.4 | other | fallback |
-| `model_bs_roformer_ep_368_sdr_12.9628` | 12.1 | 16.3 | fallback，双 stem scored |
-| `model_bs_roformer_ep_317_sdr_12.9755` | 11.8 | 16.5 | fallback，双 stem scored |
-
-> 说明：不同数据集/协议不可直接横比；这里采用最新 audio-separator 公开模型表中可直接调用、且带公开分数的最高 Vocals SDR 单模型。MVSEP 在线 ensemble 不一定等同于本地可稳定自动下载的 ckpt。
+> 说明：不同数据集、榜单和评测协议不能直接横比。这里按“当前默认 / 可选 / 历史参考”来写，不把不同口径的分数硬拼成一张总榜。
 
 ---
 
@@ -370,9 +381,9 @@ python run.py
 | 模型全称 | Retrieval-based Voice Conversion v2 |
 | 来源 | [RVC-Project](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) |
 | 架构 | HuBERT 特征提取 → F0 条件 → 生成器 + FAISS 索引检索 |
-| 特征提取器 | HuBERT Base（`hubert_base.pt`，~190 MB） |
-| 训练数据 | 各角色模型独立训练（规模依模型作者而异） |
-| 模型生态（第三方聚合站） | [voice-models.com](https://voice-models.com/) 列表页显示 **201,964**（2026-03-06 访问，含重复与质量差异） |
+| 特征提取器 | HuBERT Base（`hubert_base.pt`） |
+| 推理权重 | 用户选择的 RVC `.pth` 声线模型 |
+| 索引文件 | 可选 `.index`，通过 FAISS 做检索增强 |
 | 许可证 | MIT |
 
 #### 同领域语音转换框架对比
@@ -385,7 +396,7 @@ python run.py
 | [DDSP-SVC](https://github.com/yxlllc/DDSP-SVC) | yxlllc | DDSP | 轻量实时方向 |
 | [Seed-VC](https://arxiv.org/html/2407.07728v3) | 研究论文 | 零样本 VC | 研究方向 |
 
-> **结论**：在“角色模型翻唱”工作流里，RVC v2 目前仍是工程上最易落地的选项之一（模型与工具链成熟）。
+> **结论**：在“角色模型翻唱”工作流里，RVC v2 目前仍是工程上最易落地的选项之一。
 
 ---
 
@@ -397,7 +408,7 @@ python run.py
 |------|------|
 | 模型全称 | Robust Model for Vocal Pitch Estimation in Polyphonic Music |
 | 论文 | [arXiv:2306.15412](https://arxiv.org/abs/2306.15412) |
-| 检查点 | `rmvpe.pt`（`assets/rmvpe/`） |
+| 检查点 | `rmvpe.pt` |
 | 核心优势 | 直接从多声道混音中提取人声音高，噪声鲁棒性强 |
 | 指标 | 论文报告在 RPA/RCA 等指标上优于 CREPE、pYIN、SWIPE、Harvest 等基线 |
 
@@ -406,11 +417,10 @@ python run.py
 | 模型 | 来源 | 说明 |
 |------|------|------|
 | [RMVPE](https://arxiv.org/abs/2306.15412)（当前） | Dream-High | 当前项目默认方案，兼顾精度与鲁棒性 |
-| [FCPE](https://arxiv.org/html/2509.15140) | 2025 论文 | 论文给出 RTF 0.0062、RPA 96.79%（VCTK），实时潜力高 |
 | [CREPE](https://github.com/marl/crepe) | NYU MARL | 经典 CNN 方案，生态成熟 |
 | [Harvest](https://github.com/mmorise/World) | WORLD | 传统信号处理方案，部署简单 |
 
-> **结论**：默认推荐 RMVPE；若场景强依赖实时性，可关注 FCPE 等新方案。
+> **结论**：默认推荐 RMVPE。
 
 ---
 
@@ -420,9 +430,9 @@ python run.py
 |------|------|
 | 模型全称 | Hidden-Unit BERT |
 | 来源 | [Meta AI / fairseq](https://github.com/facebookresearch/fairseq/tree/main/examples/hubert) |
-| 检查点 | `hubert_base.pt`（`assets/hubert/`，~190 MB） |
+| 检查点 | `hubert_base.pt` |
 | 用途 | 提取语音内容特征（去除说话人信息），供 RVC 生成器使用 |
-| 说明 | RVC v2 架构绑定 HuBERT Base；WavLM/ContentVec 在其他框架中可能更优，但 RVC 模型基于 HuBERT 训练，不可替换 |
+| 说明 | RVC v2 架构绑定 HuBERT Base；WavLM/ContentVec 在其他框架中可能更优，但本项目现有模型以 HuBERT 为准 |
 
 ## 参数说明
 

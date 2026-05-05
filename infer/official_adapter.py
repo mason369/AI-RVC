@@ -20,6 +20,18 @@ from infer.quality_policy import resolve_cover_f0_policy
 from lib.logger import log
 
 
+class _IsolatedArgv:
+    """Prevent vendored official modules from parsing this process' CLI args."""
+
+    def __enter__(self):
+        self._saved_argv = sys.argv[:]
+        sys.argv = [sys.argv[0]]
+
+    def __exit__(self, exc_type, exc, tb):
+        sys.argv = self._saved_argv
+        return False
+
+
 def _load_app_config(root_dir: Path) -> dict:
     config_path = root_dir / "configs" / "config.json"
     if config_path.exists():
@@ -40,6 +52,17 @@ def _to_float(value, default):
         return float(value)
     except (TypeError, ValueError):
         return float(default)
+
+
+def _get_audio_activity_stats(audio_path: Path) -> Tuple[float, float, int]:
+    audio, _ = sf.read(str(audio_path), dtype="float32", always_2d=True)
+    if audio.size == 0:
+        return 0.0, 0.0, 0
+    mono = audio.mean(axis=1)
+    rms = float((mono.astype("float64") ** 2).mean() ** 0.5)
+    peak = float(abs(mono).max())
+    nonzero = int((abs(mono) > 1e-8).sum())
+    return rms, peak, nonzero
 
 
 def _resolve_index_path(model_path: Path, index_path: Optional[str]) -> Optional[Path]:
@@ -190,13 +213,15 @@ def separate_uvr5(
     fmt: str = "wav"
 ) -> Tuple[str, str]:
     """Run UVR5 separation and return vocals/ins paths."""
+    temp_dir = Path(temp_dir).resolve()
     log.progress("开始UVR5人声分离...")
     log.detail(f"输入音频: {input_audio}")
     log.detail(f"临时目录: {temp_dir}")
     log.config(f"激进度: {agg}, 输出格式: {fmt}")
 
     setup_official_env(Path(__file__).parent.parent)
-    from infer.modules.uvr5.modules import uvr as uvr5_run
+    with _IsolatedArgv():
+        from infer.modules.uvr5.modules import uvr as uvr5_run
     try:
         import ffmpeg  # noqa: F401
     except Exception as e:
@@ -246,6 +271,26 @@ def separate_uvr5(
     ins_files = sorted(ins_dir.glob(f"*.{fmt}"), key=lambda p: p.stat().st_mtime)
     if not vocal_files or not ins_files:
         raise RuntimeError("UVR5 分离失败，未生成输出文件")
+
+    vocal_rms, vocal_peak, vocal_nonzero = _get_audio_activity_stats(vocal_files[-1])
+    ins_rms, ins_peak, ins_nonzero = _get_audio_activity_stats(ins_files[-1])
+    log.detail(
+        "UVR5输出统计: "
+        f"vocals(rms={vocal_rms:.8f}, peak={vocal_peak:.8f}, nonzero={vocal_nonzero}), "
+        f"ins(rms={ins_rms:.8f}, peak={ins_peak:.8f}, nonzero={ins_nonzero})"
+    )
+    if vocal_peak <= 1e-6 or vocal_nonzero == 0:
+        raise RuntimeError(
+            "UVR5 分离失败：人声输出为空或静音，"
+            f"模型={model_name}, vocal={vocal_files[-1]}, "
+            f"rms={vocal_rms:.8f}, peak={vocal_peak:.8f}, nonzero={vocal_nonzero}"
+        )
+    if ins_peak <= 1e-6 or ins_nonzero == 0:
+        raise RuntimeError(
+            "UVR5 分离失败：伴奏输出为空或静音，"
+            f"模型={model_name}, instrumental={ins_files[-1]}, "
+            f"rms={ins_rms:.8f}, peak={ins_peak:.8f}, nonzero={ins_nonzero}"
+        )
 
     log.success(f"UVR5分离完成")
     log.audio(f"人声文件: {vocal_files[-1].name}")

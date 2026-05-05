@@ -91,9 +91,37 @@ jobs:
         import os
         import shutil
         import stat
+        import subprocess
         from pathlib import Path
 
         import imageio_ffmpeg
+
+        def check_executable(executable: Path) -> None:
+            result = subprocess.run([str(executable), "-version"], text=True, capture_output=True)
+            if result.returncode != 0:
+                details = "\n".join(
+                    part.strip()
+                    for part in (result.stdout, result.stderr)
+                    if part and part.strip()
+                )
+                raise RuntimeError(f"{executable} failed -version:\n{details}")
+
+        def resolve_ffprobe() -> Path:
+            ffprobe_src = shutil.which("ffprobe")
+            if not ffprobe_src:
+                raise RuntimeError("ffprobe not found after installing FFmpeg")
+
+            ffprobe_path = Path(ffprobe_src)
+            if os.name == "nt":
+                chocolatey_root = Path(os.environ.get("ChocolateyInstall", r"C:\ProgramData\chocolatey"))
+                chocolatey_shim_dir = chocolatey_root / "bin"
+                if ffprobe_path.parent.resolve() == chocolatey_shim_dir.resolve():
+                    real_ffprobe = chocolatey_root / "lib" / "ffmpeg" / "tools" / "ffmpeg" / "bin" / "ffprobe.exe"
+                    if not real_ffprobe.exists():
+                        raise RuntimeError(f"Chocolatey ffprobe shim found, but real binary is missing: {real_ffprobe}")
+                    return real_ffprobe
+
+            return ffprobe_path
 
         bundle_dir = Path("tools/ffmpeg/bin")
         bundle_dir.mkdir(parents=True, exist_ok=True)
@@ -103,15 +131,16 @@ jobs:
         ffmpeg_dest = bundle_dir / ffmpeg_name
         shutil.copy2(ffmpeg_src, ffmpeg_dest)
         ffmpeg_dest.chmod(ffmpeg_dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        check_executable(ffmpeg_dest)
         print(f"Bundled ffmpeg: {ffmpeg_dest}")
 
-        ffprobe_src = shutil.which("ffprobe")
-        if ffprobe_src:
-            ffprobe_name = "ffprobe.exe" if os.name == "nt" else "ffprobe"
-            ffprobe_dest = bundle_dir / ffprobe_name
-            shutil.copy2(ffprobe_src, ffprobe_dest)
-            ffprobe_dest.chmod(ffprobe_dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-            print(f"Bundled ffprobe: {ffprobe_dest}")
+        ffprobe_src = resolve_ffprobe()
+        ffprobe_name = "ffprobe.exe" if os.name == "nt" else "ffprobe"
+        ffprobe_dest = bundle_dir / ffprobe_name
+        shutil.copy2(ffprobe_src, ffprobe_dest)
+        ffprobe_dest.chmod(ffprobe_dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        subprocess.run([str(ffprobe_dest), "-version"], text=True, capture_output=True, check=True)
+        print(f"Bundled ffprobe: {ffprobe_dest}")
         PY
 
     - name: Download all AI models

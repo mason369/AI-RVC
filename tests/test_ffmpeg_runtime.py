@@ -1,5 +1,6 @@
 import importlib.util
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -44,12 +45,50 @@ class FfmpegRuntimeTests(unittest.TestCase):
             bin_dir.mkdir(parents=True, exist_ok=True)
             ffmpeg = bin_dir / "ffmpeg.exe"
             ffmpeg.write_bytes(b"exe")
+            ffprobe = bin_dir / "ffprobe.exe"
+            ffprobe.write_bytes(b"exe")
 
             env = {"PATH": r"C:\Windows\System32"}
-            module.configure_ffmpeg_runtime(root_dir=root, env=env)
+            with mock.patch.object(
+                module,
+                "_check_executable_runs",
+                return_value=None,
+            ):
+                module.configure_ffmpeg_runtime(root_dir=root, env=env)
 
         self.assertTrue(env["PATH"].startswith(str(bin_dir)))
         self.assertEqual(env["FFMPEG_BINARY"], str(ffmpeg))
+        self.assertEqual(env["FFPROBE_BINARY"], str(ffprobe))
+
+    def test_runtime_rejects_broken_bundled_ffprobe(self):
+        module = _load_ffmpeg_runtime_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir = root / "tools" / "ffmpeg" / "bin"
+            bin_dir.mkdir(parents=True, exist_ok=True)
+            (bin_dir / "ffmpeg.exe").write_bytes(b"exe")
+            ffprobe = bin_dir / "ffprobe.exe"
+            ffprobe.write_bytes(b"broken")
+
+            def fake_run(command, **kwargs):
+                executable = Path(command[0]).name.lower()
+                if executable == "ffmpeg.exe":
+                    return subprocess.CompletedProcess(command, 0, stdout="ffmpeg version", stderr="")
+                return subprocess.CompletedProcess(
+                    command,
+                    1,
+                    stdout="Cannot find file at '..\\lib\\ffmpeg\\tools\\ffmpeg\\bin\\ffprobe.exe'",
+                    stderr="",
+                )
+
+            with mock.patch.object(module.subprocess, "run", side_effect=fake_run):
+                with self.assertRaises(RuntimeError) as context:
+                    module.configure_ffmpeg_runtime(root_dir=root, env={"PATH": ""})
+
+        message = str(context.exception)
+        self.assertIn(str(ffprobe), message)
+        self.assertIn("Cannot find file", message)
 
     def test_uvr5_module_does_not_shell_out_to_ffprobe(self):
         source = (REPO_ROOT / "infer" / "modules" / "uvr5" / "modules.py").read_text(encoding="utf-8")
@@ -65,6 +104,13 @@ class FfmpegRuntimeTests(unittest.TestCase):
         workflow = (REPO_ROOT / ".github" / "workflows" / "build-executables.yml").read_text(encoding="utf-8")
 
         self.assertIn("tools/ffmpeg", workflow)
+
+    def test_workflow_resolves_real_chocolatey_ffprobe_and_validates_bundle(self):
+        workflow = (REPO_ROOT / ".github" / "workflows" / "build-executables.yml").read_text(encoding="utf-8")
+
+        self.assertIn("ChocolateyInstall", workflow)
+        self.assertIn("ffprobe_dest", workflow)
+        self.assertIn("subprocess.run([str(ffprobe_dest), \"-version\"]", workflow)
 
     def test_release_upload_uses_timeout_and_retry(self):
         workflow = (REPO_ROOT / ".github" / "workflows" / "build-executables.yml").read_text(encoding="utf-8")

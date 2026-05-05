@@ -71,6 +71,39 @@ class InstallRequirementTests(unittest.TestCase):
         self.assertEqual(calls[0][1]["version_spec"], ">=0.44.1")
         self.assertIn(("numpy<2,>=1.23.0", {}), calls)
 
+    def test_cuda_13_uses_latest_supported_pytorch_wheel(self):
+        def fake_run(cmd, **_kwargs):
+            if cmd == ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"]:
+                return mock.Mock(returncode=0, stdout="575.51.03\n")
+            if cmd == ["nvidia-smi"]:
+                return mock.Mock(returncode=0, stdout="CUDA Version: 13.0\n")
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        with mock.patch("install.subprocess.run", side_effect=fake_run):
+            self.assertEqual(
+                install.detect_cuda_version(),
+                "https://download.pytorch.org/whl/cu126",
+            )
+
+    def test_gpu_install_does_not_fall_back_to_cpu_torch(self):
+        calls = []
+
+        def fake_pip_install(_venv_py, package, **kwargs):
+            calls.append((package, kwargs))
+            return True
+
+        with mock.patch(
+            "install.check_all",
+            return_value=[install.PACKAGES["torch"], install.PACKAGES["torchaudio"]],
+        ), mock.patch("install.detect_cuda_version", return_value=None), mock.patch(
+            "install.pip_install",
+            side_effect=fake_pip_install,
+        ), contextlib.redirect_stdout(io.StringIO()):
+            ok = install.install_all("python", gpu=True)
+
+        self.assertFalse(ok)
+        self.assertEqual(calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()

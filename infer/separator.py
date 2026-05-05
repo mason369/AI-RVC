@@ -119,8 +119,36 @@ def _resolve_output_files(output_files, output_dir: Path) -> list[str]:
         file_path = Path(file_name)
         if not file_path.is_absolute():
             file_path = output_dir / file_path
+        if file_path.exists():
+            resolved_files.append(str(file_path))
+            continue
+
+        role = _classify_common_stem_role(file_path.name)
+        if role:
+            candidates = [
+                candidate
+                for candidate in output_dir.glob("*.wav")
+                if _classify_common_stem_role(candidate.name) == role
+            ]
+            if len(candidates) == 1:
+                resolved_files.append(str(candidates[0]))
+                continue
+
         resolved_files.append(str(file_path))
     return resolved_files
+
+
+def _classify_common_stem_role(file_name: str) -> Optional[str]:
+    lower_name = file_name.lower()
+    if any(marker in lower_name for marker in ("(noreverb)", "(no_reverb)", "(no reverb)", "(dry)")):
+        return "dry"
+    if any(marker in lower_name for marker in ("(reverb)", "(echo)", "(wet)")):
+        return "wet"
+    if any(marker in lower_name for marker in ("(instrumental)", "(other)", "(backing)")):
+        return "backing"
+    if any(marker in lower_name for marker in ("(vocals)", "(lead)", "(main_vocal)", "(main vocals)")):
+        return "lead"
+    return None
 
 
 def _safe_move(src_path: str, dst_path: str) -> None:
@@ -589,9 +617,6 @@ class RoformerDereverbSeparator:
             if stem_role == "dry":
                 dry_path = file_path
                 break
-
-        if dry_path is None and resolved_files:
-            dry_path = resolved_files[0]
 
         if not dry_path or not Path(dry_path).exists():
             raise FileNotFoundError(

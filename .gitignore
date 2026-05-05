@@ -73,3 +73,8 @@ _official_rvc/
 # 输出文件
 output/
 outputs/
+/.playwright-cli
+/AI-RVC-Windows-GPU-Portable
+/AI-RVC-Windows-GPU-Portable.7z.*
+/tools/ffmpeg/
+/scratch/

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import MutableMapping, Optional
@@ -69,6 +70,28 @@ def get_ffmpeg_bin_dir(root_dir: Path | str | None = None) -> Optional[Path]:
     return None
 
 
+def _check_executable_runs(executable: Path, label: str) -> None:
+    try:
+        result = subprocess.run(
+            [str(executable), "-version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"{label} 无法启动: {executable} ({exc})") from exc
+
+    if result.returncode != 0:
+        details = "\n".join(
+            part.strip()
+            for part in (result.stdout, result.stderr)
+            if part and part.strip()
+        )
+        if not details:
+            details = f"退出码: {result.returncode}"
+        raise RuntimeError(f"{label} 无法正常运行: {executable}\n{details}")
+
+
 def configure_ffmpeg_runtime(
     root_dir: Path | str | None = None,
     env: MutableMapping[str, str] | None = None,
@@ -88,12 +111,20 @@ def configure_ffmpeg_runtime(
     ffmpeg_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
     ffmpeg_path = bin_dir / ffmpeg_name
     if ffmpeg_path.exists():
+        _check_executable_runs(ffmpeg_path, "ffmpeg")
         env.setdefault("FFMPEG_BINARY", str(ffmpeg_path))
         env.setdefault("IMAGEIO_FFMPEG_EXE", str(ffmpeg_path))
 
     ffprobe_name = "ffprobe.exe" if os.name == "nt" else "ffprobe"
     ffprobe_path = bin_dir / ffprobe_name
     if ffprobe_path.exists():
+        _check_executable_runs(ffprobe_path, "ffprobe")
         env.setdefault("FFPROBE_BINARY", str(ffprobe_path))
+    else:
+        resolved_ffprobe = shutil.which("ffprobe", path=env.get("PATH", ""))
+        if resolved_ffprobe is None:
+            raise RuntimeError("未找到 ffprobe。请安装 ffmpeg/ffprobe，或将 ffprobe 放入 tools/ffmpeg/bin。")
+        _check_executable_runs(Path(resolved_ffprobe), "ffprobe")
+        env.setdefault("FFPROBE_BINARY", str(Path(resolved_ffprobe)))
 
     return bin_dir
