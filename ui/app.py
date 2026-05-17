@@ -16,22 +16,30 @@ from infer.separator import ROFORMER_DEFAULT_MODEL, KARAOKE_DEFAULT_MODEL
 
 # 项目根目录
 ROOT_DIR = Path(__file__).parent.parent
+CONFIG_PATH = ROOT_DIR / "configs" / "config.json"
+DEFAULT_LANGUAGE = "zh_CN"
+SUPPORTED_LANGUAGES = {
+    "zh_CN": "中文",
+    "en_US": "English",
+}
+LANGUAGE_LABEL_TO_CODE = {label: code for code, label in SUPPORTED_LANGUAGES.items()}
 
 # 加载语言包
 def load_i18n(lang: str = "zh_CN") -> dict:
     """加载语言包"""
+    if lang not in SUPPORTED_LANGUAGES:
+        raise ValueError(f"Unsupported language: {lang}")
     i18n_path = ROOT_DIR / "i18n" / f"{lang}.json"
-    if i18n_path.exists():
-        with open(i18n_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+    if not i18n_path.exists():
+        raise FileNotFoundError(f"Language pack not found: {i18n_path}")
+    with open(i18n_path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 # 加载配置
 def load_config() -> dict:
     """加载配置"""
-    config_path = ROOT_DIR / "configs" / "config.json"
-    if config_path.exists():
-        with open(config_path, "r", encoding="utf-8") as f:
+    if CONFIG_PATH.exists():
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
 
@@ -57,9 +65,8 @@ def normalize_config(config: dict) -> dict:
 
     return config
 
-# 全局变量
-i18n = load_i18n()
 config = normalize_config(load_config())
+i18n = load_i18n(str(config.get("language", DEFAULT_LANGUAGE)).strip() or DEFAULT_LANGUAGE)
 pipeline = None
 
 
@@ -68,6 +75,56 @@ def t(key: str, section: str = None) -> str:
     if section:
         return i18n.get(section, {}).get(key, key)
     return i18n.get(key, key)
+
+
+def get_configured_language(config_data: Optional[dict] = None) -> str:
+    """Return the configured UI language, failing on unsupported values."""
+    selected_config = config if config_data is None else config_data
+    language = str(selected_config.get("language", DEFAULT_LANGUAGE)).strip() or DEFAULT_LANGUAGE
+    if language not in SUPPORTED_LANGUAGES:
+        raise ValueError(f"Unsupported language: {language}")
+    return language
+
+
+def resolve_language_choice(language_choice: str) -> str:
+    """Normalize a dropdown label or language code to a supported locale code."""
+    choice = str(language_choice or "").strip()
+    if choice in SUPPORTED_LANGUAGES:
+        return choice
+    if choice in LANGUAGE_LABEL_TO_CODE:
+        return LANGUAGE_LABEL_TO_CODE[choice]
+    raise ValueError(f"Unsupported language choice: {language_choice}")
+
+
+def get_current_language_label() -> str:
+    return SUPPORTED_LANGUAGES[get_configured_language()]
+
+
+def save_language_setting(language_choice: str, config_path: Optional[Path] = None) -> str:
+    """Persist UI language selection. Static Gradio labels update after restart."""
+    global config, i18n
+
+    language = resolve_language_choice(language_choice)
+    target_path = Path(config_path) if config_path is not None else CONFIG_PATH
+
+    if target_path.exists():
+        with open(target_path, "r", encoding="utf-8") as f:
+            next_config = normalize_config(json.load(f))
+    else:
+        next_config = {}
+
+    next_config["language"] = language
+    with open(target_path, "w", encoding="utf-8") as f:
+        json.dump(next_config, f, indent=4, ensure_ascii=False)
+
+    if target_path == CONFIG_PATH:
+        config = next_config
+        i18n = load_i18n(language)
+
+    message_i18n = load_i18n(language)
+    return message_i18n["settings"]["language_saved_restart"].format(
+        language=SUPPORTED_LANGUAGES[language]
+    )
 
 
 def _to_int(value, fallback: int) -> int:
@@ -1407,6 +1464,25 @@ def create_ui() -> gr.Blocks:
             f"<div class='runtime-stamp'>{get_runtime_build_label()}</div>"
         )
 
+        with gr.Row(elem_classes=["language-switch-row"]):
+            language_dropdown = gr.Dropdown(
+                label=t("language", "settings"),
+                choices=list(LANGUAGE_LABEL_TO_CODE.keys()),
+                value=get_current_language_label(),
+                interactive=True,
+            )
+            save_language_btn = gr.Button(
+                f"💾 {t('save_language', 'settings')}",
+                variant="secondary",
+            )
+
+        language_status = gr.Markdown(t("language_restart_info", "settings"))
+        save_language_btn.click(
+            fn=save_language_setting,
+            inputs=[language_dropdown],
+            outputs=[language_status],
+        )
+
         with gr.Tabs():
             # ===== 模型管理标签页 =====
             with gr.Tab(t("models", "tabs")):
@@ -1472,17 +1548,21 @@ def create_ui() -> gr.Blocks:
                     weights_dir = ROOT_DIR / config.get("weights_dir", "assets/weights")
                     models = list_voice_models(str(weights_dir))
                     if not models:
-                        return [["(无模型)", "", ""]]
-                    return [[m["name"], m["model_path"], m.get("index_path", "无")] for m in models]
+                        return [[t("no_models", "ui"), "", ""]]
+                    return [[m["name"], m["model_path"], m.get("index_path", "")] for m in models]
 
                 model_table = gr.Dataframe(
-                    headers=["模型名称", "模型路径", "索引路径"],
+                    headers=[
+                        t("model_name", "ui"),
+                        t("model_path", "ui"),
+                        t("index_path", "ui"),
+                    ],
                     value=get_model_table(),
                     interactive=False
                 )
 
                 refresh_table_btn = gr.Button(
-                    f"🔄 刷新模型列表",
+                    f"🔄 {t('refresh_models', 'ui')}",
                     variant="secondary"
                 )
 
@@ -1494,19 +1574,7 @@ def create_ui() -> gr.Blocks:
             # ===== 歌曲翻唱标签页 =====
             with gr.Tab(t("cover", "tabs")):
                 gr.Markdown(f"### 🎵 {t('song_cover', 'cover')}")
-                gr.Markdown(
-                    """
-                    **一键 AI 翻唱**：上传歌曲 → 自动分离人声 → 转换音色 → 混合伴奏 → 输出翻唱
-
-                    **使用步骤：**
-                    1. 先下载角色模型（展开下方「下载角色模型」）
-                    2. 上传歌曲文件（支持 MP3/WAV/FLAC）
-                    3. 选择已下载的角色
-                    4. 调整参数后点击「开始翻唱」
-
-                    > ⚠️ 首次运行会自动下载 Mel-Band Roformer 人声分离模型（约 200MB），请耐心等待
-                    """
-                )
+                gr.Markdown(t("cover_usage", "ui"))
 
                 with gr.Row():
                     # 左侧：输入和角色选择
@@ -1520,23 +1588,23 @@ def create_ui() -> gr.Blocks:
                         gr.Markdown(f"#### 🎭 {t('select_character', 'cover')}")
 
                         downloaded_series = gr.Dropdown(
-                            label="作品/分类",
+                            label=t("series_filter", "ui"),
                             choices=get_downloaded_character_series(),
                             value="全部",
                             interactive=True
                         )
 
                         downloaded_keyword = gr.Textbox(
-                            label="关键词搜索",
-                            placeholder="输入角色名/作品名",
+                            label=t("keyword_search", "ui"),
+                            placeholder=t("keyword_placeholder", "ui"),
                             interactive=True
                         )
 
                         character_dropdown = gr.Dropdown(
-                            label="选择角色",
+                            label=t("character", "cover"),
                             choices=get_downloaded_character_choices("全部", ""),
                             interactive=True,
-                            info="列表会显示版本标识、角色归属和模型来源；版本里常见的 epochs 表示训练轮数，40k/48k 表示采样率。"
+                            info=t("character_choice_info", "ui")
                         )
 
                         character_details = gr.Markdown(
@@ -1545,32 +1613,32 @@ def create_ui() -> gr.Blocks:
 
                         with gr.Row():
                             refresh_char_btn = gr.Button(
-                                "🔄 刷新",
+                                f"🔄 {t('refresh', 'conversion')}",
                                 size="sm",
                                 variant="secondary"
                             )
 
                         # 角色下载区域
-                        with gr.Accordion("下载角色模型", open=False):
+                        with gr.Accordion(t("download_character", "cover"), open=False):
                             series_choices = ["全部"] + get_available_character_series()
                             download_series = gr.Dropdown(
-                                label="作品/分类",
+                                label=t("series_filter", "ui"),
                                 choices=series_choices,
                                 value="全部",
                                 interactive=True
                             )
 
                             download_keyword = gr.Textbox(
-                                label="关键词搜索",
-                                placeholder="输入角色名/作品名",
+                                label=t("keyword_search", "ui"),
+                                placeholder=t("keyword_placeholder", "ui"),
                                 interactive=True
                             )
 
                             download_char_dropdown = gr.Dropdown(
-                                label="选择角色",
+                                label=t("select_to_download", "cover"),
                                 choices=get_available_character_choices("全部", ""),
                                 interactive=True,
-                                info="列表会显示版本标识、角色归属和来源仓库，便于区分同角色的不同模型。"
+                                info=t("download_character_info", "ui")
                             )
 
                             download_char_details = gr.Markdown(
@@ -1578,22 +1646,22 @@ def create_ui() -> gr.Blocks:
                             )
 
                             download_char_btn = gr.Button(
-                                "⬇️ 下载选中角色",
+                                f"⬇️ {t('download_selected_character', 'ui')}",
                                 variant="primary"
                             )
 
                             download_all_series_btn = gr.Button(
-                                "⬇️ 下载该分类全部",
+                                f"⬇️ {t('download_series_all', 'ui')}",
                                 variant="secondary"
                             )
 
                             download_all_btn = gr.Button(
-                                "⬇️ 下载全部角色模型",
+                                f"⬇️ {t('download_all_characters', 'ui')}",
                                 variant="secondary"
                             )
 
                             download_char_status = gr.Textbox(
-                                label="下载状态",
+                                label=t("download_status", "ui"),
                                 interactive=False
                             )
 
@@ -1608,7 +1676,7 @@ def create_ui() -> gr.Blocks:
                             maximum=12,
                             value=0,
                             step=1,
-                            info="正数升调，负数降调"
+                            info=t("positive_pitch_info", "ui")
                         )
 
                         cover_index_rate = gr.Slider(
@@ -1713,7 +1781,7 @@ def create_ui() -> gr.Blocks:
                             maximum=200,
                             value=default_mix["vocals_volume"],
                             step=5,
-                            info="100% 为原始音量"
+                            info=t("normal_volume_info", "ui")
                         )
 
                         cover_accompaniment_volume = gr.Slider(
@@ -1722,7 +1790,7 @@ def create_ui() -> gr.Blocks:
                             maximum=200,
                             value=default_mix["accompaniment_volume"],
                             step=5,
-                            info="100% 为原始音量"
+                            info=t("normal_volume_info", "ui")
                         )
 
                         cover_reverb = gr.Slider(
@@ -1731,7 +1799,7 @@ def create_ui() -> gr.Blocks:
                             maximum=100,
                             value=default_mix["reverb"],
                             step=5,
-                            info="为人声添加混响效果"
+                            info=t("reverb_info", "ui")
                         )
 
                         cover_rms_mix_rate = gr.Slider(
@@ -2017,7 +2085,7 @@ def create_ui() -> gr.Blocks:
 
                 gr.Markdown("---")
 
-                gr.Markdown(f"### ⚙️ 运行设置")
+                gr.Markdown(f'### ⚙️ {t("runtime_settings", "settings")}')
 
                 def _build_device_choices():
                     from lib.device import _has_xpu, _has_directml, _has_mps, _is_rocm
@@ -2032,22 +2100,22 @@ def create_ui() -> gr.Blocks:
                         choices.append(("DirectML (AMD/Intel GPU)", "directml"))
                     if _has_mps():
                         choices.append(("MPS (Apple GPU)", "mps"))
-                    choices.append(("CPU (较慢)", "cpu"))
+                    choices.append((t("cpu_slow", "settings"), "cpu"))
                     return choices
 
                 device_radio = gr.Radio(
-                    label="计算设备",
+                    label=t("compute_device", "settings"),
                     choices=_build_device_choices(),
                     value=config.get("device", "cuda")
                 )
 
                 save_settings_btn = gr.Button(
-                    "💾 保存设置",
+                    f"💾 {t('save_settings', 'settings')}",
                     variant="primary"
                 )
 
                 settings_status = gr.Textbox(
-                    label="状态",
+                    label=t("status", "settings"),
                     interactive=False
                 )
 
@@ -2059,7 +2127,7 @@ def create_ui() -> gr.Blocks:
                     with open(config_path, "w", encoding="utf-8") as f:
                         json.dump(config, f, indent=4, ensure_ascii=False)
 
-                    return "✅ 设置已保存，重启后生效"
+                    return t("settings_saved_restart", "settings")
 
                 save_settings_btn.click(
                     fn=save_settings,
@@ -2070,60 +2138,11 @@ def create_ui() -> gr.Blocks:
                 gr.Markdown("---")
 
                 gr.Markdown(f"### ℹ️ {t('about', 'settings')}")
-                gr.Markdown(
-                    """
-                    **RVC AI 翻唱系统**
-
-                    - 基于 RVC v2 + Mel-Band Roformer
-                    - 使用 RMVPE 进行高质量 F0 提取
-                    - 支持 CUDA GPU 加速
-
-                    [GitHub](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI)
-                    """
-                )
+                gr.Markdown(t("about_body", "settings"))
 
                 gr.Markdown("---")
 
-                gr.Markdown(
-                    """
-                    ### 📥 角色模型来源
-
-                    以下是本项目角色模型的 HuggingFace 仓库来源，你也可以手动下载模型后放入 `assets/weights/characters/<角色名>/` 目录使用：
-
-                    **Love Live! 系列**
-                    - [trioskosmos/rvc_models](https://huggingface.co/trioskosmos/rvc_models) — μ's / Aqours / 虹咲 / Liella! 多角色
-                    - [Icchan/LoveLive](https://huggingface.co/Icchan/LoveLive) — 千歌、梨子、绘里、曜
-                    - [0xMifune/LoveLive](https://huggingface.co/0xMifune/LoveLive) — 虹咲 / Liella! / 莲之空
-                    - [Swordsmagus/Love-Live-RVC](https://huggingface.co/Swordsmagus/Love-Live-RVC) — 花丸、雪菜、小鸟、A-RISE 等
-                    - [Zurakichi/RVC](https://huggingface.co/Zurakichi/RVC) — 妮可、彼方、雪菜、花丸
-                    - [Phos252/RVCmodels](https://huggingface.co/Phos252/RVCmodels) — 涩谷香音
-                    - [ChocoKat/Mari_Ohara](https://huggingface.co/ChocoKat/Mari_Ohara) — 小原鞠莉
-                    - [HarunaKasuga/YoshikoTsushima](https://huggingface.co/HarunaKasuga/YoshikoTsushima) — 津岛善子
-                    - [thebuddyadrian/RVC_Models](https://huggingface.co/thebuddyadrian/RVC_Models) — 鹿角姐妹
-
-                    **原神 / 崩坏 / 绝区零 (米哈游)**
-                    - [makiligon/RVC-Models](https://huggingface.co/makiligon/RVC-Models) — 芙宁娜、绫华、芙卡洛斯
-                    - [kohaku12/RVC-MODELS](https://huggingface.co/kohaku12/RVC-MODELS) — 纳西妲、黑塔、流萤、停云、星见雅 等
-                    - [jarari/RVC-v2](https://huggingface.co/jarari/RVC-v2) — 芙宁娜(韩语)、银狼(韩语)
-                    - [mrmocciai/genshin-impact](https://huggingface.co/mrmocciai/genshin-impact) — 原神 50+ 角色（需手动下载）
-
-                    **VOCALOID**
-                    - [javinfamous/infamous_miku_v2](https://huggingface.co/javinfamous/infamous_miku_v2) — 初音未来 (1000 epochs)
-
-                    **Hololive / VTuber**
-                    - [megaaziib/my-rvc-models-collection](https://huggingface.co/megaaziib/my-rvc-models-collection) — 佩克拉、樱巫女、大空昴、Kobo、Kaela 等
-                    - [Kit-Lemonfoot/kitlemonfoot_rvc_models](https://huggingface.co/Kit-Lemonfoot/kitlemonfoot_rvc_models) — Hololive JP/EN 多角色
-
-                    **偶像大师 / 赛马娘**
-                    - [trioskosmos/rvc_models](https://huggingface.co/trioskosmos/rvc_models) — 神崎兰子、梦见莉亚梦
-                    - [makiligon/RVC-Models](https://huggingface.co/makiligon/RVC-Models) — 四条贵音、米浴
-
-                    **Project SEKAI**
-                    - [kohaku12/RVC-MODELS](https://huggingface.co/kohaku12/RVC-MODELS) — 草薙宁宁
-
-                    > 💡 手动下载后，将 `.pth` 和 `.index` 文件放入 `assets/weights/characters/<角色名>/` 目录，刷新即可使用。
-                    """
-                )
+                gr.Markdown(t("model_sources", "settings"))
 
     return app
 

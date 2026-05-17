@@ -1,4 +1,5 @@
 {
+    "language": "zh_CN",
     "device": "cuda",
     "sample_rate": 48000,
     "hop_length": 160,
