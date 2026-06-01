@@ -2,6 +2,8 @@
 
 基于 RVC v2 的一键 AI 翻唱系统，自动完成人声分离、音色转换、混音合成全流程。
 
+> 在线体验：[https://telknet.cc/](https://telknet.cc/)
+
 **平台支持：Windows / Linux / WSL2**
 
 ![Windows 界面](docs/Windows界面.png)
