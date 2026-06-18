@@ -1,27 +1,41 @@
-# AI-RVC 一键 AI 翻唱
+# AI-RVC 一键 AI 翻唱 / RVC Voice Conversion WebUI
 
-基于 RVC v2 的一键 AI 翻唱系统，自动完成人声分离、音色转换、混音合成全流程。
+AI-RVC 是一个面向普通用户和创作者的 **RVC v2 AI 翻唱与声音转换工具**。上传一首歌，它会自动分离人声和伴奏，用角色 RVC 模型转换主唱音色，再把转换后的人声、伴奏和混响重新混成完整作品。
+
+不用先手动拆音轨，也不用在一堆脚本里来回切。打开 Gradio WebUI，选歌、选角色、点开始，一首 AI cover 就能从原曲一路跑到成品。
 
 > 在线体验：[https://telknet.cc/](https://telknet.cc/)
 
-**平台支持：Windows / Linux / WSL2**
+**平台支持：Windows / Linux / WSL2 / Google Colab / Hugging Face Spaces**
 
 ![Windows 界面](docs/Windows界面.png)
 
+## 项目定位与搜索关键词
+
+如果你在找 **AI 翻唱、RVC 翻唱、AI cover generator、RVC voice conversion、角色声线转换、人声分离、伴奏分离、HuBERT、RMVPE、FAISS、Gradio WebUI、Colab AI 翻唱** 这类工具，AI-RVC 的目标就是把这些零散步骤串成一条更省心的工作流。
+
+适合放在 GitHub About 的仓库简介：
+
+> 一键 AI 翻唱与 RVC v2 声音转换 WebUI：自动人声分离、HuBERT + RMVPE + FAISS 音色转换、角色模型下载、混音预设，并支持 Windows、Linux、WSL2、Google Colab 和 Hugging Face Spaces。
+
+推荐 GitHub Topics：
+
+`rvc`, `rvc-v2`, `voice-conversion`, `ai-cover`, `song-cover`, `singing-voice-conversion`, `voice-changer`, `voice-cloning`, `vocal-separation`, `audio-separation`, `rmvpe`, `hubert`, `faiss`, `gradio`, `pytorch`, `colab`, `uvr`, `demucs`, `roformer`, `ai-music`
+
 ## 功能特点
 
-- **AI 歌曲翻唱**：上传歌曲自动分离人声、转换音色、混合伴奏，一键生成翻唱
-- **人声分离**：默认 `audio-separator` 0.44.1 ensemble 预设（`ensemble:vocal_rvc`）；可选卡拉OK预设、UVR5、Demucs
-- **音色转换**：RVC v2 架构 + 官方 VC 管道，适配角色模型 + FAISS 检索增强流程
-- **RMVPE 音高提取**：按 RMVPE 论文报告，在公开基准上优于 CREPE / pYIN / SWIPE 等基线并具备更好噪声鲁棒性
-- **角色模型**：内置可下载角色清单 117 项（以 `tools/character_models.py` 为准）
-- **混音效果**：支持人声混响、音量调节、原声混合
-- **混音预设**：4 种预设（通用、人声突出、伴奏突出、现场感），一键应用
-- **卡拉OK模式**：分离主唱和伴唱轨道，支持独立处理和混合
-- **VC预处理**：4 种模式（自动、直通、学习型DeEcho、旧版手工链），灵活控制人声预处理
-- **双VC管道**：支持当前实现和官方实现，可对比效果
-- **GPU 加速**：自动检测并使用 CUDA / ROCm / XPU / DirectML / MPS / CPU
-- **简洁界面**：基于 Gradio 的中文图形界面，支持 Web 和 Colab
+- **AI 歌曲翻唱**：上传 MP3/WAV/FLAC，自动完成人声分离、RVC 音色转换、伴奏混合和结果导出，一首歌从原曲跑到 AI cover 成品。
+- **人声分离**：默认使用 `audio-separator` 0.44.1 ensemble 预设（`ensemble:vocal_rvc`）；可选卡拉OK预设、UVR5、Demucs，适配不同歌曲素材。
+- **音色转换**：RVC v2 架构 + 官方 VC 管道，结合 HuBERT 特征、角色模型和 FAISS 检索增强流程，让声线更贴近目标音色。
+- **RMVPE 音高提取**：按 RMVPE 论文报告，在公开基准上优于 CREPE / pYIN / SWIPE 等基线，并具备更好的噪声鲁棒性。
+- **角色模型**：内置可下载角色清单 117 项（以 `tools/character_models.py` 为准），支持系列筛选和关键词搜索。
+- **混音效果**：支持人声混响、音量调节、原声混合，生成结果不用再额外开一套音频工程。
+- **混音预设**：4 种预设（通用、人声突出、伴奏突出、现场感），想快一点就一键应用，想细一点也能继续手调。
+- **卡拉OK模式**：分离主唱和伴唱轨道，支持独立处理和混合，适合和声多、伴唱明显的歌曲。
+- **VC预处理**：4 种模式（自动、直通、学习型 DeEcho、旧版手工链），灵活控制人声预处理。
+- **双VC管道**：支持当前实现和官方实现，可按歌曲素材、模型效果做 A/B 对比。
+- **GPU 加速**：自动检测并使用 CUDA / ROCm / XPU / DirectML / MPS / CPU。
+- **简洁界面**：基于 Gradio 的中文图形界面，支持本地 Web、Google Colab 和 Hugging Face Spaces。
 
 ## 平台支持
 
