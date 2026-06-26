@@ -10,6 +10,7 @@ import shutil
 import torch
 import numpy as np
 import soundfile as sf
+import logging as _logging
 from pathlib import Path
 from typing import Tuple, Optional, Callable, Union
 
@@ -29,14 +30,33 @@ except ImportError:
 try:
     from audio_separator.separator import Separator
     AUDIO_SEPARATOR_AVAILABLE = True
+    AUDIO_SEPARATOR_IMPORT_ERROR = None
     # 抑制 audio-separator 的英文日志，我们有自己的中文日志
-    import logging as _logging
     _logging.getLogger("audio_separator").setLevel(_logging.WARNING)
-except ImportError:
+except ImportError as exc:
+    Separator = None
     AUDIO_SEPARATOR_AVAILABLE = False
+    AUDIO_SEPARATOR_IMPORT_ERROR = exc
 
 
 ModelSpec = Union[str, list[str], tuple[str, ...]]
+
+
+def get_audio_separator_unavailable_reason() -> str:
+    """Return the original audio-separator import failure, if any."""
+    if AUDIO_SEPARATOR_AVAILABLE:
+        return ""
+    if AUDIO_SEPARATOR_IMPORT_ERROR is None:
+        return "audio-separator 未安装或不可导入"
+    return str(AUDIO_SEPARATOR_IMPORT_ERROR)
+
+
+def _audio_separator_install_message() -> str:
+    message = "请安装 audio-separator[cpu] 或 audio-separator[gpu]"
+    reason = get_audio_separator_unavailable_reason()
+    if reason:
+        message += f"；原始错误: {reason}"
+    return message
 
 
 # Public scored SOTA defaults from audio-separator 0.44.1's model table.
@@ -185,9 +205,7 @@ class RoformerSeparator:
         device: str = "cuda",
     ):
         if not AUDIO_SEPARATOR_AVAILABLE:
-            raise ImportError(
-                "请安装 audio-separator: pip install audio-separator[gpu]"
-        )
+            raise ImportError(_audio_separator_install_message())
         self.model_filename = model_filename
         self.model_candidates = [model_filename]
         self.device = str(get_device(device))
@@ -354,9 +372,7 @@ class KaraokeSeparator:
         device: str = "cuda",
     ):
         if not AUDIO_SEPARATOR_AVAILABLE:
-            raise ImportError(
-                "请安装 audio-separator: pip install audio-separator[gpu]"
-            )
+            raise ImportError(_audio_separator_install_message())
         self.device = str(get_device(device))
         self.separator = None
         self.active_model = None
@@ -521,9 +537,7 @@ class RoformerDereverbSeparator:
         device: str = "cuda",
     ):
         if not AUDIO_SEPARATOR_AVAILABLE:
-            raise ImportError(
-                "请安装 audio-separator: pip install audio-separator[gpu]"
-            )
+            raise ImportError(_audio_separator_install_message())
         self.device = str(get_device(device))
         self.separator = None
         self.active_model = None

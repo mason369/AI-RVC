@@ -32,7 +32,7 @@ python-dotenv>=1.0.0
 colorama>=0.4.6
 
 # AI 翻唱功能（核心）
-audio-separator==0.44.1
+audio-separator[cpu]==0.44.1
 huggingface_hub>=0.19.0,<1.0
 pedalboard>=0.7.0
 ffmpeg-python>=0.2.0

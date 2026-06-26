@@ -23,6 +23,7 @@ from infer.separator import (
     KARAOKE_DEFAULT_MODEL,
     check_demucs_available,
     check_roformer_available,
+    get_audio_separator_unavailable_reason,
     get_available_models,
 )
 from infer.official_adapter import (
@@ -591,8 +592,11 @@ class CoverPipeline:
         # Roformer 模式
         if model_name == "roformer":
             if not check_roformer_available():
+                reason = get_audio_separator_unavailable_reason()
+                suffix = f"；原始错误: {reason}" if reason else ""
                 raise ImportError(
-                    "请安装 audio-separator: pip install audio-separator[gpu]"
+                    "请安装 audio-separator[cpu] 或 audio-separator[gpu]"
+                    f"{suffix}"
                 )
             if (
                 self.separator is not None
