@@ -37,7 +37,7 @@
         "uvr5_model": "HP2_all_vocals",
         "uvr5_agg": 10,
         "uvr5_format": "wav",
-        "use_official": true,
+        "use_official": false,
         "demucs_model": "htdemucs_ft",
         "demucs_shifts": 10,
         "demucs_overlap": 0.5,

@@ -1,4 +1,5 @@
 import ast
+import json
 import unittest
 from pathlib import Path
 
@@ -41,6 +42,15 @@ class HuggingFaceEntrypointTests(unittest.TestCase):
         self.assertIn("numpy>=2,<3", requirements)
         self.assertIn("audio-separator[cpu]==0.44.1", requirements)
         self.assertIn("huggingface_hub>=0.19.0,<1.0", requirements)
+
+    def test_cover_current_default_does_not_require_untracked_official_tree(self):
+        config = json.loads(
+            (REPO_ROOT / "configs" / "config.json")
+            .read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(config["cover"]["vc_pipeline_mode"], "current")
+        self.assertFalse(config["cover"]["use_official"])
 
 
 if __name__ == "__main__":
