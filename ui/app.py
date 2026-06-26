@@ -1318,7 +1318,7 @@ table thead td,
     border-color: #404040 !important;
 }
 
-/* Gradio 4.x Dataframe 表头 */
+/* Gradio 4/5 Dataframe 表头 */
 .svelte-1kcgrqr thead th,
 .svelte-1kcgrqr thead td,
 .cell-wrap span,
@@ -1372,7 +1372,7 @@ input[type="range"] {
     accent-color: #ff9800 !important;
 }
 
-/* Gradio 4.x 音频波形 */
+/* Gradio 4/5 音频波形 */
 .waveform-container,
 .audio-container {
     --waveform-color: #ff9800 !important;

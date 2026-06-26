@@ -4,7 +4,7 @@ emoji: 🎤
 colorFrom: blue
 colorTo: purple
 sdk: gradio
-sdk_version: 4.44.1
+sdk_version: 5.49.1
 python_version: "3.10"
 app_file: app.py
 pinned: false
@@ -20,7 +20,7 @@ AI-RVC 是一个基于 **RVC v2** 的一键 AI 翻唱与声音转换 WebUI。上
 ## 功能特点
 
 - **AI 歌曲翻唱**：上传 MP3/WAV/FLAC，自动分离人声、转换音色、混合伴奏，一键生成 AI cover。
-- **人声分离**：默认 `audio-separator` 0.44.1 ensemble 预设（`ensemble:vocal_rvc`），配合 Gradio 4 / NumPy 2 运行，可处理常见歌曲里的主唱与伴奏分离。
+- **人声分离**：默认 `audio-separator` 0.44.1 ensemble 预设（`ensemble:vocal_rvc`），配合 Gradio 5 / NumPy 2 运行，可处理常见歌曲里的主唱与伴奏分离。
 - **音色转换**：RVC v2 架构 + FAISS 检索增强流程，搭配角色模型完成声线转换。
 - **RMVPE 音高提取**：用于提取 F0 基频曲线，让旋律和音高更稳。
 - **角色模型**：内置 117 个可下载角色模型，支持系列筛选和关键词搜索。

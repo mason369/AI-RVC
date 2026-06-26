@@ -65,7 +65,7 @@ python -c "import torch; print(torch.cuda.is_available())"
 - Display name assembly: `_get_display_name()` appends `(500 epochs·40k)` style training info
 
 **UI** (`ui/app.py`):
-- Gradio 4.44.1, single-file ~2000 lines
+- Gradio 5.49.1, single-file ~2000 lines
 - i18n via `i18n/zh_CN.json`, accessed through `t(key, section)` helper
 - Three main tabs: song cover (full pipeline), model management, settings
 - Cover tab features:
@@ -116,7 +116,7 @@ python -c "import torch; print(torch.cuda.is_available())"
 - `fairseq` is pinned to `0.12.2` — HuBERT loading breaks on other versions
 - `audio-separator` must be installed with `[gpu]` extra for CUDA support
 - Roformer model auto-downloads on first use to `assets/separator_models/`
-- Gradio is pinned to `4.44.1`; `huggingface_hub` is kept below 1.0 because this Gradio release still imports `HfFolder`
+- Gradio is pinned to `5.49.1`; `huggingface_hub` is kept below 1.0 to stay aligned with the HF Space runtime
 - Model weights (.pt, .pth) and audio files are gitignored — never commit them
 - Path handling uses `pathlib.Path` for cross-platform compatibility (Windows/Linux)
 - Virtual environment activation differs by platform: `Scripts/Activate.ps1` (Windows) vs `bin/activate` (Linux)

@@ -7,7 +7,7 @@ torch>=2.0.0
 torchaudio>=2.0.0
 
 # Gradio 界面
-gradio==4.44.1
+gradio==5.49.1
 fastapi>=0.115,<1
 anyio>=3,<5
 pydantic>=2,<3

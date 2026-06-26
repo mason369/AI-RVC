@@ -27,7 +27,7 @@ PYTHON310_CANDIDATES = [
 PACKAGES = {
     "torch": {"import": "torch", "name": "PyTorch", "pip": "torch"},
     "torchaudio": {"import": "torchaudio", "name": "torchaudio", "pip": "torchaudio"},
-    "gradio": {"import": "gradio", "name": "Gradio", "pip": "gradio==4.44.1"},
+    "gradio": {"import": "gradio", "name": "Gradio", "pip": "gradio==5.49.1"},
     "librosa": {"import": "librosa", "name": "librosa", "pip": "librosa"},
     "soundfile": {"import": "soundfile", "name": "soundfile", "pip": "soundfile"},
     "av": {"import": "av", "name": "PyAV", "pip": "av"},
