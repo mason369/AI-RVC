@@ -41,6 +41,7 @@ class HuggingFaceEntrypointTests(unittest.TestCase):
         self.assertIn("jinja2<3.1", requirements)
         self.assertIn("pandas<2", requirements)
         self.assertIn("numpy<2,>=1.23.0", requirements)
+        self.assertIn("audio-separator==0.44.1", requirements)
 
 
 if __name__ == "__main__":

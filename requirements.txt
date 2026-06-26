@@ -37,7 +37,7 @@ mcp>=1.0.0
 
 # AI 翻唱功能
 demucs>=4.0.0          # 人声分离 (Demucs)
-audio-separator[gpu]>=0.44.1   # 人声分离 (Mel-Band Roformer / RoFormer SOTA); install.py restores numpy<2
+audio-separator[gpu]==0.44.1   # 人声分离 (Mel-Band Roformer / RoFormer SOTA); install.py restores numpy<2
 huggingface_hub>=0.19.0 # 模型下载
 pedalboard>=0.7.0      # 音频效果(混响)
 imageio-ffmpeg>=0.5.1  # 便携 ffmpeg 运行时
