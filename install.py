@@ -27,7 +27,7 @@ PYTHON310_CANDIDATES = [
 PACKAGES = {
     "torch": {"import": "torch", "name": "PyTorch", "pip": "torch"},
     "torchaudio": {"import": "torchaudio", "name": "torchaudio", "pip": "torchaudio"},
-    "gradio": {"import": "gradio", "name": "Gradio", "pip": "gradio==3.50.2"},
+    "gradio": {"import": "gradio", "name": "Gradio", "pip": "gradio==4.44.1"},
     "librosa": {"import": "librosa", "name": "librosa", "pip": "librosa"},
     "soundfile": {"import": "soundfile", "name": "soundfile", "pip": "soundfile"},
     "av": {"import": "av", "name": "PyAV", "pip": "av"},
@@ -35,10 +35,10 @@ PACKAGES = {
     "numpy": {
         "import": "numpy",
         "name": "numpy",
-        "pip": "numpy<2,>=1.23.0",
+        "pip": "numpy>=2,<3",
         "dist": "numpy",
-        "min_version": "1.23.0",
-        "max_exclusive_version": "2.0.0",
+        "min_version": "2.0.0",
+        "max_exclusive_version": "3.0.0",
     },
     "parselmouth": {"import": "parselmouth", "name": "praat-parselmouth", "pip": "praat-parselmouth"},
     "pyworld": {"import": "pyworld", "name": "pyworld", "pip": "pyworld"},
@@ -321,12 +321,6 @@ def install_all(venv_py, gpu=True):
                 extra="gpu" if gpu else "cpu",
                 version_spec=version_spec,
             )
-            if ok:
-                # audio-separator 0.31+ declares numpy>=2, while the current
-                # Gradio 3.x UI stack is pinned to numpy 1.x. The separator
-                # model table and runtime imports work with numpy 1.26, so
-                # restore the app-compatible numpy line after separator install.
-                ok = pip_install(venv_py, "numpy<2,>=1.23.0")
         else:
             ok = pip_install(venv_py, pip_name)
         if not ok:

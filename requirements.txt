@@ -5,20 +5,19 @@ torch>=2.0.0
 torchaudio>=2.0.0
 
 # Gradio 界面
-gradio==3.50.2
-fastapi==0.104.1        # Gradio 3.x 依赖旧 Starlette TemplateResponse 签名
-starlette==0.27.0
-anyio<4
-pydantic<2
-jinja2<3.1              # Gradio 3.x 与 Jinja2 3.1.x 不兼容 (unhashable type: 'dict')
-pandas<2                # Gradio 3.x 兼容旧版 pandas；新版 pandas 要求 Jinja2 3.1.2+
+gradio==4.44.1
+fastapi>=0.115,<1
+anyio>=3,<5
+pydantic>=2,<3
+jinja2>=3.1,<4
+pandas>=2,<3
 
 # 音频处理
 librosa>=0.10.0
 soundfile>=0.12.0
 av>=10.0.0
 scipy>=1.10.0
-numpy<2,>=1.23.0     # Gradio 3.x / RVC stack compatibility
+numpy>=2,<3          # audio-separator 0.44.x / Gradio 4 compatibility
 praat-parselmouth>=0.4.3
 pyworld>=0.3.4
 torchcrepe>=0.0.20
@@ -37,8 +36,8 @@ mcp>=1.0.0
 
 # AI 翻唱功能
 demucs>=4.0.0          # 人声分离 (Demucs)
-audio-separator[gpu]==0.44.1   # 人声分离 (Mel-Band Roformer / RoFormer SOTA); install.py restores numpy<2
-huggingface_hub>=0.19.0 # 模型下载
+audio-separator[gpu]==0.44.1   # 人声分离 (Mel-Band Roformer / RoFormer SOTA)
+huggingface_hub>=0.19.0,<1.0 # 模型下载；Gradio 4.44.1 仍使用 HfFolder
 pedalboard>=0.7.0      # 音频效果(混响)
 imageio-ffmpeg>=0.5.1  # 便携 ffmpeg 运行时
 

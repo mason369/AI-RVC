@@ -33,10 +33,10 @@ class InstallRequirementTests(unittest.TestCase):
             {info["pip"] for info in missing},
         )
 
-    def test_numpy_2_is_marked_for_downgrade(self):
+    def test_numpy_1_is_marked_for_upgrade(self):
         def version_for_package(_venv_py, distribution_name):
             if distribution_name == "numpy":
-                return "2.2.6"
+                return "1.26.4"
             if distribution_name == "audio-separator":
                 return "0.44.1"
             return None
@@ -48,9 +48,9 @@ class InstallRequirementTests(unittest.TestCase):
         ), contextlib.redirect_stdout(io.StringIO()):
             missing = install.check_all("python")
 
-        self.assertIn("numpy<2,>=1.23.0", {info["pip"] for info in missing})
+        self.assertIn("numpy>=2,<3", {info["pip"] for info in missing})
 
-    def test_audio_separator_install_restores_numpy_1_x(self):
+    def test_audio_separator_install_keeps_declared_numpy_2_stack(self):
         audio_separator_info = install.PACKAGES["audio_separator"]
         calls = []
 
@@ -67,9 +67,15 @@ class InstallRequirementTests(unittest.TestCase):
             ok = install.install_all("python", gpu=False)
 
         self.assertTrue(ok)
-        self.assertEqual(calls[0][0], "audio-separator")
-        self.assertEqual(calls[0][1]["version_spec"], ">=0.44.1")
-        self.assertIn(("numpy<2,>=1.23.0", {}), calls)
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "audio-separator",
+                    {"extra": "cpu", "version_spec": ">=0.44.1"},
+                )
+            ],
+        )
 
     def test_cuda_13_uses_latest_supported_pytorch_wheel(self):
         def fake_run(cmd, **_kwargs):

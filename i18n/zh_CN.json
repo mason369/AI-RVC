@@ -131,7 +131,7 @@
     "language": "界面语言",
     "save_language": "保存语言",
     "language_saved_restart": "✅ 已保存界面语言：{language}。请重启应用后生效。",
-    "language_restart_info": "切换语言会保存到配置文件；由于 Gradio 3 的界面文案在启动时生成，重启后生效。",
+    "language_restart_info": "切换语言会保存到配置文件；由于 Gradio 界面文案在启动时生成，重启后生效。",
     "runtime_settings": "运行设置",
     "compute_device": "计算设备",
     "save_settings": "保存设置",

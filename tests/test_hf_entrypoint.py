@@ -28,20 +28,19 @@ class HuggingFaceEntrypointTests(unittest.TestCase):
 
         self.assertIn('python_version: "3.10"', readme)
 
-    def test_space_requirements_keep_gradio_3_compatibility_pins(self):
+    def test_space_requirements_keep_gradio_4_audio_separator_pins(self):
         requirements = (REPO_ROOT / "requirements_hf.txt").read_text(
             encoding="utf-8"
         )
 
-        self.assertIn("gradio==3.50.2", requirements)
-        self.assertIn("fastapi==0.104.1", requirements)
-        self.assertIn("starlette==0.27.0", requirements)
-        self.assertIn("anyio<4", requirements)
-        self.assertIn("pydantic<2", requirements)
-        self.assertIn("jinja2<3.1", requirements)
-        self.assertIn("pandas<2", requirements)
-        self.assertIn("numpy<2,>=1.23.0", requirements)
+        self.assertIn("gradio==4.44.1", requirements)
+        self.assertIn("fastapi>=0.115,<1", requirements)
+        self.assertIn("pydantic>=2,<3", requirements)
+        self.assertIn("jinja2>=3.1,<4", requirements)
+        self.assertIn("pandas>=2,<3", requirements)
+        self.assertIn("numpy>=2,<3", requirements)
         self.assertIn("audio-separator==0.44.1", requirements)
+        self.assertIn("huggingface_hub>=0.19.0,<1.0", requirements)
 
 
 if __name__ == "__main__":

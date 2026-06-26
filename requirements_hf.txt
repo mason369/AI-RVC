@@ -7,19 +7,18 @@ torch>=2.0.0
 torchaudio>=2.0.0
 
 # Gradio 界面
-gradio==3.50.2
-fastapi==0.104.1
-starlette==0.27.0
-anyio<4
-pydantic<2
-jinja2<3.1
-pandas<2
+gradio==4.44.1
+fastapi>=0.115,<1
+anyio>=3,<5
+pydantic>=2,<3
+jinja2>=3.1,<4
+pandas>=2,<3
 
 # 音频处理
 librosa>=0.9.0
 soundfile>=0.12.0
 scipy>=1.10.0
-numpy<2,>=1.23.0
+numpy>=2,<3
 praat-parselmouth>=0.4.3
 torchcrepe>=0.0.20
 
@@ -34,7 +33,7 @@ colorama>=0.4.6
 
 # AI 翻唱功能（核心）
 audio-separator==0.44.1
-huggingface_hub>=0.19.0
+huggingface_hub>=0.19.0,<1.0
 pedalboard>=0.7.0
 ffmpeg-python>=0.2.0
 

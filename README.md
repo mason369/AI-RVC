@@ -248,7 +248,7 @@ python run.py
 | audio-separator | >= 0.44.1 | Mel-Band Roformer / RoFormer 公开 scored SOTA 分离 |
 | demucs | >= 4.0.0 | Demucs 人声分离（可选） |
 
-> 建议使用 `python install.py` 安装依赖。`audio-separator` 0.44.1 的上游包元数据会请求 NumPy 2.x，但当前 Gradio 3.x/RVC 栈仍以 NumPy 1.x 最稳；安装脚本会在安装分离器后恢复 `numpy<2`。
+> 建议使用 `python install.py` 安装依赖。当前依赖栈使用 Gradio 4 与 NumPy 2，以匹配 `audio-separator` 0.44.1 的 ensemble 预设和上游包元数据。
 
 ## 使用方法
 

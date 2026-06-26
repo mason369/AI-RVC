@@ -131,7 +131,7 @@
     "language": "Interface Language",
     "save_language": "Save Language",
     "language_saved_restart": "✅ Interface language saved: {language}. Please restart the app for it to take effect.",
-    "language_restart_info": "The language choice is saved to the config file. Because Gradio 3 builds UI labels at startup, restart the app to apply it.",
+    "language_restart_info": "The language choice is saved to the config file. Because Gradio builds UI labels at startup, restart the app to apply it.",
     "runtime_settings": "Runtime Settings",
     "compute_device": "Compute Device",
     "save_settings": "Save Settings",

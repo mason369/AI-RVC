@@ -1221,7 +1221,7 @@ div[data-testid="dropdown"] svg,
     color: #9e9e9e !important;
 }
 
-/* Gradio 3.x 特定选择器样式 */
+/* Gradio 3/4 selector compatibility */
 .wrap.svelte-1m1zvyj,
 .wrap-inner.svelte-1m1zvyj,
 .secondary-wrap.svelte-1m1zvyj {
