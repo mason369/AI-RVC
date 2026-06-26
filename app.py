@@ -25,8 +25,7 @@ if __name__ == "__main__":
 
     # 启动 Gradio 界面
     launch(
-        server_name="0.0.0.0",
-        server_port=7860,
+        host="0.0.0.0",
+        port=7860,
         share=False,
-        inbrowser=False
     )
