@@ -62,6 +62,16 @@ class UiLanguageTests(unittest.TestCase):
             "positive_pitch_info",
             "normal_volume_info",
             "reverb_info",
+            "all_series",
+            "unknown",
+            "enabled",
+            "disabled",
+            "language_korean",
+            "language_japanese",
+            "language_chinese",
+            "language_english",
+            "character_label_meta_separator",
+            "character_label_template",
         }
         required_settings_keys = {
             "runtime_settings",
@@ -73,11 +83,88 @@ class UiLanguageTests(unittest.TestCase):
             "about_body",
             "model_sources",
         }
+        required_message_keys = {
+            "download_network_error",
+            "please_select_character_to_download",
+            "character_download_complete",
+            "bulk_download_complete",
+            "please_upload_song",
+            "please_select_character",
+            "character_model_missing",
+            "cover_complete_status",
+            "cover_process_failed",
+            "vc_pipeline_mode_status",
+            "all_files_dir_status",
+        }
+        required_character_detail_keys = {
+            "downloaded_empty",
+            "available_empty",
+            "version_label",
+            "continuity",
+            "repo",
+            "local_weight",
+            "internal_key",
+            "detail_code_line",
+            "detail_text_line",
+        }
+        required_route_status_keys = {
+            "mature_auto_preferred_suffix",
+            "mature_current_preferred",
+            "official_route_title",
+            "strict_route_ready_title",
+            "route_current_model",
+            "strict_route_flow",
+            "auto_route_missing_title",
+        }
+        required_device_info_keys = {
+            "pytorch_version",
+            "available_backends",
+            "gpu_line",
+            "backend_version",
+            "no_gpu_cpu",
+        }
 
         for lang in ("zh_CN", "en_US"):
             data = ui_app.load_i18n(lang)
             self.assertTrue(required_ui_keys.issubset(data.get("ui", {})))
             self.assertTrue(required_settings_keys.issubset(data.get("settings", {})))
+            self.assertTrue(required_message_keys.issubset(data.get("messages", {})))
+            self.assertTrue(required_character_detail_keys.issubset(data.get("character_details", {})))
+            self.assertTrue(required_route_status_keys.issubset(data.get("route_status", {})))
+            self.assertTrue(required_device_info_keys.issubset(data.get("device_info", {})))
+
+    def test_character_metadata_values_are_not_localized(self):
+        original_i18n = ui_app.i18n
+        try:
+            ui_app.i18n = ui_app.load_i18n("en_US")
+            char_info = {
+                "name": "rin",
+                "display": "Rin Hoshizora",
+                "source": "Love Live!",
+                "continuity": "μ's",
+                "version_label": "500 epochs·40k",
+                "distribution": "HuggingFace",
+                "repo": "trioskosmos/rvc_models",
+                "source_page_url": "https://huggingface.co/trioskosmos/rvc_models",
+                "download_url": "https://huggingface.co/trioskosmos/rvc_models/resolve/main/rin.pth",
+                "model_path": "assets/weights/characters/rin/rin.pth",
+                "index_path": "assets/weights/characters/rin/rin.index",
+            }
+
+            label = ui_app.format_character_label(char_info)
+            details = ui_app.format_character_details(char_info, downloaded=True)
+
+        finally:
+            ui_app.i18n = original_i18n
+
+        self.assertIn("[Japanese]", label)
+        self.assertIn("trioskosmos/rvc_models", label)
+        self.assertIn("500 epochs·40k", label)
+        self.assertIn("- Source repository: `trioskosmos/rvc_models`", details)
+        self.assertIn("- Version tag: `500 epochs·40k`", details)
+        self.assertIn("assets/weights/characters/rin/rin.pth", details)
+        self.assertNotIn("版本标识", details)
+        self.assertNotIn("来源仓库", details)
 
     def test_ui_exposes_language_selector_and_save_handler(self):
         source = Path("ui/app.py").read_text(encoding="utf-8")

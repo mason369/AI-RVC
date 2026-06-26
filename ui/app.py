@@ -77,6 +77,41 @@ def t(key: str, section: str = None) -> str:
     return i18n.get(key, key)
 
 
+def tf(key: str, section: str = None, **kwargs) -> str:
+    """Format translated UI text while preserving supplied technical values."""
+    return t(key, section).format(**kwargs)
+
+
+def _all_series_label() -> str:
+    return t("all_series", "ui")
+
+
+def _unknown_label() -> str:
+    return t("unknown", "ui")
+
+
+def _is_all_series(series: Optional[str]) -> bool:
+    text = str(series or "").strip()
+    return text in {"", "全部", "All", _all_series_label()}
+
+
+def _normalize_series_choice(series: Optional[str]) -> str:
+    return _all_series_label() if _is_all_series(series) else str(series)
+
+
+def _display_series_label(series: Optional[str]) -> str:
+    text = str(series or "").strip()
+    return _unknown_label() if text in {"", "未知", "Unknown"} else text
+
+
+def _series_matches(char_series: Optional[str], selected_series: str) -> bool:
+    return _display_series_label(char_series) == _normalize_series_choice(selected_series)
+
+
+def _bool_status_label(value: bool) -> str:
+    return t("enabled", "ui") if value else t("disabled", "ui")
+
+
 def get_configured_language(config_data: Optional[dict] = None) -> str:
     """Return the configured UI language, failing on unsupported values."""
     selected_config = config if config_data is None else config_data
@@ -262,7 +297,7 @@ def download_base_models() -> str:
         if success:
             return t("download_complete", "messages")
         else:
-            return "下载过程中出现错误，请检查网络连接"
+            return t("download_network_error", "messages")
     except Exception as e:
         return f"{t('download_failed', 'messages')}: {str(e)}"
 
@@ -278,8 +313,8 @@ def get_downloaded_character_list() -> list:
 def get_downloaded_character_series() -> list:
     """获取已下载角色的系列列表"""
     characters = get_downloaded_character_list()
-    series = sorted({c.get("series", "未知") for c in characters})
-    return ["全部"] + series
+    series = sorted({_display_series_label(c.get("series")) for c in characters})
+    return [_all_series_label()] + series
 
 
 def get_available_character_list() -> list:
@@ -291,13 +326,29 @@ def get_available_character_list() -> list:
 def get_available_character_series() -> list:
     """获取可用系列列表"""
     from tools.character_models import list_available_series
-    return list_available_series()
+    return sorted({_display_series_label(series) for series in list_available_series()})
+
+
+def _localized_language_tag(lang: str) -> str:
+    text = str(lang or "").strip()
+    if not text:
+        return text
+    lowered = text.lower()
+    if text in {"韩文", "韓文"} or "kr" in lowered or "korean" in lowered:
+        return t("language_korean", "ui")
+    if text in {"日文", "日本語"} or "jp" in lowered or "japanese" in lowered:
+        return t("language_japanese", "ui")
+    if text in {"中文", "汉语", "漢語"} or "cn" in lowered or "chinese" in lowered:
+        return t("language_chinese", "ui")
+    if text in {"英文", "英语", "英語"} or lowered in {"en", "english"}:
+        return t("language_english", "ui")
+    return text
 
 
 def format_character_label(char_info: dict) -> str:
     """格式化角色展示名称，明确显示版本、归属和来源。"""
     display = char_info.get("base_display") or char_info.get("display") or char_info.get("description") or char_info.get("name", "")
-    source = char_info.get("source", "未知")
+    source = char_info.get("source") or _unknown_label()
     name = char_info.get("name", "")
     lang_tag = get_character_language_tag(char_info)
     parts: List[str] = []
@@ -318,39 +369,46 @@ def format_character_label(char_info: dict) -> str:
     elif repo:
         parts.append(repo)
 
-    meta = "｜".join(part for part in parts if part)
-    return f"【{lang_tag}】{display}｜{meta} [{name}]"
+    meta = t("character_label_meta_separator", "ui").join(part for part in parts if part)
+    return tf(
+        "character_label_template",
+        "ui",
+        language=lang_tag,
+        display=display,
+        meta=meta,
+        name=name,
+    )
 
 
 def get_character_language_tag(char_info: dict) -> str:
     """推断语言类型，用于下拉前缀标签"""
     lang = char_info.get("lang")
     if lang:
-        return lang
+        return _localized_language_tag(lang)
     text = " ".join(
         str(char_info.get(k, "")) for k in ("display", "description", "name")
     ).lower()
     if "韩" in text or "kr" in text or "korean" in text:
-        return "韩文"
+        return t("language_korean", "ui")
     if "日" in text or "jp" in text or "japanese" in text:
-        return "日文"
+        return t("language_japanese", "ui")
     if "中" in text or "cn" in text or "chinese" in text:
-        return "中文"
+        return t("language_chinese", "ui")
     if "en" in text or "english" in text:
-        return "英文"
+        return t("language_english", "ui")
 
     source = char_info.get("source", "")
     if source.startswith("Love Live!") or "ホロライブ" in source or "偶像大师" in source or "赛马娘" in source:
-        return "日文"
+        return t("language_japanese", "ui")
     if "原神" in source or "崩坏" in source or "明日方舟" in source or "碧蓝航线" in source:
-        return "中文"
+        return t("language_chinese", "ui")
     if "VOCALOID" in source or "Project SEKAI" in source:
-        return "日文"
+        return t("language_japanese", "ui")
     if "Hololive" in source:
-        return "日文"
+        return t("language_japanese", "ui")
     if "蔚蓝档案" in source or "绝区零" in source:
-        return "日文"
-    return "中文"
+        return t("language_japanese", "ui")
+    return t("language_chinese", "ui")
 
 
 def _find_character_entry(selection: str, downloaded: bool) -> Optional[dict]:
@@ -366,11 +424,29 @@ def _find_character_entry(selection: str, downloaded: bool) -> Optional[dict]:
     return None
 
 
+def _character_detail_code(label_key: str, value: str) -> str:
+    return tf(
+        "detail_code_line",
+        "character_details",
+        label=t(label_key, "character_details"),
+        value=value,
+    )
+
+
+def _character_detail_text(label_key: str, value: str) -> str:
+    return tf(
+        "detail_text_line",
+        "character_details",
+        label=t(label_key, "character_details"),
+        value=value,
+    )
+
+
 def format_character_details(char_info: Optional[dict], downloaded: bool = False) -> str:
     if not char_info:
         if downloaded:
-            return "选择已下载角色后，这里会显示该模型的版本归属、来源仓库和本地文件路径。"
-        return "选择待下载角色后，这里会显示该模型的版本归属、来源仓库和下载来源。"
+            return t("downloaded_empty", "character_details")
+        return t("available_empty", "character_details")
 
     title = char_info.get("base_display") or char_info.get("display") or char_info.get("name", "")
     lines = [f"**{title}**"]
@@ -385,26 +461,26 @@ def format_character_details(char_info: Optional[dict], downloaded: bool = False
     download_url = str(char_info.get("download_url") or "").strip()
 
     if version_label:
-        lines.append(f"- 版本标识：`{version_label}`")
+        lines.append(_character_detail_code("version_label", version_label))
     if continuity:
-        lines.append(f"- 角色归属：`{continuity}`")
+        lines.append(_character_detail_code("continuity", continuity))
     if role:
-        lines.append(f"- 模型类型：`{role}`")
+        lines.append(_character_detail_code("role", role))
     if source:
-        lines.append(f"- 作品来源：`{source}`")
+        lines.append(_character_detail_code("source", source))
     if distribution:
-        lines.append(f"- 分发方式：`{distribution}`")
+        lines.append(_character_detail_code("distribution", distribution))
     if repo:
-        lines.append(f"- 来源仓库：`{repo}`")
+        lines.append(_character_detail_code("repo", repo))
     if source_page_url:
-        lines.append(f"- 来源页面：{source_page_url}")
+        lines.append(_character_detail_text("source_page_url", source_page_url))
     if download_url and download_url != source_page_url:
-        lines.append(f"- 下载链接：{download_url}")
+        lines.append(_character_detail_text("download_url", download_url))
     if downloaded and char_info.get("model_path"):
-        lines.append(f"- 本地权重：`{char_info['model_path']}`")
+        lines.append(_character_detail_code("local_weight", char_info["model_path"]))
     if downloaded and char_info.get("index_path"):
-        lines.append(f"- 本地索引：`{char_info['index_path']}`")
-    lines.append(f"- 内部键：`{char_info.get('name', '')}`")
+        lines.append(_character_detail_code("local_index", char_info["index_path"]))
+    lines.append(_character_detail_code("internal_key", char_info.get("name", "")))
     return "\n".join(lines)
 
 
@@ -419,8 +495,8 @@ def get_available_character_details(selection: str) -> str:
 def get_downloaded_character_choices(series: str = "全部", keyword: str = "") -> list:
     """获取已下载角色的下拉选项"""
     chars = get_downloaded_character_list()
-    if series and series != "全部":
-        chars = [c for c in chars if c.get("series") == series]
+    if series and not _is_all_series(series):
+        chars = [c for c in chars if _series_matches(c.get("series"), series)]
     if keyword:
         kw = keyword.strip().lower()
         if kw:
@@ -454,8 +530,8 @@ def resolve_character_name(selection: str) -> str:
 def get_available_character_choices(series: str = "全部", keyword: str = "") -> list:
     """获取可下载角色的下拉选项"""
     chars = get_available_character_list()
-    if series and series != "全部":
-        chars = [c for c in chars if c.get("series") == series]
+    if series and not _is_all_series(series):
+        chars = [c for c in chars if _series_matches(c.get("series"), series)]
     if keyword:
         kw = keyword.strip().lower()
         if kw:
@@ -474,8 +550,9 @@ def get_available_character_choices(series: str = "全部", keyword: str = "") -
 
 def _refresh_downloaded_updates(series: str, keyword: str) -> Tuple[Dict, Dict]:
     series_choices = get_downloaded_character_series()
+    series = _normalize_series_choice(series)
     if series not in series_choices:
-        series = "全部"
+        series = _all_series_label()
     return (
         gr.update(choices=series_choices, value=series),
         gr.update(choices=get_downloaded_character_choices(series, keyword))
@@ -488,27 +565,27 @@ def download_character(name: str, selected_series: str = "全部", keyword: str 
 
     if not name:
         series_update, choices_update = _refresh_downloaded_updates(selected_series, keyword)
-        return "请选择要下载的角色", choices_update, series_update
+        return t("please_select_character_to_download", "messages"), choices_update, series_update
 
     try:
         success = download_character_model(name)
         series_update, choices_update = _refresh_downloaded_updates(selected_series, keyword)
         if success:
             return (
-                f"✅ {name} 模型下载完成",
+                tf("character_download_complete", "messages", name=name),
                 choices_update,
                 series_update
             )
         else:
             return (
-                f"❌ {name} 模型下载失败",
+                tf("character_download_failed", "messages", name=name),
                 choices_update,
                 series_update
             )
     except Exception as e:
         series_update, choices_update = _refresh_downloaded_updates(selected_series, keyword)
         return (
-            f"❌ 下载失败: {str(e)}",
+            tf("character_download_error", "messages", error=str(e)),
             choices_update,
             series_update
         )
@@ -519,17 +596,18 @@ def download_all_characters(series: str = "全部", selected_series: str = "全�
     from tools.character_models import download_all_character_models
 
     try:
-        result = download_all_character_models(series=series)
+        series_arg = None if _is_all_series(series) else series
+        result = download_all_character_models(series=series_arg)
         ok = result.get("success", [])
         failed = result.get("failed", [])
-        status = f"✅ 完成: 成功 {len(ok)} 个"
+        status = tf("bulk_download_complete", "messages", count=len(ok))
         if failed:
-            status += f"，失败 {len(failed)} 个: {', '.join(failed)}"
+            status += tf("bulk_download_failed_items", "messages", count=len(failed), names=", ".join(failed))
         series_update, choices_update = _refresh_downloaded_updates(selected_series, keyword)
         return status, choices_update, series_update
     except Exception as e:
         series_update, choices_update = _refresh_downloaded_updates(selected_series, keyword)
-        return f"❌ 批量下载失败: {str(e)}", choices_update, series_update
+        return tf("bulk_download_error", "messages", error=str(e)), choices_update, series_update
 
 
 def update_download_choices(series: str, keyword: str) -> Dict:
@@ -574,10 +652,10 @@ def process_cover(
     """
     _none6 = (None, None, None, None, None, None)
     if audio_path is None:
-        return *_none6, "请上传歌曲文件"
+        return *_none6, t("please_upload_song", "messages")
 
     if not character_name:
-        return *_none6, "请选择角色"
+        return *_none6, t("please_select_character", "messages")
 
     try:
         from tools.character_models import get_character_model_path, get_character_info
@@ -588,7 +666,7 @@ def process_cover(
         char_meta = get_character_info(resolved_name, downloaded_only=True) or {}
         model_info = get_character_model_path(resolved_name)
         if model_info is None:
-            return *_none6, f"角色模型不存在: {resolved_name}"
+            return *_none6, tf("character_model_missing", "messages", name=resolved_name)
 
         # 进度回调
         def progress_callback(msg: str, step: int, total: int):
@@ -695,20 +773,32 @@ def process_cover(
             progress_callback=progress_callback
         )
 
-        status_msg = "\u2705 \u7ffb\u5531\u5b8c\u6210!"
+        status_msg = t("cover_complete_status", "messages")
         status_msg += f"\n{get_cover_vc_route_status(vc_preprocess_mode, vc_pipeline_mode).splitlines()[0]}"
-        status_msg += f"\nVC\u7ba1\u7ebf\u6a21\u5f0f: {pipeline_value_to_label.get(vc_pipeline_mode, vc_pipeline_mode)}"
-        status_msg += f"\n唱歌修复: {'开启' if singing_repair else '关闭'}"
-        status_msg += f"\n\u6e90\u7ea6\u675f\u7b56\u7565: {source_value_to_label.get(source_constraint_mode, source_constraint_mode)}"
+        status_msg += "\n" + tf(
+            "vc_pipeline_mode_status",
+            "messages",
+            value=pipeline_value_to_label.get(vc_pipeline_mode, vc_pipeline_mode),
+        )
+        status_msg += "\n" + tf(
+            "singing_repair_status",
+            "messages",
+            value=_bool_status_label(singing_repair),
+        )
+        status_msg += "\n" + tf(
+            "source_constraint_status",
+            "messages",
+            value=source_value_to_label.get(source_constraint_mode, source_constraint_mode),
+        )
         if char_meta.get("version_label"):
-            status_msg += f"\n模型版本: {char_meta['version_label']}"
+            status_msg += "\n" + tf("model_version_status", "messages", value=char_meta["version_label"])
         if char_meta.get("continuity"):
-            status_msg += f"\n角色归属: {char_meta['continuity']}"
+            status_msg += "\n" + tf("character_continuity_status", "messages", value=char_meta["continuity"])
         if char_meta.get("repo"):
-            status_msg += f"\n模型来源: {char_meta['repo']}"
+            status_msg += "\n" + tf("model_source_status", "messages", value=char_meta["repo"])
         status_msg += f"\n{get_runtime_build_label()}"
         if result.get("all_files_dir"):
-            status_msg += f"\n\u5168\u90e8\u6587\u4ef6\u76ee\u5f55: {result['all_files_dir']}"
+            status_msg += "\n" + tf("all_files_dir_status", "messages", value=result["all_files_dir"])
 
         return (
             result["cover"],
@@ -724,7 +814,7 @@ def process_cover(
         import traceback
         error_msg = str(e) if str(e) else traceback.format_exc()
         log.error(f"处理失败: {error_msg}")
-        return None, None, None, None, None, None, f"❌ 处理失败: {error_msg}"
+        return None, None, None, None, None, None, tf("cover_process_failed", "messages", error=error_msg)
 
 
 def check_mature_deecho_status() -> str:
@@ -736,23 +826,23 @@ def check_mature_deecho_status() -> str:
     roformer_ready = check_roformer_available()
     icon = "✅" if roformer_ready else "❌"
     status_lines.append(
-        f"{icon} {ROFORMER_DEREVERB_DEFAULT_MODEL}  ← 当前自动模式优先使用"
+        f"{icon} {ROFORMER_DEREVERB_DEFAULT_MODEL}  {t('mature_auto_preferred_suffix', 'route_status')}"
     )
     if roformer_ready:
-        status_lines.append("  RoFormer 模型由 audio-separator 首次运行时自动下载到 assets/separator_models")
+        status_lines.append(t("mature_roformer_auto_download_note", "route_status"))
 
     for name in MATURE_DEECHO_MODELS:
         exists = check_model(name)
         icon = "✅" if exists else "❌"
-        suffix = "  ← 仅保留状态显示，严格SOTA自动模式不使用"
+        suffix = t("mature_legacy_status_suffix", "route_status")
         status_lines.append(f"{icon} {name}{suffix}")
 
     if roformer_ready:
         status_lines.append("")
-        status_lines.append(f"当前优先学习型 DeEcho: RoFormer {ROFORMER_DEREVERB_DEFAULT_MODEL}")
+        status_lines.append(tf("mature_current_preferred", "route_status", model=f"RoFormer {ROFORMER_DEREVERB_DEFAULT_MODEL}"))
     else:
         status_lines.append("")
-        status_lines.append("当前缺少严格SOTA DeEcho运行环境；翻唱自动模式将停止处理而不是降级")
+        status_lines.append(t("mature_missing_strict", "route_status"))
 
     return "\n".join(status_lines)
 
@@ -764,10 +854,10 @@ def download_mature_deecho_models_ui() -> str:
     try:
         success = download_mature_deecho_models()
         status = check_mature_deecho_status()
-        prefix = "✅ 下载完成" if success else "⚠️ 下载过程中存在失败项"
+        prefix = t("download_complete_status", "messages") if success else t("download_warning_status", "messages")
         return f"{prefix}\n\n{status}"
     except Exception as e:
-        return f"❌ 下载失败: {str(e)}"
+        return tf("download_error_status", "messages", error=str(e))
 
 
 def get_cover_vc_route_status(
@@ -790,38 +880,38 @@ def get_cover_vc_route_status(
 
     if pipeline_mode == "official":
         return newline.join([
-            "当前使用内置官方 RVC 实现",
-            "流程：主唱分离 → 官方音频加载 / 官方 VC → 混音",
-            "说明：跳过本项目自定义 VC 预处理、源约束与静音门限后处理",
+            t("official_route_title", "route_status"),
+            t("official_route_flow", "route_status"),
+            t("official_route_note", "route_status"),
             build_label,
         ])
 
     if mode == "uvr_deecho":
         if preferred:
             return newline.join([
-                "✅ 当前固定使用严格 SOTA RoFormer De-Reverb",
-                f"当前命中模型: {preferred}",
-                "流程: 主唱分离 → RoFormer De-Reverb → RVC → 混音",
+                t("strict_route_ready_title", "route_status"),
+                tf("route_current_model", "route_status", model=preferred),
+                t("strict_route_flow", "route_status"),
                 build_label,
             ])
         return newline.join([
-            "⚠️ 当前设为严格 SOTA RoFormer De-Reverb，但运行环境不可用",
-            "流程会停止处理，不会降级到 UVR 或算法去混响",
-            "建议: 修复 audio-separator / RoFormer De-Reverb 运行环境",
+            t("strict_route_unavailable_title", "route_status"),
+            t("strict_route_unavailable_flow", "route_status"),
+            t("strict_route_unavailable_advice", "route_status"),
             build_label,
         ])
 
     if preferred:
         return newline.join([
-            "✅ 自动模式当前使用严格 SOTA RoFormer De-Reverb",
-            f"当前命中模型: {preferred}",
-            "流程: 主唱分离 → RoFormer De-Reverb → RVC → 混音",
+            t("auto_route_ready_title", "route_status"),
+            tf("route_current_model", "route_status", model=preferred),
+            t("strict_route_flow", "route_status"),
             build_label,
         ])
     return newline.join([
-        "⚠️ 自动模式缺少严格SOTA DeEcho运行环境",
-        "原因: 未检测到 RoFormer De-Reverb 可运行条件",
-        "流程会停止处理，不会降级到 UVR 或算法去混响",
+        t("auto_route_missing_title", "route_status"),
+        t("auto_route_missing_reason", "route_status"),
+        t("strict_route_unavailable_flow", "route_status"),
         build_label,
     ])
 
@@ -845,22 +935,22 @@ def get_device_info() -> str:
     from lib.device import get_device_info as _get_info, _is_rocm, _has_xpu, _has_directml, _has_mps
 
     lines = []
-    lines.append(f"PyTorch 版本: {torch.__version__}")
+    lines.append(tf("pytorch_version", "device_info", version=torch.__version__))
 
     info = _get_info()
-    lines.append(f"可用后端: {', '.join(info['backends'])}")
+    lines.append(tf("available_backends", "device_info", backends=", ".join(info["backends"])))
 
     for dev in info["devices"]:
         mem = f"{dev['total_memory_gb']} GB" if dev.get("total_memory_gb") else "N/A"
-        lines.append(f"GPU: {dev['name']} ({dev['backend']}) - 显存: {mem}")
+        lines.append(tf("gpu_line", "device_info", name=dev["name"], backend=dev["backend"], memory=mem))
 
     if torch.cuda.is_available():
         ver = torch.version.hip if _is_rocm() else torch.version.cuda
         label = "ROCm" if _is_rocm() else "CUDA"
-        lines.append(f"{label} 版本: {ver}")
+        lines.append(tf("backend_version", "device_info", label=label, version=ver))
 
     if not info["devices"]:
-        lines.append("未检测到 GPU，将使用 CPU")
+        lines.append(t("no_gpu_cpu", "device_info"))
 
     return "\n".join(lines)
 
@@ -1385,7 +1475,7 @@ def create_ui() -> gr.Blocks:
     """创建 Gradio 界面"""
 
     with gr.Blocks(
-        title=i18n.get("app_title", "RVC AI 翻唱"),
+        title=t("app_title"),
         theme=gr.themes.Base(
             primary_hue="orange",
             secondary_hue="gray",
@@ -1454,11 +1544,11 @@ def create_ui() -> gr.Blocks:
 
         # 标题
         gr.Markdown(
-            f"# 🎤 {i18n.get('app_title', 'RVC AI 翻唱')}",
+            f"# 🎤 {t('app_title')}",
             elem_classes=["main-title"]
         )
         gr.Markdown(
-            f"<center>{i18n.get('app_description', '基于 RVC v2 的 AI 翻唱系统')}</center>"
+            f"<center>{t('app_description')}</center>"
         )
         gr.Markdown(
             f"<div class='runtime-stamp'>{get_runtime_build_label()}</div>"
@@ -1590,7 +1680,7 @@ def create_ui() -> gr.Blocks:
                         downloaded_series = gr.Dropdown(
                             label=t("series_filter", "ui"),
                             choices=get_downloaded_character_series(),
-                            value="全部",
+                            value=_all_series_label(),
                             interactive=True
                         )
 
@@ -1602,7 +1692,7 @@ def create_ui() -> gr.Blocks:
 
                         character_dropdown = gr.Dropdown(
                             label=t("character", "cover"),
-                            choices=get_downloaded_character_choices("全部", ""),
+                            choices=get_downloaded_character_choices(_all_series_label(), ""),
                             interactive=True,
                             info=t("character_choice_info", "ui")
                         )
@@ -1620,11 +1710,11 @@ def create_ui() -> gr.Blocks:
 
                         # 角色下载区域
                         with gr.Accordion(t("download_character", "cover"), open=False):
-                            series_choices = ["全部"] + get_available_character_series()
+                            series_choices = [_all_series_label()] + get_available_character_series()
                             download_series = gr.Dropdown(
                                 label=t("series_filter", "ui"),
                                 choices=series_choices,
-                                value="全部",
+                                value=_all_series_label(),
                                 interactive=True
                             )
 
@@ -1636,7 +1726,7 @@ def create_ui() -> gr.Blocks:
 
                             download_char_dropdown = gr.Dropdown(
                                 label=t("select_to_download", "cover"),
-                                choices=get_available_character_choices("全部", ""),
+                                choices=get_available_character_choices(_all_series_label(), ""),
                                 interactive=True,
                                 info=t("download_character_info", "ui")
                             )
@@ -1974,7 +2064,7 @@ def create_ui() -> gr.Blocks:
                 )
 
                 download_all_btn.click(
-                    fn=lambda series, keyword: download_all_characters("全部", series, keyword),
+                    fn=lambda series, keyword: download_all_characters(_all_series_label(), series, keyword),
                     inputs=[downloaded_series, downloaded_keyword],
                     outputs=[download_char_status, character_dropdown, downloaded_series]
                 )
