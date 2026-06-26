@@ -37,6 +37,7 @@ class HuggingFaceEntrypointTests(unittest.TestCase):
         self.assertIn("fastapi==0.104.1", requirements)
         self.assertIn("starlette==0.27.0", requirements)
         self.assertIn("anyio<4", requirements)
+        self.assertIn("pydantic<2", requirements)
         self.assertIn("jinja2<3.1", requirements)
         self.assertIn("pandas<2", requirements)
         self.assertIn("numpy<2,>=1.23.0", requirements)
