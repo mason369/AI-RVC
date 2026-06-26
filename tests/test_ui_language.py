@@ -174,6 +174,7 @@ class UiLanguageTests(unittest.TestCase):
         self.assertIn("fn=save_language_setting", source)
         self.assertIn('t("cover_usage", "ui")', source)
         self.assertIn('t("runtime_settings", "settings")', source)
+        self.assertIn("allow_custom_value=True", source)
 
 
 if __name__ == "__main__":

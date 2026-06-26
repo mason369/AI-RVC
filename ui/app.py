@@ -1693,6 +1693,7 @@ def create_ui() -> gr.Blocks:
                         character_dropdown = gr.Dropdown(
                             label=t("character", "cover"),
                             choices=get_downloaded_character_choices(_all_series_label(), ""),
+                            allow_custom_value=True,
                             interactive=True,
                             info=t("character_choice_info", "ui")
                         )
