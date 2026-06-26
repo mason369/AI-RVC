@@ -35,6 +35,7 @@ class HuggingFaceEntrypointTests(unittest.TestCase):
 
         self.assertIn("gradio==3.50.2", requirements)
         self.assertIn("jinja2<3.1", requirements)
+        self.assertIn("pandas<2", requirements)
         self.assertIn("numpy<2,>=1.23.0", requirements)
 
 

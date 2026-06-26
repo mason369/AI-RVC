@@ -7,6 +7,7 @@ torchaudio>=2.0.0
 # Gradio 界面
 gradio==3.50.2
 jinja2<3.1              # Gradio 3.x 与 Jinja2 3.1.x 不兼容 (unhashable type: 'dict')
+pandas<2                # Gradio 3.x 兼容旧版 pandas；新版 pandas 要求 Jinja2 3.1.2+
 
 # 音频处理
 librosa>=0.10.0
