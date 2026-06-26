@@ -23,6 +23,20 @@ class HuggingFaceEntrypointTests(unittest.TestCase):
             {"host", "port", "share"},
         )
 
+    def test_space_metadata_pins_python_310(self):
+        readme = (REPO_ROOT / "README_HF.md").read_text(encoding="utf-8")
+
+        self.assertIn('python_version: "3.10"', readme)
+
+    def test_space_requirements_keep_gradio_3_compatibility_pins(self):
+        requirements = (REPO_ROOT / "requirements_hf.txt").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("gradio==3.50.2", requirements)
+        self.assertIn("jinja2<3.1.5", requirements)
+        self.assertIn("numpy<2,>=1.23.0", requirements)
+
 
 if __name__ == "__main__":
     unittest.main()

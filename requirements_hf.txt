@@ -8,12 +8,13 @@ torchaudio>=2.0.0
 
 # Gradio 界面
 gradio==3.50.2
+jinja2<3.1.5
 
 # 音频处理
 librosa>=0.9.0
 soundfile>=0.12.0
 scipy>=1.10.0
-numpy>=1.23.0
+numpy<2,>=1.23.0
 praat-parselmouth>=0.4.3
 torchcrepe>=0.0.20
 
