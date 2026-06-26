@@ -1,3 +1,4 @@
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -70,6 +71,42 @@ class ModelDefaultTests(unittest.TestCase):
         self.assertFalse(hasattr(separator, "ROFORMER_FALLBACK_MODELS"))
         self.assertFalse(hasattr(separator, "KARAOKE_FALLBACK_MODELS"))
         self.assertFalse(hasattr(separator, "ROFORMER_DEREVERB_FALLBACK_MODELS"))
+
+    def test_separator_import_survives_missing_audio_separator(self):
+        script = """
+import importlib.abc
+import sys
+
+class BlockAudioSeparator(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "audio_separator" or fullname.startswith("audio_separator."):
+            raise ImportError("blocked audio_separator")
+        return None
+
+sys.meta_path.insert(0, BlockAudioSeparator())
+from infer import separator
+
+assert separator.AUDIO_SEPARATOR_AVAILABLE is False
+try:
+    separator.RoformerSeparator()
+except ImportError as exc:
+    assert "audio-separator" in str(exc)
+else:
+    raise AssertionError("RoformerSeparator should fail when audio_separator is missing")
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
 
 
 class KaraokeCandidateScoringTests(unittest.TestCase):

@@ -2,6 +2,8 @@
 """
 人声分离模块 - 支持 Demucs 和 Mel-Band Roformer (audio-separator)
 """
+from __future__ import annotations
+
 import os
 import gc
 import shutil
