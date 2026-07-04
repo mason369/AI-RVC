@@ -30,7 +30,6 @@ except ImportError:
 
 from lib.audio import soft_clip
 from infer.quality_policy import (
-    build_conservative_harvest_fill_mask,
     compute_breath_preserving_energy_gates,
     compute_chunk_crossfade_samples,
 )
@@ -127,7 +126,7 @@ def repair_f0(
 
 
 def _normalize_rmvpe_hybrid_mode(mode: Optional[str]) -> str:
-    """Normalize user-facing hybrid mode aliases to internal fallback modes."""
+    """Normalize hybrid mode and reject hidden fallback routing."""
     normalized = str(mode or "off").strip().lower()
     if normalized in {"", "off", "none", "strict", "official", "rmvpe_strict", "rmvpe-strict", "raw", "rmvpe"}:
         return "off"
@@ -145,7 +144,9 @@ def _normalize_rmvpe_hybrid_mode(mode: Optional[str]) -> str:
         "harvest_fallback",
         "harvest-fallback",
     }:
-        return "fallback"
+        raise ValueError(
+            "F0 fallback modes are disabled for the strict cover route; set f0_hybrid_mode to off."
+        )
     return normalized
 
 
@@ -194,26 +195,6 @@ def _compute_energy_mask(
     return rms_db >= gate_db
 
 
-def _compute_harvest_f0(
-    audio: np.ndarray,
-    sr: int,
-    f0_min: float,
-    f0_max: float,
-    frame_period: float = 10.0,
-) -> np.ndarray:
-    """Compute Harvest F0 for fallback filling."""
-    audio = audio.astype(np.double, copy=False)
-    f0, t = pyworld.harvest(
-        audio,
-        fs=sr,
-        f0_ceil=f0_max,
-        f0_floor=f0_min,
-        frame_period=frame_period,
-    )
-    f0 = pyworld.stonemask(audio, f0, t, sr)
-    return f0
-
-
 def _compute_crepe_f0(
     audio: np.ndarray,
     sr: int,
@@ -224,7 +205,7 @@ def _compute_crepe_f0(
     periodicity_threshold: float = 0.1,
     return_periodicity: bool = False,
 ) -> np.ndarray:
-    """Compute CREPE F0 for fallback filling."""
+    """Compute CREPE F0 for explicitly selected CREPE modes."""
     audio_tensor = torch.tensor(np.copy(audio))[None].float()
     f0, pd = torchcrepe.predict(
         audio_tensor,
@@ -356,24 +337,6 @@ class Pipeline(object):
         self.f0_hybrid_mode = _normalize_rmvpe_hybrid_mode(
             getattr(config, "f0_hybrid_mode", "off")
         )
-        self.rmvpe_strict_modes = {
-            "",
-            "off",
-            "none",
-            "strict",
-            "official",
-            "rmvpe_strict",
-            "rmvpe-strict",
-        }
-        self.rmvpe_fallback_modes = {
-            "fallback",
-            "smart",
-            "rmvpe+fallback",
-            "rmvpe_fallback",
-            "rmvpe-fallback",
-            "hybrid_fallback",
-            "hybrid-fallback",
-        }
         self.crepe_pd_threshold = float(getattr(config, "crepe_pd_threshold", 0.1))
         self.crepe_force_ratio = float(getattr(config, "crepe_force_ratio", 0.05))
         self.crepe_replace_semitones = float(getattr(config, "crepe_replace_semitones", 0.0))
@@ -383,12 +346,6 @@ class Pipeline(object):
         self.breath_active_margin_db = float(
             getattr(config, "breath_active_margin_db", 52.0)
         )
-        self.f0_fallback_context_radius = int(getattr(config, "f0_fallback_context_radius", 24))
-        self.f0_fallback_repair_gap = int(getattr(config, "f0_fallback_repair_gap", 12))
-        self.f0_fallback_post_gap = int(getattr(config, "f0_fallback_post_gap", 10))
-        self.f0_fallback_use_crepe = bool(getattr(config, "f0_fallback_use_crepe", True))
-        self.f0_fallback_crepe_max_ratio = float(getattr(config, "f0_fallback_crepe_max_ratio", 0.02))
-        self.f0_fallback_crepe_max_frames = int(getattr(config, "f0_fallback_crepe_max_frames", 320))
         self.f0_stabilize = bool(getattr(config, "f0_stabilize", False))
         self.f0_stabilize_window = int(getattr(config, "f0_stabilize_window", 2))
         self.f0_stabilize_max_semitones = float(
@@ -411,16 +368,6 @@ class Pipeline(object):
             self.unvoiced_feature_gate_floor = 1.0
         if self.breath_active_margin_db < 1.0:
             self.breath_active_margin_db = 1.0
-        if self.f0_fallback_context_radius < 1:
-            self.f0_fallback_context_radius = 1
-        if self.f0_fallback_repair_gap < 0:
-            self.f0_fallback_repair_gap = 0
-        if self.f0_fallback_post_gap < 0:
-            self.f0_fallback_post_gap = 0
-        if self.f0_fallback_crepe_max_ratio < 0:
-            self.f0_fallback_crepe_max_ratio = 0.0
-        if self.f0_fallback_crepe_max_frames < 0:
-            self.f0_fallback_crepe_max_frames = 0
         if self.f0_stabilize_window < 1:
             self.f0_stabilize_window = 1
         if self.f0_stabilize_max_semitones < 0:
@@ -441,17 +388,6 @@ class Pipeline(object):
             log.detail(
                 f"气声门控: 特征地板={self.unvoiced_feature_gate_floor:.2f}, "
                 f"激活边界=ref-{self.breath_active_margin_db:.1f}dB"
-            )
-            log.detail(
-                f"F0兜底: 上下文半径={self.f0_fallback_context_radius}, "
-                f"预修补长度={self.f0_fallback_repair_gap}, 后修补长度={self.f0_fallback_post_gap}, "
-                f"CREPE兜底={self.f0_fallback_use_crepe}, "
-                f"CREPE最大占比={self.f0_fallback_crepe_max_ratio:.2%}, "
-                f"CREPE最大帧数={self.f0_fallback_crepe_max_frames}"
-            )
-            log.detail(
-                "RMVPE兜底: "
-                f"{'on' if self.f0_hybrid_mode in self.rmvpe_fallback_modes else 'off'}"
             )
             log.detail(
                 f"F0稳定器: {self.f0_stabilize}, 窗口: {self.f0_stabilize_window}, "
@@ -487,15 +423,10 @@ class Pipeline(object):
             log.detail(f"时间步长: {time_step:.2f}ms, F0范围: {f0_min}-{f0_max}Hz")
             log.detail(f"音频长度: {len(x)} 样本, p_len: {p_len}")
 
-        # Normalize direct hybrid requests to the conservative RMVPE fallback path.
         if f0_method == "hybrid":
-            f0_method = "rmvpe"
-            original_hybrid_mode = self.f0_hybrid_mode
-            if self.f0_hybrid_mode not in self.rmvpe_fallback_modes:
-                self.f0_hybrid_mode = "fallback"
-            restore_hybrid_mode = True
-        else:
-            restore_hybrid_mode = False
+            raise ValueError(
+                "Hybrid F0 fallback is disabled for the strict cover route; use rmvpe explicitly."
+            )
 
         if f0_method == "pm":
             if log:
@@ -665,144 +596,8 @@ class Pipeline(object):
             f0[self.x_pad * tf0 : self.x_pad * tf0 + len(replace_f0)] = replace_f0[
                 :shape
             ]
-        else:
-            use_rmvpe_fallback = (
-                f0_method == "rmvpe"
-                and self.f0_hybrid_mode not in self.rmvpe_strict_modes
-                and self.f0_hybrid_mode in self.rmvpe_fallback_modes
-            )
-
-            if use_rmvpe_fallback:
-                energy_mask = _compute_energy_mask(
-                    x, hop_length=self.window, threshold_db=self.f0_energy_threshold_db
-                )
-                if energy_mask.size > 0:
-                    if len(energy_mask) < len(f0):
-                        energy_mask = np.pad(
-                            energy_mask, (0, len(f0) - len(energy_mask)), mode="edge"
-                        )
-                    else:
-                        energy_mask = energy_mask[: len(f0)]
-                else:
-                    energy_mask = None
-
-                # Repair short unvoiced gaps only when fallback mode is explicitly enabled.
-                f0 = repair_f0(
-                    f0,
-                    max_gap=self.f0_fallback_repair_gap,
-                    mask=energy_mask,
-                )
-
-                # Conservative F0 fallback:
-                # only fill dropouts that are surrounded by voiced context.
-                if energy_mask is not None:
-                    voiced_seed = f0 > 0
-                    if np.any(voiced_seed):
-                        idx = np.arange(len(f0))
-                        left_seen = np.where(voiced_seed, idx, -10**9)
-                        left_seen = np.maximum.accumulate(left_seen)
-                        right_seen = np.where(voiced_seed, idx, 10**9)
-                        right_seen = np.minimum.accumulate(right_seen[::-1])[::-1]
-                        context_radius = self.f0_fallback_context_radius
-                        left_near = (idx - left_seen) <= context_radius
-                        right_near = (right_seen - idx) <= context_radius
-                        voiced_context = left_near & right_near
-                    else:
-                        voiced_context = np.zeros_like(f0, dtype=bool)
-
-                    need_fill = (f0 <= 0) & energy_mask & voiced_context
-                    if np.any(need_fill):
-                        if log:
-                            log.detail(
-                                f"RMVPE掉线帧(主唱上下文): {int(need_fill.sum())}/{len(f0)}，启用保守兜底"
-                            )
-
-                        f0_min_fb = max(30.0, f0_min - 20.0)
-                        f0_max_fb = min(1800.0, f0_max + 200.0)
-                        f0_fb = _compute_harvest_f0(x, self.sr, f0_min_fb, f0_max_fb, 10.0)
-                        if len(f0_fb) < len(f0):
-                            f0_fb = np.pad(f0_fb, (0, len(f0) - len(f0_fb)), mode="edge")
-                        else:
-                            f0_fb = f0_fb[: len(f0)]
-
-                        fill_mask = build_conservative_harvest_fill_mask(
-                            reference_f0=f0,
-                            fallback_f0=f0_fb,
-                            dropout_mask=need_fill,
-                            max_run=10,
-                            local_radius=4,
-                            max_semitones=4.0,
-                        )
-                        rejected_fill_count = int(np.sum(need_fill)) - int(np.sum(fill_mask))
-                        if rejected_fill_count > 0 and log:
-                            log.detail(
-                                f"Harvest兜底已拒绝 {rejected_fill_count} 帧长间隙/离群音高，避免呼吸与回气误赋音高"
-                            )
-                        f0[fill_mask] = f0_fb[fill_mask]
-
-                        need_fill2 = (f0 <= 0) & energy_mask & voiced_context
-                        need_fill2_count = int(np.sum(need_fill2))
-                        need_fill2_ratio = float(need_fill2_count) / max(len(f0), 1)
-                        if np.any(need_fill2) and self.f0_fallback_use_crepe:
-                            allow_crepe_fallback = (
-                                need_fill2_count <= self.f0_fallback_crepe_max_frames
-                                and need_fill2_ratio <= self.f0_fallback_crepe_max_ratio
-                            )
-                        else:
-                            allow_crepe_fallback = False
-
-                        if np.any(need_fill2) and allow_crepe_fallback:
-                            if log:
-                                log.detail(
-                                    f"Harvest后仍掉线(主唱上下文): {int(need_fill2.sum())}/{len(f0)}，启用CREPE兜底"
-                                )
-                            f0_cr = _compute_crepe_f0(
-                                x,
-                                self.sr,
-                                self.window,
-                                f0_min_fb,
-                                f0_max_fb,
-                                self.device,
-                                periodicity_threshold=self.crepe_pd_threshold,
-                            )
-                            if len(f0_cr) < len(f0):
-                                f0_cr = np.pad(f0_cr, (0, len(f0) - len(f0_cr)), mode="edge")
-                            else:
-                                f0_cr = f0_cr[: len(f0)]
-
-                            # Require cross-estimator agreement when both estimators are voiced.
-                            both_voiced = (f0_cr > 0) & (f0_fb > 0)
-                            agree_mask = np.zeros_like(f0, dtype=bool)
-                            if np.any(both_voiced):
-                                semitone_diff = np.abs(
-                                    12.0 * np.log2((f0_cr + 1e-6) / (f0_fb + 1e-6))
-                                )
-                                agree_mask = both_voiced & (semitone_diff <= 2.0)
-
-                            fill_mask2 = need_fill2 & (
-                                ((f0_cr > 0) & (f0_fb <= 0)) | agree_mask
-                            )
-                            f0[fill_mask2] = f0_cr[fill_mask2]
-                        elif np.any(need_fill2) and log:
-                            log.detail(
-                                f"Harvest后仍掉线(主唱上下文): {need_fill2_count}/{len(f0)}，"
-                                "已跳过CREPE兜底（超出保守阈值）"
-                            )
-
-                        final_drop = (f0 <= 0) & energy_mask & voiced_context
-                        if np.any(final_drop) and log:
-                            log.detail(
-                                f"保守兜底后保留无声帧: {int(final_drop.sum())}/{len(f0)}"
-                            )
-
-                        # Only smooth short, context-consistent gaps.
-                        f0 = repair_f0(
-                            f0,
-                            max_gap=self.f0_fallback_post_gap,
-                            mask=voiced_context,
-                        )
-            elif f0_method == "rmvpe" and log:
-                log.detail("RMVPE严格模式: 不启用Harvest/CREPE兜底，仅使用RMVPE原始结果")
+        elif f0_method == "rmvpe" and log:
+            log.detail("RMVPE严格模式: 仅使用RMVPE原始结果")
 
         if self.f0_stabilize:
             f0, octave_fixed, outlier_fixed = _stabilize_f0(
@@ -836,10 +631,6 @@ class Pipeline(object):
 
         if log:
             log.detail(f"F0处理完成: coarse shape={f0_coarse.shape}, bak shape={f0bak.shape}")
-
-        # 恢复原始hybrid模式设置
-        if restore_hybrid_mode:
-            self.f0_hybrid_mode = original_hybrid_mode
 
         return f0_coarse, f0bak
 

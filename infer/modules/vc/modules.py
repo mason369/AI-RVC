@@ -17,6 +17,7 @@ from infer.lib.infer_pack.models import (
 )
 from infer.modules.vc.pipeline import Pipeline
 from infer.modules.vc.utils import *
+from infer.rvc_version import inspect_rvc_model_version
 
 # 导入彩色日志
 try:
@@ -76,7 +77,7 @@ class VC:
                         log.detail("已清理CUDA缓存")
                 ###楼下不这么折腾清理不干净
                 self.if_f0 = self.cpt.get("f0", 1)
-                self.version = self.cpt.get("version", "v1")
+                self.version = inspect_rvc_model_version(self.cpt, "cached RVC model").version
                 if self.version == "v1":
                     if self.if_f0 == 1:
                         self.net_g = SynthesizerTrnMs256NSFsid(
@@ -118,9 +119,23 @@ class VC:
         self.tgt_sr = self.cpt["config"][-1]
         self.cpt["config"][-3] = self.cpt["weight"]["emb_g.weight"].shape[0]  # n_spk
         self.if_f0 = self.cpt.get("f0", 1)
-        self.version = self.cpt.get("version", "v1")
+        version_info = inspect_rvc_model_version(self.cpt, person)
+        self.version = version_info.version
 
         if log:
+            if version_info.metadata_mismatch:
+                log.warning(
+                    "模型version字段与权重结构不一致，按权重结构使用: "
+                    f"{version_info.raw_version_label} -> {self.version}"
+                )
+            elif (
+                not version_info.raw_version_present
+                or version_info.raw_version != self.version
+            ):
+                log.detail(
+                    "模型version字段已规范化用于推理: "
+                    f"{version_info.raw_version_label} -> {self.version}"
+                )
             log.config(f"模型版本: {self.version}")
             log.config(f"目标采样率: {self.tgt_sr} Hz")
             log.config(f"F0支持: {'是' if self.if_f0 else '否'}")

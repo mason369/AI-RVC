@@ -39,6 +39,12 @@ class InstallRequirementTests(unittest.TestCase):
                 return "1.26.4"
             if distribution_name == "audio-separator":
                 return "0.44.1"
+            if distribution_name == "gradio":
+                return "5.49.1"
+            if distribution_name == "huggingface_hub":
+                return "0.36.0"
+            if distribution_name == "fairseq":
+                return "0.12.2"
             return None
 
         with mock.patch("install.check_package", return_value=True), mock.patch(
@@ -49,6 +55,49 @@ class InstallRequirementTests(unittest.TestCase):
             missing = install.check_all("python")
 
         self.assertIn("numpy>=2,<3", {info["pip"] for info in missing})
+
+    def test_gradio_wrong_version_is_marked_for_upgrade(self):
+        def version_for_package(_venv_py, distribution_name):
+            versions = {
+                "gradio": "3.50.2",
+                "numpy": "2.2.6",
+                "audio-separator": "0.44.1",
+                "huggingface_hub": "0.36.0",
+                "fairseq": "0.12.2",
+            }
+            return versions.get(distribution_name)
+
+        with mock.patch("install.check_package", return_value=True), mock.patch(
+            "install.get_installed_version",
+            side_effect=version_for_package,
+            create=True,
+        ), contextlib.redirect_stdout(io.StringIO()):
+            missing = install.check_all("python")
+
+        self.assertIn("gradio==5.49.1", {info["pip"] for info in missing})
+
+    def test_huggingface_hub_1_is_marked_for_downgrade(self):
+        def version_for_package(_venv_py, distribution_name):
+            versions = {
+                "gradio": "5.49.1",
+                "numpy": "2.2.6",
+                "audio-separator": "0.44.1",
+                "huggingface_hub": "1.0.1",
+                "fairseq": "0.12.2",
+            }
+            return versions.get(distribution_name)
+
+        with mock.patch("install.check_package", return_value=True), mock.patch(
+            "install.get_installed_version",
+            side_effect=version_for_package,
+            create=True,
+        ), contextlib.redirect_stdout(io.StringIO()):
+            missing = install.check_all("python")
+
+        self.assertIn(
+            "huggingface_hub>=0.19.0,<1.0",
+            {info["pip"] for info in missing},
+        )
 
     def test_audio_separator_install_keeps_declared_numpy_2_stack(self):
         audio_separator_info = install.PACKAGES["audio_separator"]
@@ -72,7 +121,7 @@ class InstallRequirementTests(unittest.TestCase):
             [
                 (
                     "audio-separator",
-                    {"extra": "cpu", "version_spec": ">=0.44.1"},
+                    {"extra": "cpu", "version_spec": "==0.44.1"},
                 )
             ],
         )

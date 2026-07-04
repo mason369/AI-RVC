@@ -27,7 +27,13 @@ PYTHON310_CANDIDATES = [
 PACKAGES = {
     "torch": {"import": "torch", "name": "PyTorch", "pip": "torch"},
     "torchaudio": {"import": "torchaudio", "name": "torchaudio", "pip": "torchaudio"},
-    "gradio": {"import": "gradio", "name": "Gradio", "pip": "gradio==5.49.1"},
+    "gradio": {
+        "import": "gradio",
+        "name": "Gradio",
+        "pip": "gradio==5.49.1",
+        "dist": "gradio",
+        "required_version": "5.49.1",
+    },
     "librosa": {"import": "librosa", "name": "librosa", "pip": "librosa"},
     "soundfile": {"import": "soundfile", "name": "soundfile", "pip": "soundfile"},
     "av": {"import": "av", "name": "PyAV", "pip": "av"},
@@ -55,12 +61,25 @@ PACKAGES = {
         "name": "audio-separator",
         "pip": "audio-separator",
         "dist": "audio-separator",
-        "min_version": "0.44.1",
+        "required_version": "0.44.1",
     },
-    "huggingface_hub": {"import": "huggingface_hub", "name": "huggingface_hub", "pip": "huggingface_hub"},
+    "huggingface_hub": {
+        "import": "huggingface_hub",
+        "name": "huggingface_hub",
+        "pip": "huggingface_hub>=0.19.0,<1.0",
+        "dist": "huggingface_hub",
+        "min_version": "0.19.0",
+        "max_exclusive_version": "1.0",
+    },
     "pedalboard": {"import": "pedalboard", "name": "pedalboard", "pip": "pedalboard"},
     "ffmpeg": {"import": "ffmpeg", "name": "ffmpeg-python", "pip": "ffmpeg-python"},
-    "fairseq": {"import": "fairseq", "name": "fairseq", "pip": "fairseq==0.12.2"},
+    "fairseq": {
+        "import": "fairseq",
+        "name": "fairseq",
+        "pip": "fairseq==0.12.2",
+        "dist": "fairseq",
+        "required_version": "0.12.2",
+    },
 }
 
 # === 虚拟环境 ===
@@ -176,6 +195,22 @@ def _version_less_than(installed, upper_bound):
     return installed_parts < upper_parts
 
 
+def _version_matches(installed, required):
+    return str(installed or "").strip() == str(required or "").strip()
+
+
+def _version_requirement_text(info):
+    required_version = info.get("required_version")
+    if required_version:
+        return f"== {required_version}"
+    requirements = []
+    if info.get("min_version"):
+        requirements.append(f">= {info['min_version']}")
+    if info.get("max_exclusive_version"):
+        requirements.append(f"< {info['max_exclusive_version']}")
+    return " 且 ".join(requirements)
+
+
 def detect_cuda_version():
     """检测系统 CUDA 版本，返回对应的 PyTorch index-url"""
     try:
@@ -243,21 +278,26 @@ def check_all(venv_py):
     for key, info in PACKAGES.items():
         ok = check_package(venv_py, info["import"])
         status = "OK" if ok else "未安装"
+        required_version = info.get("required_version")
         min_version = info.get("min_version")
         max_exclusive_version = info.get("max_exclusive_version")
-        if ok and (min_version or max_exclusive_version):
+        if ok and (required_version or min_version or max_exclusive_version):
             installed_version = get_installed_version(
                 venv_py,
                 info.get("dist", info["pip"]),
             )
             if not installed_version:
                 ok = False
-                requirements = []
-                if min_version:
-                    requirements.append(f">= {min_version}")
-                if max_exclusive_version:
-                    requirements.append(f"< {max_exclusive_version}")
-                status = f"需更新 (无法读取版本，要求 {' 且 '.join(requirements)})"
+                status = f"需更新 (无法读取版本，要求 {_version_requirement_text(info)})"
+            elif required_version:
+                if _version_matches(installed_version, required_version):
+                    status = f"OK ({installed_version})"
+                else:
+                    ok = False
+                    status = (
+                        f"需更新 ({installed_version} 不等于 "
+                        f"{required_version})"
+                    )
             elif (
                 (not min_version or _version_at_least(installed_version, min_version))
                 and (
@@ -268,12 +308,10 @@ def check_all(venv_py):
                 status = f"OK ({installed_version})"
             else:
                 ok = False
-                requirements = []
-                if min_version:
-                    requirements.append(f">= {min_version}")
-                if max_exclusive_version:
-                    requirements.append(f"< {max_exclusive_version}")
-                status = f"需更新 ({installed_version} 不满足 {' 且 '.join(requirements)})"
+                status = (
+                    f"需更新 ({installed_version} 不满足 "
+                    f"{_version_requirement_text(info)})"
+                )
         mark = "[v]" if ok else "[x]"
         print(f"  {mark} {info['name']:30s} {status}")
         if not ok:
@@ -314,7 +352,10 @@ def install_all(venv_py, gpu=True):
             else:
                 ok = pip_install(venv_py, pip_name, index_url="https://download.pytorch.org/whl/cpu")
         elif pip_name == "audio-separator":
-            version_spec = f">={info['min_version']}" if info.get("min_version") else ""
+            if info.get("required_version"):
+                version_spec = f"=={info['required_version']}"
+            else:
+                version_spec = f">={info['min_version']}" if info.get("min_version") else ""
             ok = pip_install(
                 venv_py,
                 pip_name,

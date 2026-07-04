@@ -13,21 +13,23 @@ license: mit
 
 # 🎤 AI-RVC 一键 AI 翻唱
 
-AI-RVC 是一个基于 **RVC v2** 的一键 AI 翻唱与声音转换 WebUI。上传歌曲后，它会自动分离人声与伴奏，使用角色 RVC 模型转换主唱音色，再把转换后的人声和伴奏混成完整作品。
+AI-RVC 是一个基于 [RVC v2](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) 的一键 AI 翻唱与声音转换 WebUI。上传歌曲后，它会自动分离人声与伴奏，使用角色 RVC 模型转换主唱音色，再把转换后的人声和伴奏混成完整作品。
+
+English summary: AI-RVC is a one-click [RVC v2](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) AI cover WebUI. It uses a practical cover pipeline with [RoFormer/Mel-Band RoFormer](https://arxiv.org/abs/2310.01809) separation, [RMVPE](https://arxiv.org/abs/2306.15412) pitch extraction, [HuBERT](https://arxiv.org/abs/2106.07447) features, [FAISS](https://github.com/facebookresearch/faiss) retrieval, and [RVC v2](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) character models. The current pipeline focuses on local usability and model compatibility rather than claiming end-to-end 2026 research SOTA.
 
 如果你想搜索或分享本项目，可以用这些关键词：AI 翻唱、RVC 翻唱、AI cover generator、RVC voice conversion、角色声线转换、人声分离、伴奏分离、HuBERT、RMVPE、FAISS、Gradio WebUI、Colab AI 翻唱。
 
 ## 功能特点
 
 - **AI 歌曲翻唱**：上传 MP3/WAV/FLAC，自动分离人声、转换音色、混合伴奏，一键生成 AI cover。
-- **人声分离**：默认 `audio-separator` 0.44.1 ensemble 预设（`ensemble:vocal_rvc`），配合 Gradio 5 / NumPy 2 运行，可处理常见歌曲里的主唱与伴奏分离。
-- **音色转换**：RVC v2 架构 + FAISS 检索增强流程，搭配角色模型完成声线转换。
-- **RMVPE 音高提取**：用于提取 F0 基频曲线，让旋律和音高更稳。
-- **角色模型**：内置 117 个可下载角色模型，支持系列筛选和关键词搜索。
+- **人声分离**：默认 [audio-separator](https://github.com/nomadkaraoke/python-audio-separator) 0.44.1 的 [ensemble:vocal_rvc](https://pypi.org/project/audio-separator/) 预设，属于 [RoFormer/Mel-Band RoFormer](https://arxiv.org/abs/2310.01809) 高质量实用路线，偏 RVC/AI cover 前处理。
+- **音色转换**：采用 [RVC v2](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) 架构 + 官方兼容 VC 推理 + [FAISS](https://github.com/facebookresearch/faiss) 检索增强流程，搭配角色模型完成声线转换。
+- **RMVPE 音高提取**：用于提取 F0 基频曲线；默认采用严格 [RMVPE](https://arxiv.org/abs/2306.15412) 路线，减少呼吸、齿音、换气声被误写成强音高。
+- **角色模型**：内置 181 个可下载角色模型，支持系列筛选、关键词搜索和自定义模型导入。
 - **混音效果**：支持人声混响、音量调节和 4 种混音预设。
 - **卡拉OK模式**：分离主唱和伴唱轨道，方便对和声较多的歌曲做进一步处理。
-- **VC预处理**：4 种模式（自动、直通、学习型 DeEcho、旧版手工链），根据素材干净程度灵活选择。
-- **双VC管道**：支持当前实现和官方实现，可对比不同歌曲、不同模型下的效果。
+- **VC预处理**：提供自动模式和严格 RoFormer De-Reverb 模式；不可用时显式停止，不静默降级到旧链路。
+- **双VC管道**：支持当前实现和官方实现；默认兼顾官方兼容 VC 推理和项目当前后处理，可对比不同歌曲、不同模型下的效果。
 
 ## 使用方法
 
@@ -66,12 +68,10 @@ AI-RVC 是一个基于 **RVC v2** 的一键 AI 翻唱与声音转换 WebUI。上
 
 ### VC 预处理模式
 
-- **自动**：根据模型可用性自动选择（推荐）
-- **直通**：主唱直接进入 RVC
-- **学习型 DeEcho**：使用 UVR DeEcho/DeReverb
-- **旧版手工链**：仅用于对比测试
+- **自动**：使用当前默认的严格 RoFormer De-Reverb 路径（推荐）
+- **严格 RoFormer De-Reverb**：明确指定同一条去混响/去回声预处理路径
 
-## 可用角色模型（117 个）
+## 可用角色模型（181 个）
 
 | 系列 | 角色示例 |
 |------|----------|
@@ -89,7 +89,9 @@ AI-RVC 是一个基于 **RVC v2** 的一键 AI 翻唱与声音转换 WebUI。上
 ```
 音频输入 → CoverPipeline
               ↓
-          人声分离 (Mel-Band Roformer)
+          人声分离 (RoFormer / Mel-Band RoFormer ensemble)
+              ↓
+          RoFormer De-Reverb 预处理
               ↓
           RVC 音色转换 (HuBERT + RMVPE + FAISS)
               ↓
@@ -98,11 +100,22 @@ AI-RVC 是一个基于 **RVC v2** 的一键 AI 翻唱与声音转换 WebUI。上
           AI 翻唱成品
 ```
 
+## 模型定位 / Model Positioning
+
+| 模块 | 当前判断 |
+|------|----------|
+| 人声分离 / 去混响 | 使用 [RoFormer/Mel-Band RoFormer](https://arxiv.org/abs/2310.01809) 系高质量开源路线，接近当前实用高端方案，适合 RVC 翻唱前处理，但不宣称所有数据集绝对 SOTA |
+| [RMVPE](https://arxiv.org/abs/2306.15412) F0 | 论文支持的强默认，适合带伴奏歌声的 F0 提取 |
+| [RVC v2](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) | 工程成熟、速度快、兼容现有角色模型；到 2026 已不是研究意义上的最新 SOTA |
+| [Seed-VC](https://github.com/Plachtaa/seed-vc) / [Vevo](https://github.com/open-mmlab/Amphion/blob/main/models/vc/vevo/README.md) / [Serenade](https://eusipco2025.org/wp-content/uploads/pdfs/0000411.pdf) / [SYKI-SVC](https://arxiv.org/abs/2501.02953) / [S2Voice](https://arxiv.org/abs/2601.13629) | 更前沿的零样本、扩散、流匹配或大模型式 SVC/SSC 方向；不是当前 RVC `.pth` 模型的直接替换 |
+
+English note: [Seed-VC](https://github.com/Plachtaa/seed-vc), [Vevo](https://github.com/open-mmlab/Amphion/blob/main/models/vc/vevo/README.md)-like systems, [Serenade](https://eusipco2025.org/wp-content/uploads/pdfs/0000411.pdf), [SYKI-SVC](https://arxiv.org/abs/2501.02953), and [S2Voice](https://arxiv.org/abs/2601.13629) are research-frontier directions for VC/SVC/SSC. Integrating them would require a new inference architecture, new model formats, new defaults, and a migration plan for existing character models.
+
 ## 常见问题
 
 **Q: 首次运行很慢？**
 
-A: 首次运行会自动下载模型文件（HuBERT、RMVPE、Roformer 等），请耐心等待。
+A: 首次运行会自动下载模型文件（[HuBERT](https://arxiv.org/abs/2106.07447)、[RMVPE](https://arxiv.org/abs/2306.15412)、[RoFormer](https://arxiv.org/abs/2310.01809) 等），请耐心等待。
 
 **Q: 高音断音/撕裂？**
 
@@ -132,6 +145,7 @@ A: 建议选择与原唱性别、音色相近的角色，效果更自然。
 
 - **GitHub 仓库**：https://github.com/mason369/AI-RVC
 - **完整文档**：查看仓库中的 README.md
+- **模型与 SOTA 说明**：README.md 的“使用的 AI 模型”章节列出当前默认、可选模型、研究前沿和论文依据
 - **Colab 版本**：AI_RVC_Colab.ipynb
 - **问题反馈**：GitHub Issues
 
@@ -151,4 +165,4 @@ A: 建议选择与原唱性别、音色相近的角色，效果更自然。
 
 **License**: MIT
 **Version**: 2.0
-**Last Updated**: 2026-06-18
+**Last Updated**: 2026-07-04

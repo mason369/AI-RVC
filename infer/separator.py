@@ -59,8 +59,8 @@ def _audio_separator_install_message() -> str:
     return message
 
 
-# Public scored SOTA defaults from audio-separator 0.44.1's model table.
-# Keep the cover pipeline unchanged; only the separator model choices change.
+# Quality-oriented audio-separator 0.44.1 defaults for RVC cover preprocessing.
+# Constant names keep the existing public API stable; docs avoid absolute SOTA claims.
 ENSEMBLE_PRESET_PREFIX = "ensemble:"
 
 ROFORMER_LEGACY_SINGLE_MODEL = "vocals_mel_band_roformer.ckpt"
@@ -213,7 +213,7 @@ class RoformerSeparator:
         self.active_model = None
 
     def load_model(self, output_dir: str = ""):
-        """加载指定 RoFormer 模型；严格 SOTA 模式下不自动降级。"""
+        """加载指定 RoFormer 模型；严格高质量模式下不自动降级。"""
         model_dir = str(
             Path(__file__).parent.parent / "assets" / "separator_models"
         )
@@ -235,7 +235,7 @@ class RoformerSeparator:
 
         model_name = self.model_filename
         log.info(
-            "正在加载公开 SOTA RoFormer 分离模型: "
+            "正在加载高质量 RoFormer 分离模型: "
             f"{_model_spec_label(model_name)}"
         )
         separator = _load_audio_separator_model(
@@ -380,7 +380,7 @@ class KaraokeSeparator:
         self.model_candidates = [model_filename]
 
     def load_model(self, output_dir: str = ""):
-        """加载指定 Karaoke 模型；严格 SOTA 模式下不自动降级。"""
+        """加载指定 Karaoke 模型；严格高质量模式下不自动降级。"""
         model_dir = str(Path(__file__).parent.parent / "assets" / "separator_models")
         Path(model_dir).mkdir(parents=True, exist_ok=True)
 
@@ -399,7 +399,7 @@ class KaraokeSeparator:
 
         model_name = self.model_filename
         log.info(
-            "正在加载公开 SOTA Karaoke 模型: "
+            "正在加载高质量 Karaoke 模型: "
             f"{_model_spec_label(model_name)}"
         )
         separator = _load_audio_separator_model(
@@ -817,7 +817,7 @@ def get_available_models() -> list:
     if AUDIO_SEPARATOR_AVAILABLE:
         models.append({
             "name": "roformer",
-            "description": "audio-separator public scored SOTA - 最高质量人声/伴奏分离"
+            "description": "audio-separator RoFormer/Mel-Band RoFormer 高质量人声/伴奏分离"
         })
     if DEMUCS_AVAILABLE:
         models.extend([

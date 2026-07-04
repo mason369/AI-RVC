@@ -15,6 +15,17 @@ FALLBACK_HYBRID_MODES = {
     "hybrid-fallback",
 }
 
+STRICT_HYBRID_MODES = {
+    "",
+    "off",
+    "none",
+    "strict",
+    "official",
+    "rmvpe",
+    "rmvpe_strict",
+    "rmvpe-strict",
+}
+
 
 @dataclass(frozen=True)
 class F0RoutingPolicy:
@@ -30,28 +41,38 @@ def resolve_cover_f0_policy(
     configured_hybrid_mode: str = "off",
     repair_profile: bool = False,
 ) -> F0RoutingPolicy:
-    requested = str(requested_method or "rmvpe").strip().lower()
+    if requested_method is None:
+        raise ValueError("f0_method is required for the strict cover route.")
+    requested = str(requested_method).strip().lower()
+    if not requested:
+        raise ValueError("f0_method is required for the strict cover route.")
     configured = str(configured_hybrid_mode or "off").strip().lower()
 
-    if requested != "hybrid":
-        return F0RoutingPolicy(
-            requested_method=requested,
-            vc_method=requested,
-            hybrid_mode=configured or "off",
-            gate_method=requested,
-            description=f"{requested} uses the configured routing directly.",
+    if repair_profile:
+        raise ValueError(
+            "Singing repair currently depends on F0 fallback; it is disabled for the strict cover route."
         )
 
-    hybrid_mode = configured if configured in FALLBACK_HYBRID_MODES else "fallback"
-    if repair_profile:
-        hybrid_mode = "fallback"
+    if requested == "hybrid":
+        raise ValueError(
+            "Hybrid F0 fallback is disabled for the strict cover route; set f0_method to rmvpe explicitly."
+        )
+
+    if configured in FALLBACK_HYBRID_MODES:
+        raise ValueError(
+            "F0 fallback modes are disabled for the strict cover route; set f0_hybrid_mode to off."
+        )
+    if configured not in STRICT_HYBRID_MODES:
+        raise ValueError(
+            f"Unsupported f0_hybrid_mode for strict cover route: {configured!r}"
+        )
 
     return F0RoutingPolicy(
-        requested_method="hybrid",
-        vc_method="rmvpe",
-        hybrid_mode=hybrid_mode,
-        gate_method="rmvpe",
-        description="hybrid request routed to RMVPE with conservative fallback; post-gate uses RMVPE only.",
+        requested_method=requested,
+        vc_method=requested,
+        hybrid_mode="off",
+        gate_method=requested,
+        description=f"{requested} uses strict routing without fallback.",
     )
 
 
@@ -225,14 +246,30 @@ def compute_active_source_replace(
     activity = activity[:frame_count][np.newaxis, :]
     direct_ratio = direct_ratio[:frame_count][np.newaxis, :]
 
-    base_replace = 0.85 * (1.0 - activity) * (1.0 - soft_mask)
+    artifact_pressure = np.clip((1.0 - soft_mask - 0.08) / 0.55, 0.0, 1.0)
+    voiced_body_guard = np.clip(
+        activity * direct_ratio * np.clip(soft_mask, 0.0, 1.0),
+        0.0,
+        1.0,
+    )
+
+    base_replace = 0.78 * (1.0 - activity) * artifact_pressure
     active_echo_presence = np.clip(
         echo_ratio * (0.35 + 0.65 * (1.0 - direct_ratio)),
         0.0,
         1.0,
     )
-    active_replace = 0.65 * activity * active_echo_presence * (1.0 - soft_mask)
-    source_replace = np.clip(base_replace + active_replace, 0.0, float(max_replace))
+    active_replace = (
+        0.50
+        * activity
+        * active_echo_presence
+        * artifact_pressure
+        * (1.0 - 0.45 * voiced_body_guard)
+    )
+
+    body_cap = 0.24 + 0.58 * (1.0 - voiced_body_guard)
+    source_replace = np.minimum(base_replace + active_replace, body_cap)
+    source_replace = np.clip(source_replace, 0.0, float(max_replace))
     return source_replace.astype(np.float32)
 
 

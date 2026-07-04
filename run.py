@@ -5,6 +5,7 @@ RVC AI 翻唱 - 主入口
 import os
 import sys
 import argparse
+import json
 from pathlib import Path
 
 # 添加项目根目录到路径
@@ -61,7 +62,11 @@ def check_environment():
 
 def check_models():
     """检查必需模型"""
-    from tools.download_models import check_model, REQUIRED_MODELS
+    from tools.download_models import (
+        check_model,
+        ensure_upstream_rvc_tree,
+        REQUIRED_MODELS,
+    )
 
     missing = []
     for name in REQUIRED_MODELS:
@@ -74,6 +79,22 @@ def check_models():
         from tools.download_models import download_required_models
         if not download_required_models():
             log.error("模型下载失败，请检查网络连接")
+            return False
+
+    config_path = ROOT_DIR / "configs" / "config.json"
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            app_config = json.load(f)
+    except Exception as e:
+        log.error(f"无法读取配置文件: {config_path}, {e}")
+        return False
+
+    cover_cfg = app_config.get("cover", {})
+    if bool(cover_cfg.get("use_official", True)):
+        try:
+            ensure_upstream_rvc_tree(ROOT_DIR)
+        except Exception as e:
+            log.error(f"默认质量链路依赖内置官方 RVC，但准备失败: {e}")
             return False
 
     return True

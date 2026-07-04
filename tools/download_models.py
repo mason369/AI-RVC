@@ -4,6 +4,8 @@
 """
 import os
 import hashlib
+import shutil
+import subprocess
 import requests
 from pathlib import Path
 from tqdm import tqdm
@@ -100,6 +102,14 @@ MATURE_DEECHO_MODELS = [
     "onnx_dereverb_By_FoxJoy/vocals.onnx",
     "VR-DeEchoNormal.pth",
     "VR-DeEchoAggressive.pth",
+]
+
+UPSTREAM_RVC_REPO_URL = "https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI.git"
+UPSTREAM_RVC_DIR = "_official_rvc"
+UPSTREAM_RVC_REQUIRED_FILES = [
+    "configs/config.py",
+    "infer/modules/vc/modules.py",
+    "infer/modules/uvr5/modules.py",
 ]
 
 
@@ -221,6 +231,101 @@ def download_model(name: str) -> bool:
     return download_file(model_info["url"], model_path, name)
 
 
+def get_upstream_rvc_root(root_dir: Optional[Path] = None) -> Path:
+    """Return the local vendored official RVC directory."""
+    project_root = Path(root_dir) if root_dir is not None else get_project_root()
+    return project_root / UPSTREAM_RVC_DIR
+
+
+def get_missing_upstream_rvc_files(root_dir: Optional[Path] = None) -> List[str]:
+    """List required official RVC files missing from the local vendored tree."""
+    official_root = get_upstream_rvc_root(root_dir)
+    return [
+        rel_path
+        for rel_path in UPSTREAM_RVC_REQUIRED_FILES
+        if not (official_root / rel_path).exists()
+    ]
+
+
+def check_upstream_rvc_tree(root_dir: Optional[Path] = None) -> bool:
+    """Return whether the vendored official RVC tree is ready for default VC."""
+    return not get_missing_upstream_rvc_files(root_dir)
+
+
+def ensure_upstream_rvc_tree(
+    root_dir: Optional[Path] = None,
+    *,
+    clone_timeout_sec: int = 900,
+) -> Path:
+    """
+    Ensure the vendored official RVC source tree exists.
+
+    This is required by the default quality route. It does not fall back to
+    another VC backend: if the tree cannot be prepared, the caller should stop.
+    """
+    project_root = Path(root_dir) if root_dir is not None else get_project_root()
+    official_root = get_upstream_rvc_root(project_root)
+    missing = get_missing_upstream_rvc_files(project_root)
+    if not missing:
+        print(f"[OK] 内置官方 RVC 已就绪: {official_root}")
+        return official_root
+
+    if official_root.exists():
+        missing_text = ", ".join(missing)
+        raise FileNotFoundError(
+            "内置官方 RVC 目录不完整，无法运行默认质量链路。"
+            f"目录: {official_root}; 缺失: {missing_text}。"
+            "请删除该不完整目录后重新运行安装，或手动执行: "
+            f"git clone --depth 1 {UPSTREAM_RVC_REPO_URL} {official_root}"
+        )
+
+    git_exe = shutil.which("git")
+    if not git_exe:
+        raise RuntimeError(
+            "默认质量链路需要内置官方 RVC，但当前环境找不到 git。"
+            f"请安装 git，或手动下载 {UPSTREAM_RVC_REPO_URL} 到 {official_root}。"
+        )
+
+    print("=" * 50)
+    print("准备内置官方 RVC 源码...")
+    print("=" * 50)
+    print(f"仓库: {UPSTREAM_RVC_REPO_URL}")
+    print(f"目录: {official_root}")
+
+    try:
+        subprocess.run(
+            [
+                git_exe,
+                "clone",
+                "--depth",
+                "1",
+                UPSTREAM_RVC_REPO_URL,
+                str(official_root),
+            ],
+            cwd=str(project_root),
+            check=True,
+            timeout=clone_timeout_sec,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"下载内置官方 RVC 超时: {UPSTREAM_RVC_REPO_URL}"
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            f"下载内置官方 RVC 失败，退出码: {exc.returncode}"
+        ) from exc
+
+    missing = get_missing_upstream_rvc_files(project_root)
+    if missing:
+        raise FileNotFoundError(
+            "内置官方 RVC 下载完成但结构不完整，无法运行默认质量链路。"
+            f"缺失: {', '.join(missing)}"
+        )
+
+    print(f"[OK] 内置官方 RVC 已就绪: {official_root}")
+    return official_root
+
+
 def download_required_models() -> bool:
     """
     下载所有必需模型
@@ -239,6 +344,12 @@ def download_required_models() -> bool:
                 success = False
         else:
             print(f"[OK] {name} 已存在")
+
+    try:
+        ensure_upstream_rvc_tree()
+    except Exception as e:
+        print(f"[ERROR] 内置官方 RVC 准备失败: {e}")
+        success = False
 
     return success
 
@@ -261,6 +372,12 @@ def download_all_models() -> bool:
                 success = False
         else:
             print(f"[OK] {name} 已存在")
+
+    try:
+        ensure_upstream_rvc_tree()
+    except Exception as e:
+        print(f"[ERROR] 内置官方 RVC 准备失败: {e}")
+        success = False
 
     return success
 
@@ -331,11 +448,19 @@ if __name__ == "__main__":
     parser.add_argument("--check", action="store_true", help="检查模型状态")
     parser.add_argument("--all", action="store_true", help="下载所有模型")
     parser.add_argument("--model", type=str, help="下载指定模型")
+    parser.add_argument("--official-rvc", action="store_true", help="准备内置官方 RVC 源码")
 
     args = parser.parse_args()
 
     if args.check:
         print_model_status()
+        missing_official = get_missing_upstream_rvc_files()
+        if missing_official:
+            print("[MISSING] 内置官方 RVC: " + ", ".join(missing_official))
+        else:
+            print("[OK] 内置官方 RVC")
+    elif args.official_rvc:
+        ensure_upstream_rvc_tree()
     elif args.model:
         download_model(args.model)
     elif args.all:

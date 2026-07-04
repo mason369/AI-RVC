@@ -5,10 +5,11 @@ Gradio 界面 - RVC AI 翻唱
 import os
 import json
 import re
+import shutil
 import tempfile
 import gradio as gr
 from pathlib import Path
-from typing import Optional, Tuple, Dict, List
+from typing import Optional, Tuple, Dict, List, Any, Set
 
 from lib.logger import log
 from lib.runtime_build import get_runtime_build_label
@@ -68,6 +69,10 @@ def normalize_config(config: dict) -> dict:
 config = normalize_config(load_config())
 i18n = load_i18n(str(config.get("language", DEFAULT_LANGUAGE)).strip() or DEFAULT_LANGUAGE)
 pipeline = None
+_GRADIO_TEMP_DOWNLOAD_PREFIX_RE = re.compile(
+    r"^[A-Za-z]__.*?_gradio_[^_]+_",
+    flags=re.IGNORECASE,
+)
 
 
 def t(key: str, section: str = None) -> str:
@@ -162,34 +167,179 @@ def save_language_setting(language_choice: str, config_path: Optional[Path] = No
     )
 
 
-def _to_int(value, fallback: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return fallback
+def _read_cover_choice(
+    cover_cfg: Dict[str, Any],
+    key: str,
+    default: str,
+    allowed: Set[str],
+) -> str:
+    value = str(cover_cfg.get(key, default)).strip().lower()
+    if value not in allowed:
+        allowed_values = ", ".join(sorted(allowed))
+        raise ValueError(
+            f"Invalid cover config: cover.{key}={value!r}; expected one of: {allowed_values}"
+        )
+    return value
 
 
-def _to_float(value, fallback: float) -> float:
+def _read_cover_float(
+    cover_cfg: Dict[str, Any],
+    key: str,
+    default: float,
+    min_value: float,
+    max_value: float,
+) -> float:
+    raw_value = cover_cfg.get(key, default)
     try:
-        return float(value)
-    except (TypeError, ValueError):
-        return fallback
+        value = float(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Invalid cover config: cover.{key} must be a number, got {raw_value!r}"
+        ) from exc
+    if value < min_value or value > max_value:
+        raise ValueError(
+            f"Invalid cover config: cover.{key}={value}; expected {min_value}-{max_value}"
+        )
+    return value
+
+
+def _read_cover_int(
+    cover_cfg: Dict[str, Any],
+    key: str,
+    default: int,
+    min_value: int,
+    max_value: int,
+) -> int:
+    raw_value = cover_cfg.get(key, default)
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Invalid cover config: cover.{key} must be an integer, got {raw_value!r}"
+        ) from exc
+    if value < min_value or value > max_value:
+        raise ValueError(
+            f"Invalid cover config: cover.{key}={value}; expected {min_value}-{max_value}"
+        )
+    return value
+
+
+def _read_cover_bool(cover_cfg: Dict[str, Any], key: str, default: bool) -> bool:
+    raw_value = cover_cfg.get(key, default)
+    if isinstance(raw_value, bool):
+        return raw_value
+    if isinstance(raw_value, str):
+        normalized = raw_value.strip().lower()
+        if normalized == "true":
+            return True
+        if normalized == "false":
+            return False
+    raise ValueError(
+        f"Invalid cover config: cover.{key} must be true or false, got {raw_value!r}"
+    )
+
+
+def resolve_automatic_cover_settings(config_data: Optional[dict] = None) -> Dict[str, object]:
+    """Resolve one-click cover settings from explicit config values."""
+    selected_config = config if config_data is None else config_data
+    if not isinstance(selected_config, dict):
+        raise ValueError("Invalid cover config: root config must be an object")
+    cover_cfg = selected_config.get("cover", {})
+    if not isinstance(cover_cfg, dict):
+        raise ValueError("Invalid cover config: cover must be an object")
+
+    return {
+        "pitch_shift": 0,
+        "index_ratio": _read_cover_float(cover_cfg, "index_rate", 0.5, 0.0, 1.0),
+        "speaker_id": _read_cover_int(cover_cfg, "speaker_id", 0, 0, 255),
+        "karaoke_separation": _read_cover_bool(cover_cfg, "karaoke_separation", True),
+        "karaoke_merge_backing_into_accompaniment": _read_cover_bool(
+            cover_cfg,
+            "karaoke_merge_backing_into_accompaniment",
+            True,
+        ),
+        "vc_preprocess_mode": _read_cover_choice(
+            cover_cfg,
+            "vc_preprocess_mode",
+            "auto",
+            {"auto", "uvr_deecho"},
+        ),
+        "source_constraint_mode": _read_cover_choice(
+            cover_cfg,
+            "source_constraint_mode",
+            "auto",
+            {"auto", "off", "on"},
+        ),
+        "vc_pipeline_mode": _read_cover_choice(
+            cover_cfg,
+            "vc_pipeline_mode",
+            "current",
+            {"current", "official"},
+        ),
+        "vocals_volume": _read_cover_float(cover_cfg, "default_vocals_volume", 100.0, 0.0, 200.0) / 100.0,
+        "accompaniment_volume": _read_cover_float(
+            cover_cfg,
+            "default_accompaniment_volume",
+            100.0,
+            0.0,
+            200.0,
+        ) / 100.0,
+        "reverb_amount": _read_cover_float(cover_cfg, "default_reverb", 0.0, 0.0, 100.0) / 100.0,
+        "rms_mix_rate": _read_cover_float(cover_cfg, "rms_mix_rate", 0.0, 0.0, 1.0),
+        "backing_mix": _read_cover_float(cover_cfg, "backing_mix", 0.0, 0.0, 1.0),
+    }
+
+
+def _resolve_labeled_choice(
+    label_to_value: Dict[str, str],
+    selected: str,
+    field_name: str,
+) -> str:
+    raw_value = str(selected or "").strip()
+    normalized = label_to_value.get(raw_value, raw_value.lower())
+    allowed = set(label_to_value.values())
+    if normalized not in allowed:
+        allowed_values = ", ".join(sorted(allowed))
+        raise ValueError(
+            f"Invalid cover UI value: {field_name}={selected!r}; expected one of: {allowed_values}"
+        )
+    return normalized
+
+
+def _read_ui_float(value, field_name: str, min_value: float, max_value: float) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid cover UI value: {field_name} must be a number") from exc
+    if result < min_value or result > max_value:
+        raise ValueError(
+            f"Invalid cover UI value: {field_name}={result}; expected {min_value}-{max_value}"
+        )
+    return result
+
+
+def _read_ui_int(value, field_name: str, min_value: int, max_value: int) -> int:
+    result = int(round(_read_ui_float(value, field_name, min_value, max_value)))
+    if result < min_value or result > max_value:
+        raise ValueError(
+            f"Invalid cover UI value: {field_name}={result}; expected {min_value}-{max_value}"
+        )
+    return result
 
 
 def get_cover_mix_defaults() -> Dict[str, int]:
-    """获取翻唱混音默认值"""
-    cover_cfg = config.get("cover", {})
+    """Return cover mix defaults from the validated automatic settings."""
+    defaults = resolve_automatic_cover_settings(config)
     return {
-        "vocals_volume": _to_int(cover_cfg.get("default_vocals_volume", 100), 100),
-        "accompaniment_volume": _to_int(cover_cfg.get("default_accompaniment_volume", 100), 100),
-        "reverb": _to_int(cover_cfg.get("default_reverb", 10), 10),
+        "vocals_volume": int(round(float(defaults["vocals_volume"]) * 100)),
+        "accompaniment_volume": int(round(float(defaults["accompaniment_volume"]) * 100)),
+        "reverb": int(round(float(defaults["reverb_amount"]) * 100)),
     }
 
 
 def get_cover_mix_presets() -> Tuple[Dict[str, Dict[str, int]], str]:
-    """获取混音预设与默认预设名称"""
+    """Return effective cover mix presets; these update real mix parameters."""
     defaults = get_cover_mix_defaults()
-
     presets = {
         t("mix_preset_universal", "cover"): defaults.copy(),
         t("mix_preset_vocal", "cover"): {
@@ -208,21 +358,21 @@ def get_cover_mix_presets() -> Tuple[Dict[str, Dict[str, int]], str]:
             "reverb": min(100, defaults["reverb"] + 10),
         },
     }
-
     default_name = t("mix_preset_universal", "cover")
     return presets, default_name
 
 
 def apply_cover_mix_preset(preset_name: str) -> Tuple[int, int, int]:
-    """根据预设名称返回混音参数"""
-    presets, default_name = get_cover_mix_presets()
-    preset = presets.get(preset_name) or presets[default_name]
+    """Return the actual mix slider values for a selected preset."""
+    presets, _ = get_cover_mix_presets()
+    if preset_name not in presets:
+        raise ValueError(f"Unknown mix preset: {preset_name}")
+    preset = presets[preset_name]
     return preset["vocals_volume"], preset["accompaniment_volume"], preset["reverb"]
 
 
-
 def get_vc_preprocess_option_maps() -> Tuple[Dict[str, str], Dict[str, str]]:
-    """Build VC preprocess dropdown option maps."""
+    """Build effective VC preprocess dropdown option maps."""
     label_to_value = {
         t("vc_preprocess_auto", "cover"): "auto",
         t("vc_preprocess_uvr_deecho", "cover"): "uvr_deecho",
@@ -232,7 +382,7 @@ def get_vc_preprocess_option_maps() -> Tuple[Dict[str, str], Dict[str, str]]:
 
 
 def get_source_constraint_option_maps() -> Tuple[Dict[str, str], Dict[str, str]]:
-    """Build source constraint dropdown option maps."""
+    """Build effective source constraint dropdown option maps."""
     label_to_value = {
         t("source_constraint_auto", "cover"): "auto",
         t("source_constraint_off", "cover"): "off",
@@ -243,23 +393,13 @@ def get_source_constraint_option_maps() -> Tuple[Dict[str, str], Dict[str, str]]
 
 
 def get_vc_pipeline_mode_option_maps() -> Tuple[Dict[str, str], Dict[str, str]]:
-    """Build VC pipeline mode dropdown option maps."""
+    """Build effective VC pipeline mode dropdown option maps."""
     label_to_value = {
         t("vc_pipeline_mode_current", "cover"): "current",
         t("vc_pipeline_mode_official", "cover"): "official",
     }
     value_to_label = {value: label for label, value in label_to_value.items()}
     return label_to_value, value_to_label
-
-
-def update_singing_repair_visibility(vc_pipeline_mode: str):
-    """Only show singing repair option for official mode."""
-    pipeline_label_to_value, _ = get_vc_pipeline_mode_option_maps()
-    normalized = pipeline_label_to_value.get(
-        str(vc_pipeline_mode),
-        str(vc_pipeline_mode or "").strip().lower(),
-    )
-    return gr.update(visible=(normalized == "official"))
 
 
 def init_pipeline():
@@ -527,6 +667,52 @@ def resolve_character_name(selection: str) -> str:
     return parts[-1] if parts else selection
 
 
+def get_character_filename_display(char_info: Optional[dict], fallback: str) -> str:
+    """Return a compact, readable character label for generated filenames."""
+    if not char_info:
+        return fallback
+
+    base = (
+        str(char_info.get("base_display") or "").strip()
+        or str(char_info.get("display") or "").strip()
+        or fallback
+    )
+    parts = [part.strip() for part in re.split(r"\s*/\s*", base) if part.strip()]
+
+    variant = str(char_info.get("variant") or "").strip()
+    if not variant:
+        version_label = str(char_info.get("version_label") or "").strip()
+        variant = re.split(r"\s*[·•]\s*", version_label, maxsplit=1)[0].strip()
+
+    if variant and variant.lower() not in {part.lower() for part in parts}:
+        parts.append(variant)
+
+    return "-".join(parts) if parts else fallback
+
+
+def clean_gradio_temp_download_name(filename: str) -> str:
+    """Remove Gradio cache path prefixes that can leak into browser downloads."""
+    clean_name = _GRADIO_TEMP_DOWNLOAD_PREFIX_RE.sub("", str(filename or "")).strip()
+    if not clean_name:
+        raise ValueError(f"Cannot derive a clean download filename from: {filename}")
+    return clean_name
+
+
+def normalize_download_output_path(path: Optional[str]) -> Optional[str]:
+    """Return a same-directory path whose basename is safe for browser downloads."""
+    if not path:
+        return path
+
+    source_path = Path(path)
+    clean_name = clean_gradio_temp_download_name(source_path.name)
+    if clean_name == source_path.name:
+        return str(source_path)
+
+    clean_path = source_path.with_name(clean_name)
+    shutil.copy2(source_path, clean_path)
+    return str(clean_path)
+
+
 def get_available_character_choices(series: str = "全部", keyword: str = "") -> list:
     """获取可下载角色的下拉选项"""
     chars = get_available_character_list()
@@ -610,6 +796,52 @@ def download_all_characters(series: str = "全部", selected_series: str = "全�
         return tf("bulk_download_error", "messages", error=str(e)), choices_update, series_update
 
 
+def import_custom_character_model_ui(
+    display_name: str,
+    category: str,
+    source: str,
+    model_file: Any,
+    index_file: Any,
+    selected_series: str = "全部",
+    keyword: str = "",
+) -> Tuple[str, Dict, Dict, Dict, Any]:
+    """导入用户上传的自定义 RVC 模型并刷新角色选择。"""
+    from tools.character_models import import_custom_character_model
+
+    try:
+        record = import_custom_character_model(
+            model_file=model_file,
+            index_file=index_file,
+            display_name=display_name,
+            source=source or t("custom_model_default_source", "ui"),
+            category=category or t("custom_model_default_category", "ui"),
+        )
+        model_series = _display_series_label(record.get("series"))
+        series_choices = get_downloaded_character_series()
+        if model_series not in series_choices:
+            series_choices.append(model_series)
+            series_choices = [_all_series_label()] + sorted(
+                choice for choice in series_choices if not _is_all_series(choice)
+            )
+        choices = get_downloaded_character_choices(model_series, "")
+        return (
+            tf("custom_model_import_complete", "messages", name=record.get("name", "")),
+            gr.update(choices=choices, value=record.get("name")),
+            gr.update(choices=series_choices, value=model_series),
+            gr.update(value=""),
+            format_character_details(record, downloaded=True),
+        )
+    except Exception as e:
+        series_update, choices_update = _refresh_downloaded_updates(selected_series, keyword)
+        return (
+            tf("custom_model_import_error", "messages", error=str(e)),
+            choices_update,
+            series_update,
+            gr.update(),
+            gr.update(),
+        )
+
+
 def update_download_choices(series: str, keyword: str) -> Dict:
     """更新下载下拉列表"""
     return gr.update(choices=get_available_character_choices(series, keyword))
@@ -636,7 +868,6 @@ def process_cover(
     vc_preprocess_mode: str,
     source_constraint_mode: str,
     vc_pipeline_mode: str,
-    singing_repair: bool,
     vocals_volume: float,
     accompaniment_volume: float,
     reverb_amount: float,
@@ -700,29 +931,41 @@ def process_cover(
             "karaoke_model",
             KARAOKE_DEFAULT_MODEL,
         )
-        default_vc_preprocess_mode = str(cover_cfg.get("vc_preprocess_mode", "auto"))
-        default_source_constraint_mode = str(cover_cfg.get("source_constraint_mode", "auto"))
-        default_vc_pipeline_mode = str(cover_cfg.get("vc_pipeline_mode", "current"))
-        default_singing_repair = bool(cover_cfg.get("singing_repair", False))
-        vc_label_to_value, vc_value_to_label = get_vc_preprocess_option_maps()
-        source_label_to_value, source_value_to_label = get_source_constraint_option_maps()
-        pipeline_label_to_value, pipeline_value_to_label = get_vc_pipeline_mode_option_maps()
+        vc_label_to_value, _ = get_vc_preprocess_option_maps()
+        source_label_to_value, _ = get_source_constraint_option_maps()
+        pipeline_label_to_value, _ = get_vc_pipeline_mode_option_maps()
 
-        vc_preprocess_mode = vc_label_to_value.get(str(vc_preprocess_mode), str(vc_preprocess_mode or default_vc_preprocess_mode).strip().lower())
-        if vc_preprocess_mode not in {"auto", "uvr_deecho"}:
-            vc_preprocess_mode = "auto"
-        source_constraint_mode = source_label_to_value.get(str(source_constraint_mode), str(source_constraint_mode or default_source_constraint_mode).strip().lower())
-        if source_constraint_mode not in {"auto", "off", "on"}:
-            source_constraint_mode = default_source_constraint_mode
-        vc_pipeline_mode = pipeline_label_to_value.get(str(vc_pipeline_mode), str(vc_pipeline_mode or default_vc_pipeline_mode).strip().lower())
-        if vc_pipeline_mode not in {"current", "official"}:
-            vc_pipeline_mode = default_vc_pipeline_mode
-        singing_repair = bool(singing_repair if singing_repair is not None else default_singing_repair)
+        vc_preprocess_mode = _resolve_labeled_choice(
+            vc_label_to_value,
+            vc_preprocess_mode,
+            "vc_preprocess_mode",
+        )
+        source_constraint_mode = _resolve_labeled_choice(
+            source_label_to_value,
+            source_constraint_mode,
+            "source_constraint_mode",
+        )
+        vc_pipeline_mode = _resolve_labeled_choice(
+            pipeline_label_to_value,
+            vc_pipeline_mode,
+            "vc_pipeline_mode",
+        )
 
-        index_ratio = max(0.0, min(1.0, float(index_ratio) / 100.0))
-        speaker_id = int(max(0, round(float(speaker_id))))
-        rms_mix_rate = max(0.0, min(1.0, float(rms_mix_rate) / 100.0))
-        backing_mix = max(0.0, min(1.0, float(backing_mix) / 100.0))
+        pitch_shift = _read_ui_int(pitch_shift, "pitch_shift", -12, 12)
+        index_ratio = _read_ui_float(index_ratio, "index_rate", 0.0, 100.0) / 100.0
+        speaker_id = _read_ui_int(speaker_id, "speaker_id", 0, 255)
+        karaoke_separation = bool(karaoke_separation)
+        karaoke_merge_backing_into_accompaniment = bool(karaoke_merge_backing_into_accompaniment)
+        vocals_volume = _read_ui_float(vocals_volume, "vocals_volume", 0.0, 200.0) / 100.0
+        accompaniment_volume = _read_ui_float(
+            accompaniment_volume,
+            "accompaniment_volume",
+            0.0,
+            200.0,
+        ) / 100.0
+        reverb_amount = _read_ui_float(reverb_amount, "reverb_amount", 0.0, 100.0) / 100.0
+        rms_mix_rate = _read_ui_float(rms_mix_rate, "rms_mix_rate", 0.0, 100.0) / 100.0
+        backing_mix = _read_ui_float(backing_mix, "backing_mix", 0.0, 100.0) / 100.0
 
         # 输出目录
         output_dir = ROOT_DIR / config.get("paths", {}).get(
@@ -757,39 +1000,43 @@ def process_cover(
             silence_threshold_db=silence_threshold_db,
             silence_smoothing_ms=silence_smoothing_ms,
             silence_min_duration_ms=silence_min_duration_ms,
-            vocals_volume=vocals_volume / 100,  # 转换为 0-2 范围
-            accompaniment_volume=accompaniment_volume / 100,
-            reverb_amount=reverb_amount / 100,
+            vocals_volume=vocals_volume,
+            accompaniment_volume=accompaniment_volume,
+            reverb_amount=reverb_amount,
             backing_mix=backing_mix,
-            karaoke_separation=bool(karaoke_separation),
+            karaoke_separation=karaoke_separation,
             karaoke_model=karaoke_model,
-            karaoke_merge_backing_into_accompaniment=bool(karaoke_merge_backing_into_accompaniment),
+            karaoke_merge_backing_into_accompaniment=karaoke_merge_backing_into_accompaniment,
             vc_preprocess_mode=vc_preprocess_mode,
             source_constraint_mode=source_constraint_mode,
             vc_pipeline_mode=vc_pipeline_mode,
-            singing_repair=singing_repair,
+            singing_repair=False,
             output_dir=str(output_dir),
-            model_display_name=resolved_name,
+            model_display_name=get_character_filename_display(char_meta, resolved_name),
+            output_name_suffixes={
+                "cover": t("final_cover", "cover"),
+                "vocals": re.sub(r"\s*[（(][^）)]*[）)]\s*$", "", t("original_vocals", "cover")),
+                "converted_vocals": t("converted_vocals", "cover"),
+                "accompaniment": t("accompaniment", "cover"),
+                "lead_vocals": t("lead_vocals", "cover"),
+                "backing_vocals": t("backing_vocals", "cover"),
+            },
             progress_callback=progress_callback
         )
 
+        for output_key in (
+            "cover",
+            "converted_vocals",
+            "vocals",
+            "lead_vocals",
+            "backing_vocals",
+            "accompaniment",
+        ):
+            if result.get(output_key):
+                result[output_key] = normalize_download_output_path(result[output_key])
+
         status_msg = t("cover_complete_status", "messages")
-        status_msg += f"\n{get_cover_vc_route_status(vc_preprocess_mode, vc_pipeline_mode).splitlines()[0]}"
-        status_msg += "\n" + tf(
-            "vc_pipeline_mode_status",
-            "messages",
-            value=pipeline_value_to_label.get(vc_pipeline_mode, vc_pipeline_mode),
-        )
-        status_msg += "\n" + tf(
-            "singing_repair_status",
-            "messages",
-            value=_bool_status_label(singing_repair),
-        )
-        status_msg += "\n" + tf(
-            "source_constraint_status",
-            "messages",
-            value=source_value_to_label.get(source_constraint_mode, source_constraint_mode),
-        )
+        status_msg += f"\n{get_cover_vc_route_status(vc_preprocess_mode, vc_pipeline_mode, use_official).splitlines()[0]}"
         if char_meta.get("version_label"):
             status_msg += "\n" + tf("model_version_status", "messages", value=char_meta["version_label"])
         if char_meta.get("continuity"):
@@ -815,6 +1062,90 @@ def process_cover(
         error_msg = str(e) if str(e) else traceback.format_exc()
         log.error(f"处理失败: {error_msg}")
         return None, None, None, None, None, None, tf("cover_process_failed", "messages", error=error_msg)
+
+
+def _download_button_update(path: Optional[str]) -> Dict[str, Any]:
+    return gr.update(value=path, visible=bool(path))
+
+
+def _cover_download_button_updates(
+    cover: Optional[str],
+    converted_vocals: Optional[str],
+    original_vocals: Optional[str],
+    lead_vocals: Optional[str],
+    backing_vocals: Optional[str],
+    accompaniment: Optional[str],
+) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    return (
+        _download_button_update(cover),
+        _download_button_update(converted_vocals),
+        _download_button_update(original_vocals),
+        _download_button_update(lead_vocals),
+        _download_button_update(backing_vocals),
+        _download_button_update(accompaniment),
+    )
+
+
+def process_cover_with_downloads(
+    audio_path: str,
+    character_name: str,
+    pitch_shift: int,
+    index_ratio: float,
+    speaker_id: float,
+    karaoke_separation: bool,
+    karaoke_merge_backing_into_accompaniment: bool,
+    vc_preprocess_mode: str,
+    source_constraint_mode: str,
+    vc_pipeline_mode: str,
+    vocals_volume: float,
+    accompaniment_volume: float,
+    reverb_amount: float,
+    rms_mix_rate: float,
+    backing_mix: float,
+    progress=gr.Progress()
+) -> Tuple[
+    Optional[str],
+    Optional[str],
+    Optional[str],
+    Optional[str],
+    Optional[str],
+    Optional[str],
+    Dict[str, Any],
+    Dict[str, Any],
+    Dict[str, Any],
+    Dict[str, Any],
+    Dict[str, Any],
+    Dict[str, Any],
+    str,
+]:
+    cover, converted, original, lead, backing, accompaniment, status = process_cover(
+        audio_path,
+        character_name,
+        pitch_shift,
+        index_ratio,
+        speaker_id,
+        karaoke_separation,
+        karaoke_merge_backing_into_accompaniment,
+        vc_preprocess_mode,
+        source_constraint_mode,
+        vc_pipeline_mode,
+        vocals_volume,
+        accompaniment_volume,
+        reverb_amount,
+        rms_mix_rate,
+        backing_mix,
+        progress=progress,
+    )
+    return (
+        cover,
+        converted,
+        original,
+        lead,
+        backing,
+        accompaniment,
+        *_cover_download_button_updates(cover, converted, original, lead, backing, accompaniment),
+        status,
+    )
 
 
 def check_mature_deecho_status() -> str:
@@ -863,16 +1194,25 @@ def download_mature_deecho_models_ui() -> str:
 def get_cover_vc_route_status(
     vc_preprocess_mode: Optional[str] = None,
     vc_pipeline_mode: Optional[str] = None,
+    use_official: Optional[bool] = None,
 ) -> str:
     """Return the active VC route shown in the cover UI."""
     from infer.separator import ROFORMER_DEREVERB_DEFAULT_MODEL, check_roformer_available
 
-    mode = str(vc_preprocess_mode or config.get("cover", {}).get("vc_preprocess_mode", "auto")).strip().lower()
-    pipeline_mode = str(vc_pipeline_mode or config.get("cover", {}).get("vc_pipeline_mode", "current")).strip().lower()
+    cover_cfg = config.get("cover", {})
     vc_label_to_value, _ = get_vc_preprocess_option_maps()
     pipeline_label_to_value, _ = get_vc_pipeline_mode_option_maps()
-    mode = vc_label_to_value.get(mode, mode)
-    pipeline_mode = pipeline_label_to_value.get(pipeline_mode, pipeline_mode)
+    mode = _resolve_labeled_choice(
+        vc_label_to_value,
+        vc_preprocess_mode if vc_preprocess_mode is not None else cover_cfg.get("vc_preprocess_mode", "auto"),
+        "vc_preprocess_mode",
+    )
+    pipeline_mode = _resolve_labeled_choice(
+        pipeline_label_to_value,
+        vc_pipeline_mode if vc_pipeline_mode is not None else cover_cfg.get("vc_pipeline_mode", "current"),
+        "vc_pipeline_mode",
+    )
+    effective_use_official = bool(cover_cfg.get("use_official", True)) if use_official is None else bool(use_official)
     roformer_ready = check_roformer_available()
     preferred = f"RoFormer {ROFORMER_DEREVERB_DEFAULT_MODEL}" if roformer_ready else None
     newline = chr(10)
@@ -883,6 +1223,14 @@ def get_cover_vc_route_status(
             t("official_route_title", "route_status"),
             t("official_route_flow", "route_status"),
             t("official_route_note", "route_status"),
+            build_label,
+        ])
+
+    if pipeline_mode == "current" and effective_use_official:
+        return newline.join([
+            t("quality_default_route_title", "route_status"),
+            t("quality_default_route_flow", "route_status"),
+            t("quality_default_route_note", "route_status"),
             build_label,
         ])
 
@@ -985,6 +1333,21 @@ CUSTOM_CSS = """
     border: 1px solid #404040 !important;
     color: #9e9e9e !important;
 }
+.status-box textarea,
+.status-box input {
+    font-family: 'Consolas', 'Monaco', monospace !important;
+    line-height: 1.45 !important;
+    padding: 14px 16px !important;
+    white-space: pre-wrap !important;
+    overflow: auto !important;
+    box-sizing: border-box !important;
+}
+.cover-progress-status {
+    margin-bottom: 18px !important;
+}
+.cover-progress-status textarea {
+    min-height: 122px !important;
+}
 
 /* 提示框 */
 .model-hint {
@@ -1007,24 +1370,53 @@ CUSTOM_CSS = """
 }
 
 /* 标签页样式 */
-.tabs > .tab-nav {
+.tabs > .tab-nav,
+.tab-nav,
+div[role="tablist"] {
     background: #1e1e1e !important;
     border-bottom: 1px solid #404040 !important;
 }
-.tabs > .tab-nav > button {
-    color: #9e9e9e !important;
-    background: transparent !important;
-    border: none !important;
+.tabs > .tab-nav > button,
+.tab-nav button,
+button[role="tab"] {
+    color: #bdbdbd !important;
+    background: #1e1e1e !important;
+    border: 1px solid transparent !important;
+    border-bottom: 2px solid transparent !important;
+    border-radius: 0 !important;
     padding: 12px 24px !important;
-    transition: color 0.2s ease !important;
+    transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease !important;
 }
-.tabs > .tab-nav > button:hover {
-    color: #e0e0e0 !important;
+.tabs > .tab-nav > button:hover,
+.tab-nav button:hover,
+button[role="tab"]:hover {
+    color: #f2f2f2 !important;
+    background: #2a2a2a !important;
+    border-bottom-color: #8a5a18 !important;
 }
-.tabs > .tab-nav > button.selected {
-    color: #ff9800 !important;
-    border-bottom: 2px solid #ff9800 !important;
-    background: transparent !important;
+.tabs > .tab-nav > button.selected,
+.tabs > .tab-nav > button[aria-selected="true"],
+.tab-nav button.selected,
+.tab-nav button[aria-selected="true"],
+button[role="tab"].selected,
+button[role="tab"][aria-selected="true"] {
+    color: #ffb347 !important;
+    border-bottom-color: #ff9800 !important;
+    background: #282018 !important;
+}
+.tabs > .tab-nav > button.selected:hover,
+.tabs > .tab-nav > button[aria-selected="true"]:hover,
+.tab-nav button.selected:hover,
+.tab-nav button[aria-selected="true"]:hover,
+button[role="tab"].selected:hover,
+button[role="tab"][aria-selected="true"]:hover {
+    color: #ffc266 !important;
+    background: #302514 !important;
+}
+button[role="tab"]:focus-visible,
+.tab-nav button:focus-visible {
+    outline: 2px solid #ff9800 !important;
+    outline-offset: -2px !important;
 }
 
 /* 输入框和下拉框 */
@@ -1084,6 +1476,24 @@ input[type="range"]::-moz-range-track {
     background: #4a4a4a !important;
 }
 
+/* 结果下载按钮 */
+.cover-download-button button,
+.cover-download-button a {
+    width: 100% !important;
+    min-height: 34px !important;
+    background: #2d2d2d !important;
+    border: 1px solid #4a4a4a !important;
+    color: #f0f0f0 !important;
+    font-weight: 600 !important;
+    box-shadow: none !important;
+}
+.cover-download-button button:hover,
+.cover-download-button a:hover {
+    background: #383838 !important;
+    border-color: #ff9800 !important;
+    color: #ffb347 !important;
+}
+
 /* 音频播放器 */
 .gr-audio {
     background: #1e1e1e !important;
@@ -1127,6 +1537,9 @@ input[type="range"]::-moz-range-track {
 /* 表格 */
 .gr-dataframe {
     background: #1e1e1e !important;
+    --table-odd-background-fill: #1e1e1e !important;
+    --table-even-background-fill: #252525 !important;
+    --table-editing: #333333 !important;
 }
 .gr-dataframe table {
     color: #e0e0e0 !important;
@@ -1147,6 +1560,9 @@ div[data-testid="dataframe"] {
     background: #1e1e1e !important;
     color: #e0e0e0 !important;
     border: 1px solid #404040 !important;
+    --table-odd-background-fill: #1e1e1e !important;
+    --table-even-background-fill: #252525 !important;
+    --table-editing: #333333 !important;
 }
 div[data-testid="dataframe"] table {
     color: #e0e0e0 !important;
@@ -1468,8 +1884,217 @@ input[type="range"] {
     --waveform-color: #ff9800 !important;
     --progress-color: #ff9800 !important;
 }
-"""
 
+/* 顶部工具栏：扁平、紧凑，避免标题和语言控件上下堆叠 */
+.top-header {
+    align-items: end !important;
+    gap: 24px !important;
+    max-width: 1220px !important;
+    margin: 0 auto 14px auto !important;
+    padding: 14px 0 16px 0 !important;
+    border-bottom: 1px solid #2a2a2a !important;
+}
+
+.top-brand,
+.top-actions {
+    min-width: 0 !important;
+}
+
+.top-brand .prose,
+.top-actions .prose {
+    max-width: none !important;
+}
+
+.top-brand-title {
+    display: flex !important;
+    align-items: center !important;
+    gap: 10px !important;
+    margin: 0 !important;
+    color: #f2f2f2 !important;
+    font-size: 1.55rem !important;
+    font-weight: 700 !important;
+    line-height: 1.15 !important;
+    letter-spacing: 0 !important;
+}
+
+.top-brand-title::before {
+    content: "" !important;
+    display: inline-block !important;
+    width: 3px !important;
+    height: 24px !important;
+    background: #ff9800 !important;
+}
+
+.top-brand-subtitle {
+    margin-top: 8px !important;
+    color: #a8a8a8 !important;
+    font-size: 0.95rem !important;
+}
+
+.top-actions {
+    align-items: stretch !important;
+}
+
+.language-switch-row {
+    align-items: end !important;
+    gap: 12px !important;
+    max-width: none !important;
+    margin: 0 !important;
+}
+
+.language-switch-row > div:first-child {
+    flex: 1 1 auto !important;
+}
+
+.language-switch-row > div:last-child {
+    flex: 0 0 170px !important;
+}
+
+.language-switch-row button {
+    min-height: 42px !important;
+    width: 100% !important;
+}
+
+.top-actions .block,
+.top-actions .form,
+.top-actions fieldset {
+    background: transparent !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+}
+
+.top-actions .wrap,
+.top-actions .wrap-inner,
+.top-actions .secondary-wrap,
+.top-actions div[data-testid="dropdown"] {
+    background: #242424 !important;
+    border-color: #3a3a3a !important;
+}
+
+.top-actions label,
+.top-actions .label-wrap,
+.top-actions .label-wrap span {
+    color: #bdbdbd !important;
+}
+
+.language-status-note {
+    text-align: right !important;
+    min-height: 1.2rem !important;
+    margin-top: 6px !important;
+}
+
+.language-status-note .prose,
+.language-status-note p {
+    color: #9e9e9e !important;
+    font-size: 0.9rem !important;
+}
+
+/* Dataframe 空白列修复：覆盖 Gradio 空单元格和斑马纹，避免出现白色条带 */
+.table-wrap {
+    background: #1e1e1e !important;
+    --table-odd-background-fill: #1e1e1e !important;
+    --table-even-background-fill: #252525 !important;
+    --table-editing: #333333 !important;
+}
+
+.gr-dataframe table,
+.gr-dataframe .table-wrap,
+.gr-dataframe .dataframe,
+.gr-dataframe .wrap,
+.gr-dataframe tbody,
+.gr-dataframe tbody tr,
+.gr-dataframe tbody td,
+.table-wrap table,
+.table-wrap tbody,
+.table-wrap tbody tr,
+.table-wrap tbody td,
+div[data-testid="dataframe"] table,
+div[data-testid="dataframe"] .table-wrap,
+div[data-testid="dataframe"] .dataframe,
+div[data-testid="dataframe"] .wrap,
+div[data-testid="dataframe"] tbody,
+div[data-testid="dataframe"] tbody tr,
+div[data-testid="dataframe"] tbody td,
+[data-testid="table"] tbody,
+[data-testid="table"] tbody tr,
+[data-testid="table"] tbody td {
+    background-color: #1e1e1e !important;
+}
+
+.table-wrap tbody tr:nth-child(odd),
+.table-wrap tbody tr:nth-child(odd) td,
+.table-wrap tbody tr:nth-child(odd) .cell-wrap {
+    background-color: #1e1e1e !important;
+}
+
+.table-wrap tbody tr:nth-child(even),
+.table-wrap tbody tr:nth-child(even) td,
+.table-wrap tbody tr:nth-child(even) .cell-wrap,
+.gr-dataframe tbody tr:nth-child(even) td,
+div[data-testid="dataframe"] tbody tr:nth-child(even) td,
+[data-testid="table"] tbody tr:nth-child(even) td {
+    background-color: #252525 !important;
+}
+
+.gr-dataframe td:empty,
+.gr-dataframe .empty,
+.gr-dataframe .cell-empty,
+div[data-testid="dataframe"] td:empty,
+div[data-testid="dataframe"] .empty,
+div[data-testid="dataframe"] .cell-empty,
+[data-testid="table"] td:empty,
+[data-testid="table"] .empty,
+[data-testid="table"] .cell-empty {
+    background-color: transparent !important;
+}
+
+.table-wrap tbody td > *,
+.table-wrap tbody td .cell-wrap,
+.table-wrap tbody td .cell-wrap span,
+.table-wrap tbody td input,
+.table-wrap tbody td textarea,
+.gr-dataframe tbody td > *,
+.gr-dataframe tbody td .cell-wrap,
+.gr-dataframe tbody td .cell-wrap span,
+.gr-dataframe tbody td input,
+.gr-dataframe tbody td textarea,
+div[data-testid="dataframe"] tbody td > *,
+div[data-testid="dataframe"] tbody td .cell-wrap,
+div[data-testid="dataframe"] tbody td .cell-wrap span,
+div[data-testid="dataframe"] tbody td input,
+div[data-testid="dataframe"] tbody td textarea,
+[data-testid="table"] tbody td > *,
+[data-testid="table"] tbody td .cell-wrap,
+[data-testid="table"] tbody td .cell-wrap span,
+[data-testid="table"] tbody td input,
+[data-testid="table"] tbody td textarea {
+    background-color: transparent !important;
+}
+
+@media (max-width: 760px) {
+    .top-header {
+        align-items: stretch !important;
+        flex-direction: column !important;
+        gap: 14px !important;
+        padding: 12px 0 14px 0 !important;
+    }
+
+    .top-brand-title {
+        font-size: 1.35rem !important;
+    }
+
+    .language-switch-row {
+        align-items: stretch !important;
+        flex-direction: column !important;
+        max-width: none !important;
+    }
+
+    .language-switch-row > div:first-child,
+    .language-switch-row > div:last-child {
+        flex: 1 1 auto !important;
+    }
+}
+"""
 
 def create_ui() -> gr.Blocks:
     """创建 Gradio 界面"""
@@ -1542,31 +2167,32 @@ def create_ui() -> gr.Blocks:
         css=CUSTOM_CSS
     ) as app:
 
-        # 标题
-        gr.Markdown(
-            f"# 🎤 {t('app_title')}",
-            elem_classes=["main-title"]
-        )
-        gr.Markdown(
-            f"<center>{t('app_description')}</center>"
-        )
-        gr.Markdown(
-            f"<div class='runtime-stamp'>{get_runtime_build_label()}</div>"
-        )
+        with gr.Row(elem_classes=["top-header"]):
+            with gr.Column(scale=5, elem_classes=["top-brand"]):
+                gr.Markdown(
+                    f"""
+<div class="top-brand-title">{t('app_title')}</div>
+<div class="top-brand-subtitle">{t('app_description')}</div>
+"""
+                )
 
-        with gr.Row(elem_classes=["language-switch-row"]):
-            language_dropdown = gr.Dropdown(
-                label=t("language", "settings"),
-                choices=list(LANGUAGE_LABEL_TO_CODE.keys()),
-                value=get_current_language_label(),
-                interactive=True,
-            )
-            save_language_btn = gr.Button(
-                f"💾 {t('save_language', 'settings')}",
-                variant="secondary",
-            )
+            with gr.Column(scale=4, elem_classes=["top-actions"]):
+                with gr.Row(elem_classes=["language-switch-row"]):
+                    language_dropdown = gr.Dropdown(
+                        label=t("language", "settings"),
+                        choices=list(LANGUAGE_LABEL_TO_CODE.keys()),
+                        value=get_current_language_label(),
+                        interactive=True,
+                    )
+                    save_language_btn = gr.Button(
+                        t("save_language", "settings"),
+                        variant="secondary",
+                    )
 
-        language_status = gr.Markdown(t("language_restart_info", "settings"))
+                language_status = gr.Markdown(
+                    "",
+                    elem_classes=["language-status-note"],
+                )
         save_language_btn.click(
             fn=save_language_setting,
             inputs=[language_dropdown],
@@ -1709,6 +2335,41 @@ def create_ui() -> gr.Blocks:
                                 variant="secondary"
                             )
 
+                        with gr.Accordion(t("upload_custom_character", "cover"), open=False):
+                            custom_model_name = gr.Textbox(
+                                label=t("custom_model_name", "ui"),
+                                placeholder=t("custom_model_name_placeholder", "ui"),
+                                interactive=True,
+                            )
+                            custom_model_category = gr.Textbox(
+                                label=t("custom_model_category", "ui"),
+                                value=t("custom_model_default_category", "ui"),
+                                interactive=True,
+                            )
+                            custom_model_source = gr.Textbox(
+                                label=t("custom_model_source", "ui"),
+                                value=t("custom_model_default_source", "ui"),
+                                interactive=True,
+                            )
+                            custom_model_file = gr.File(
+                                label=t("custom_model_file", "ui"),
+                                file_types=[".pth", ".zip"],
+                                type="filepath",
+                            )
+                            custom_index_file = gr.File(
+                                label=t("custom_index_file", "ui"),
+                                file_types=[".index"],
+                                type="filepath",
+                            )
+                            custom_model_upload_btn = gr.Button(
+                                f"⬆️ {t('import_custom_model', 'ui')}",
+                                variant="primary",
+                            )
+                            custom_model_status = gr.Textbox(
+                                label=t("custom_model_status", "ui"),
+                                interactive=False,
+                            )
+
                         # 角色下载区域
                         with gr.Accordion(t("download_character", "cover"), open=False):
                             series_choices = [_all_series_label()] + get_available_character_series()
@@ -1758,172 +2419,154 @@ def create_ui() -> gr.Blocks:
 
                     # 右侧：参数设置
                     with gr.Column(scale=1):
-                        gr.Markdown(f"#### ⚙️ {t('conversion_settings', 'cover')}")
+                        gr.Markdown(f"#### ⚙️ {t('automatic_cover_settings', 'cover')}")
+                        gr.Markdown(t("automatic_cover_settings_info", "cover"))
                         cover_cfg = config.get("cover", {})
-
-                        cover_pitch_shift = gr.Slider(
-                            label=t("pitch_shift", "cover"),
-                            minimum=-12,
-                            maximum=12,
-                            value=0,
-                            step=1,
-                            info=t("positive_pitch_info", "ui")
-                        )
-
-                        cover_index_rate = gr.Slider(
-                            label=t("index_rate", "cover"),
-                            minimum=0,
-                            maximum=100,
-                            value=_to_int(
-                                round(
-                                    _to_float(
-                                        cover_cfg.get("index_rate", config.get("index_rate", 0.35)),
-                                        0.35,
-                                    ) * 100
-                                ),
-                                35,
-                            ),
-                            step=5,
-                            info=t("index_rate_info", "cover"),
-                        )
-
-                        cover_speaker_id = gr.Slider(
-                            label=t("speaker_id", "cover"),
-                            minimum=0,
-                            maximum=255,
-                            value=_to_int(cover_cfg.get("speaker_id", 0), 0),
-                            step=1,
-                            info=t("speaker_id_info", "cover"),
-                        )
-
-                        gr.Markdown(f"#### 🎚️ {t('mix_settings', 'cover')}")
-                        cover_karaoke = gr.Checkbox(
-                            label=t("karaoke_separation", "cover"),
-                            value=bool(cover_cfg.get("karaoke_separation", True)),
-                            info=t("karaoke_separation_info", "cover")
-                        )
-                        cover_karaoke_merge_backing = gr.Checkbox(
-                            label=t("karaoke_merge_backing", "cover"),
-                            value=bool(
-                                cover_cfg.get(
-                                    "karaoke_merge_backing_into_accompaniment",
-                                    True
-                                )
-                            ),
-                            info=t("karaoke_merge_backing_info", "cover")
-                        )
-
+                        auto_settings = resolve_automatic_cover_settings(config)
                         vc_label_to_value, vc_value_to_label = get_vc_preprocess_option_maps()
                         source_label_to_value, source_value_to_label = get_source_constraint_option_maps()
                         pipeline_label_to_value, pipeline_value_to_label = get_vc_pipeline_mode_option_maps()
-
-                        cover_vc_preprocess_mode = gr.Dropdown(
-                            label=t("vc_preprocess_mode", "cover"),
-                            choices=list(vc_label_to_value.keys()),
-                            value=vc_value_to_label.get(str(cover_cfg.get("vc_preprocess_mode", "auto")), list(vc_label_to_value.keys())[0]),
-                            info=t("vc_preprocess_mode_info", "cover"),
-                        )
-
-                        cover_source_constraint_mode = gr.Dropdown(
-                            label=t("source_constraint_mode", "cover"),
-                            choices=list(source_label_to_value.keys()),
-                            value=source_value_to_label.get(str(cover_cfg.get("source_constraint_mode", "auto")), list(source_label_to_value.keys())[0]),
-                            info=t("source_constraint_mode_info", "cover"),
-                        )
-                        cover_vc_pipeline_mode = gr.Dropdown(
-                            label=t("vc_pipeline_mode", "cover"),
-                            choices=list(pipeline_label_to_value.keys()),
-                            value=pipeline_value_to_label.get(str(cover_cfg.get("vc_pipeline_mode", "current")), list(pipeline_label_to_value.keys())[0]),
-                            info=t("vc_pipeline_mode_info", "cover"),
-                        )
-                        cover_singing_repair = gr.Checkbox(
-                            label=t("singing_repair", "cover"),
-                            value=bool(cover_cfg.get("singing_repair", False)),
-                            info=t("singing_repair_info", "cover"),
-                            visible=str(cover_cfg.get("vc_pipeline_mode", "current")).strip().lower() == "official",
-                        )
 
                         cover_vc_route_status = gr.Textbox(
                             label=t("vc_preprocess_status", "cover"),
                             value=get_cover_vc_route_status(
                                 cover_cfg.get("vc_preprocess_mode", "auto"),
                                 cover_cfg.get("vc_pipeline_mode", "current"),
+                                cover_cfg.get("use_official", True),
                             ),
                             info=t("vc_preprocess_status_info", "cover"),
                             interactive=False,
-                            lines=3,
+                            lines=4,
                             elem_classes=["status-box"]
                         )
 
-                        mix_presets, default_mix_preset = get_cover_mix_presets()
-                        default_mix = mix_presets[default_mix_preset]
+                        with gr.Accordion(t("manual_cover_settings", "cover"), open=False):
+                            gr.Markdown(f"#### ⚙️ {t('conversion_settings', 'cover')}")
 
-                        cover_mix_preset = gr.Dropdown(
-                            label=t("mix_preset", "cover"),
-                            choices=list(mix_presets.keys()),
-                            value=default_mix_preset,
-                            info=t("mix_preset_info", "cover"),
-                            interactive=True
-                        )
+                            cover_pitch_shift = gr.Slider(
+                                label=t("pitch_shift", "cover"),
+                                minimum=-12,
+                                maximum=12,
+                                value=int(auto_settings["pitch_shift"]),
+                                step=1,
+                                info=t("positive_pitch_info", "ui")
+                            )
 
-                        cover_vocals_volume = gr.Slider(
-                            label=t("vocals_volume", "cover"),
-                            minimum=0,
-                            maximum=200,
-                            value=default_mix["vocals_volume"],
-                            step=5,
-                            info=t("normal_volume_info", "ui")
-                        )
+                            cover_index_rate = gr.Slider(
+                                label=t("index_rate", "cover"),
+                                minimum=0,
+                                maximum=100,
+                                value=int(round(float(auto_settings["index_ratio"]) * 100)),
+                                step=5,
+                                info=t("index_rate_info", "cover"),
+                            )
 
-                        cover_accompaniment_volume = gr.Slider(
-                            label=t("accompaniment_volume", "cover"),
-                            minimum=0,
-                            maximum=200,
-                            value=default_mix["accompaniment_volume"],
-                            step=5,
-                            info=t("normal_volume_info", "ui")
-                        )
+                            cover_speaker_id = gr.Slider(
+                                label=t("speaker_id", "cover"),
+                                minimum=0,
+                                maximum=255,
+                                value=int(auto_settings["speaker_id"]),
+                                step=1,
+                                info=t("speaker_id_info", "cover"),
+                            )
 
-                        cover_reverb = gr.Slider(
-                            label=t("vocals_reverb", "cover"),
-                            minimum=0,
-                            maximum=100,
-                            value=default_mix["reverb"],
-                            step=5,
-                            info=t("reverb_info", "ui")
-                        )
+                            gr.Markdown(f"#### 🎚️ {t('mix_settings', 'cover')}")
+                            cover_karaoke = gr.Checkbox(
+                                label=t("karaoke_separation", "cover"),
+                                value=bool(auto_settings["karaoke_separation"]),
+                                info=t("karaoke_separation_info", "cover")
+                            )
+                            cover_karaoke_merge_backing = gr.Checkbox(
+                                label=t("karaoke_merge_backing", "cover"),
+                                value=bool(auto_settings["karaoke_merge_backing_into_accompaniment"]),
+                                info=t("karaoke_merge_backing_info", "cover")
+                            )
 
-                        cover_rms_mix_rate = gr.Slider(
-                            label=t("rms_mix_rate", "cover"),
-                            minimum=0,
-                            maximum=100,
-                            value=_to_int(
-                                round(
-                                    _to_float(
-                                        cover_cfg.get(
-                                            "rms_mix_rate",
-                                            config.get("rms_mix_rate", 0.15),
-                                        ),
-                                        0.15,
-                                    ) * 100
+                            cover_vc_preprocess_mode = gr.Dropdown(
+                                label=t("vc_preprocess_mode", "cover"),
+                                choices=list(vc_label_to_value.keys()),
+                                value=vc_value_to_label.get(
+                                    str(auto_settings["vc_preprocess_mode"]),
+                                    list(vc_label_to_value.keys())[0],
                                 ),
-                                15,
-                            ),
-                            step=5,
-                            info=t("rms_mix_rate_info", "cover"),
-                        )
+                                info=t("vc_preprocess_mode_info", "cover"),
+                            )
 
-                        cover_backing_mix = gr.Slider(
-                            label=t("backing_mix", "cover"),
-                            minimum=0,
-                            maximum=100,
-                            value=_to_int(
-                                round(_to_float(cover_cfg.get("backing_mix", 0.0), 0.0) * 100),
-                                0,
-                            ),
-                            step=5,
-                            info=t("backing_mix_info", "cover"),
-                        )
+                            cover_source_constraint_mode = gr.Dropdown(
+                                label=t("source_constraint_mode", "cover"),
+                                choices=list(source_label_to_value.keys()),
+                                value=source_value_to_label.get(
+                                    str(auto_settings["source_constraint_mode"]),
+                                    list(source_label_to_value.keys())[0],
+                                ),
+                                info=t("source_constraint_mode_info", "cover"),
+                            )
+
+                            cover_vc_pipeline_mode = gr.Dropdown(
+                                label=t("vc_pipeline_mode", "cover"),
+                                choices=list(pipeline_label_to_value.keys()),
+                                value=pipeline_value_to_label.get(
+                                    str(auto_settings["vc_pipeline_mode"]),
+                                    list(pipeline_label_to_value.keys())[0],
+                                ),
+                                info=t("vc_pipeline_mode_info", "cover"),
+                            )
+
+                            mix_presets, default_mix_preset = get_cover_mix_presets()
+                            default_mix = mix_presets[default_mix_preset]
+
+                            cover_mix_preset = gr.Dropdown(
+                                label=t("mix_preset", "cover"),
+                                choices=list(mix_presets.keys()),
+                                value=default_mix_preset,
+                                info=t("mix_preset_info", "cover"),
+                                interactive=True
+                            )
+
+                            cover_vocals_volume = gr.Slider(
+                                label=t("vocals_volume", "cover"),
+                                minimum=0,
+                                maximum=200,
+                                value=default_mix["vocals_volume"],
+                                step=5,
+                                info=t("normal_volume_info", "ui")
+                            )
+
+                            cover_accompaniment_volume = gr.Slider(
+                                label=t("accompaniment_volume", "cover"),
+                                minimum=0,
+                                maximum=200,
+                                value=default_mix["accompaniment_volume"],
+                                step=5,
+                                info=t("normal_volume_info", "ui")
+                            )
+
+                            cover_reverb = gr.Slider(
+                                label=t("vocals_reverb", "cover"),
+                                minimum=0,
+                                maximum=100,
+                                value=default_mix["reverb"],
+                                step=5,
+                                info=t("reverb_info", "ui")
+                            )
+
+                            cover_rms_mix_rate = gr.Slider(
+                                label=t("rms_mix_rate", "cover"),
+                                minimum=0,
+                                maximum=100,
+                                value=int(round(float(auto_settings["rms_mix_rate"]) * 100)),
+                                step=5,
+                                info=t("rms_mix_rate_info", "cover"),
+                            )
+
+                            cover_backing_mix = gr.Slider(
+                                label=t("backing_mix", "cover"),
+                                minimum=0,
+                                maximum=100,
+                                value=int(round(float(auto_settings["backing_mix"]) * 100)),
+                                step=5,
+                                info=t("backing_mix_info", "cover"),
+                            )
 
                 # 开始按钮
                 cover_btn = gr.Button(
@@ -1936,49 +2579,108 @@ def create_ui() -> gr.Blocks:
                 cover_status = gr.Textbox(
                     label=t("progress", "cover"),
                     interactive=False,
-                    elem_classes=["status-box"]
+                    lines=6,
+                    max_lines=8,
+                    elem_classes=["status-box", "cover-progress-status"]
                 )
 
                 # 输出区域
                 gr.Markdown(f"#### 🎵 {t('results', 'cover')}")
 
-                with gr.Row():
-                    cover_output = gr.Audio(
-                        label=t("final_cover", "cover"),
-                        type="filepath",
-                        interactive=False
-                    )
+                def _cover_download_label(output_label: str) -> str:
+                    return f"⬇️ {t('download', 'cover')} · {output_label}"
 
                 with gr.Row():
-                    cover_converted_vocals_output = gr.Audio(
-                        label=t("converted_vocals", "cover"),
-                        type="filepath",
-                        interactive=False
-                    )
-                    cover_original_vocals_output = gr.Audio(
-                        label=t("original_vocals", "cover"),
-                        type="filepath",
-                        interactive=False
-                    )
+                    with gr.Column():
+                        cover_output = gr.Audio(
+                            label=t("final_cover", "cover"),
+                            type="filepath",
+                            interactive=False
+                        )
+                        cover_download_btn = gr.DownloadButton(
+                            label=_cover_download_label(t("final_cover", "cover")),
+                            value=None,
+                            visible=False,
+                            size="sm",
+                            variant="secondary",
+                            elem_classes=["cover-download-button"],
+                        )
 
                 with gr.Row():
-                    cover_lead_vocals_output = gr.Audio(
-                        label=t("lead_vocals", "cover"),
-                        type="filepath",
-                        interactive=False
-                    )
-                    cover_backing_vocals_output = gr.Audio(
-                        label=t("backing_vocals", "cover"),
-                        type="filepath",
-                        interactive=False
-                    )
+                    with gr.Column():
+                        cover_converted_vocals_output = gr.Audio(
+                            label=t("converted_vocals", "cover"),
+                            type="filepath",
+                            interactive=False
+                        )
+                        cover_converted_vocals_download_btn = gr.DownloadButton(
+                            label=_cover_download_label(t("converted_vocals", "cover")),
+                            value=None,
+                            visible=False,
+                            size="sm",
+                            variant="secondary",
+                            elem_classes=["cover-download-button"],
+                        )
+                    with gr.Column():
+                        cover_original_vocals_output = gr.Audio(
+                            label=t("original_vocals", "cover"),
+                            type="filepath",
+                            interactive=False
+                        )
+                        cover_original_vocals_download_btn = gr.DownloadButton(
+                            label=_cover_download_label(t("original_vocals", "cover")),
+                            value=None,
+                            visible=False,
+                            size="sm",
+                            variant="secondary",
+                            elem_classes=["cover-download-button"],
+                        )
 
                 with gr.Row():
-                    cover_accompaniment_output = gr.Audio(
-                        label=t("accompaniment", "cover"),
-                        type="filepath",
-                        interactive=False
-                    )
+                    with gr.Column():
+                        cover_lead_vocals_output = gr.Audio(
+                            label=t("lead_vocals", "cover"),
+                            type="filepath",
+                            interactive=False
+                        )
+                        cover_lead_vocals_download_btn = gr.DownloadButton(
+                            label=_cover_download_label(t("lead_vocals", "cover")),
+                            value=None,
+                            visible=False,
+                            size="sm",
+                            variant="secondary",
+                            elem_classes=["cover-download-button"],
+                        )
+                    with gr.Column():
+                        cover_backing_vocals_output = gr.Audio(
+                            label=t("backing_vocals", "cover"),
+                            type="filepath",
+                            interactive=False
+                        )
+                        cover_backing_vocals_download_btn = gr.DownloadButton(
+                            label=_cover_download_label(t("backing_vocals", "cover")),
+                            value=None,
+                            visible=False,
+                            size="sm",
+                            variant="secondary",
+                            elem_classes=["cover-download-button"],
+                        )
+
+                with gr.Row():
+                    with gr.Column():
+                        cover_accompaniment_output = gr.Audio(
+                            label=t("accompaniment", "cover"),
+                            type="filepath",
+                            interactive=False
+                        )
+                        cover_accompaniment_download_btn = gr.DownloadButton(
+                            label=_cover_download_label(t("accompaniment", "cover")),
+                            value=None,
+                            visible=False,
+                            size="sm",
+                            variant="secondary",
+                            elem_classes=["cover-download-button"],
+                        )
 
                 # 事件绑定
                 refresh_char_btn.click(
@@ -2015,6 +2717,26 @@ def create_ui() -> gr.Blocks:
                     fn=get_downloaded_character_details,
                     inputs=[character_dropdown],
                     outputs=[character_details]
+                )
+
+                custom_model_upload_btn.click(
+                    fn=import_custom_character_model_ui,
+                    inputs=[
+                        custom_model_name,
+                        custom_model_category,
+                        custom_model_source,
+                        custom_model_file,
+                        custom_index_file,
+                        downloaded_series,
+                        downloaded_keyword,
+                    ],
+                    outputs=[
+                        custom_model_status,
+                        character_dropdown,
+                        downloaded_series,
+                        downloaded_keyword,
+                        character_details,
+                    ],
                 )
 
                 download_series.change(
@@ -2115,14 +2837,9 @@ def create_ui() -> gr.Blocks:
                     inputs=[cover_vc_preprocess_mode, cover_vc_pipeline_mode],
                     outputs=[cover_vc_route_status]
                 )
-                cover_vc_pipeline_mode.change(
-                    fn=update_singing_repair_visibility,
-                    inputs=[cover_vc_pipeline_mode],
-                    outputs=[cover_singing_repair]
-                )
 
                 cover_btn.click(
-                    fn=process_cover,
+                    fn=process_cover_with_downloads,
                     inputs=[
                         cover_input_audio,
                         character_dropdown,
@@ -2134,7 +2851,6 @@ def create_ui() -> gr.Blocks:
                         cover_vc_preprocess_mode,
                         cover_source_constraint_mode,
                         cover_vc_pipeline_mode,
-                        cover_singing_repair,
                         cover_vocals_volume,
                         cover_accompaniment_volume,
                         cover_reverb,
@@ -2148,6 +2864,12 @@ def create_ui() -> gr.Blocks:
                         cover_lead_vocals_output,
                         cover_backing_vocals_output,
                         cover_accompaniment_output,
+                        cover_download_btn,
+                        cover_converted_vocals_download_btn,
+                        cover_original_vocals_download_btn,
+                        cover_lead_vocals_download_btn,
+                        cover_backing_vocals_download_btn,
+                        cover_accompaniment_download_btn,
                         cover_status
                     ]
                 )
@@ -2240,35 +2962,31 @@ def create_ui() -> gr.Blocks:
 
 def _patch_gradio_file_download(blocks):
     """
-    Patch Gradio v3 的 /file= 路由，为文件添加 Content-Disposition header，
-    使浏览器下载时使用干净的文件名而非完整路径。
+    Patch Gradio 的 /file= 路由，为文件添加 Content-Disposition header，
+    使浏览器下载时使用干净的文件名而非 Gradio 临时路径。
     """
     try:
-        from starlette.responses import FileResponse
-        from urllib.parse import quote
-        import fastapi
+        from starlette.datastructures import MutableHeaders
+        from urllib.parse import quote, unquote
 
-        def _clean_download_name(response: FileResponse, path_or_url: str) -> str:
-            candidates = [
-                getattr(response, "filename", None),
-                getattr(response, "path", None),
-                path_or_url,
-            ]
-            for candidate in candidates:
-                if not candidate:
-                    continue
-                name = Path(str(candidate)).name
-                if not name:
-                    continue
-                name = re.sub(
-                    r"^[A-Za-z]__.*?_gradio_[0-9a-f]{8,}_",
-                    "",
-                    name,
-                    flags=re.IGNORECASE,
-                )
-                if name:
-                    return name
-            return "download"
+        def _path_or_url_from_scope(scope) -> str:
+            raw_path = scope.get("raw_path")
+            if raw_path:
+                path = raw_path.decode("utf-8", errors="ignore")
+            else:
+                path = str(scope.get("path") or "")
+            marker = "/file="
+            return path.split(marker, 1)[1] if marker in path else path
+
+        def _download_content_disposition(path_or_url: str) -> str:
+            raw = unquote(str(path_or_url))
+            name = re.split(r"[\\/]", raw)[-1]
+            name = Path(name).name
+            basename = clean_gradio_temp_download_name(name)
+            encoded = quote(basename, safe="")
+            if encoded != basename:
+                return f"inline; filename*=utf-8''{encoded}"
+            return f'inline; filename="{basename}"'
 
         fastapi_app = getattr(blocks, "server_app", None)
         if fastapi_app is None:
@@ -2276,25 +2994,33 @@ def _patch_gradio_file_download(blocks):
 
         for route in fastapi_app.routes:
             if hasattr(route, "path") and route.path == "/file={path_or_url:path}":
-                original_endpoint = route.endpoint
+                if getattr(route, "_ai_rvc_download_patch_applied", False):
+                    break
 
-                async def patched_file(
-                    path_or_url: str,
-                    request: fastapi.Request,
-                    _orig=original_endpoint,
-                ):
-                    response = await _orig(path_or_url, request=request)
-                    if isinstance(response, FileResponse) and "content-disposition" not in response.headers:
-                        basename = _clean_download_name(response, path_or_url)
-                        encoded = quote(basename)
-                        if encoded != basename:
-                            cd = f"inline; filename*=utf-8''{encoded}"
-                        else:
-                            cd = f'inline; filename="{basename}"'
-                        response.headers["content-disposition"] = cd
-                    return response
+                original_app = route.app
 
-                route.endpoint = patched_file
+                async def patched_file_app(scope, receive, send, _orig=original_app):
+                    path_or_url = _path_or_url_from_scope(scope)
+                    try:
+                        content_disposition = _download_content_disposition(path_or_url)
+                    except Exception as e:
+                        log.warning(f"Could not derive Gradio download filename: {e}")
+                        content_disposition = None
+
+                    async def send_with_download_name(message):
+                        if (
+                            content_disposition
+                            and message.get("type") == "http.response.start"
+                            and int(message.get("status", 200)) < 400
+                        ):
+                            headers = MutableHeaders(scope=message)
+                            headers["content-disposition"] = content_disposition
+                        await send(message)
+
+                    await _orig(scope, receive, send_with_download_name)
+
+                route.app = patched_file_app
+                route._ai_rvc_download_patch_applied = True
                 break
     except Exception as e:
         log.warning(f"Patch Gradio file download failed: {e}")

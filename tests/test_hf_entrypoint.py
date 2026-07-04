@@ -43,14 +43,20 @@ class HuggingFaceEntrypointTests(unittest.TestCase):
         self.assertIn("audio-separator[cpu]==0.44.1", requirements)
         self.assertIn("huggingface_hub>=0.19.0,<1.0", requirements)
 
-    def test_cover_current_default_does_not_require_untracked_official_tree(self):
+    def test_cover_current_default_uses_quality_upstream_official_route(self):
         config = json.loads(
             (REPO_ROOT / "configs" / "config.json")
             .read_text(encoding="utf-8")
         )
 
         self.assertEqual(config["cover"]["vc_pipeline_mode"], "current")
-        self.assertFalse(config["cover"]["use_official"])
+        self.assertTrue(config["cover"]["use_official"])
+
+    def test_run_check_prepares_official_tree_for_default_route(self):
+        source = (REPO_ROOT / "run.py").read_text(encoding="utf-8")
+
+        self.assertIn("ensure_upstream_rvc_tree", source)
+        self.assertIn('cover_cfg.get("use_official", True)', source)
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ Adapter for official RVC WebUI modules (VC + UVR5).
 from __future__ import annotations
 
 import json
+import filecmp
 import os
 import re
 import shutil
@@ -13,11 +14,15 @@ import sys
 from pathlib import Path
 from typing import Optional, Tuple
 
+import faiss
 import soundfile as sf
+import torch
 
 from configs.config import Config as OfficialConfig
 from infer.quality_policy import resolve_cover_f0_policy
+from infer.rvc_version import inspect_rvc_model_version
 from lib.logger import log
+from tools.download_models import ensure_upstream_rvc_tree
 
 
 class _IsolatedArgv:
@@ -79,8 +84,6 @@ def _resolve_index_path(model_path: Path, index_path: Optional[str]) -> Optional
     index_files = list(model_path.parent.glob("*.index"))
     if not index_files:
         return None
-    if len(index_files) == 1:
-        return index_files[0]
 
     def _normalize_name(text: str) -> str:
         return re.sub(r"[^a-z0-9]+", "", text.lower())
@@ -108,9 +111,25 @@ def _resolve_index_path(model_path: Path, index_path: Optional[str]) -> Optional
             best_score = score
             best_match = idx
 
-    if best_match is not None and best_score > 0:
+    if best_match is not None and best_score >= 80:
         return best_match
     return None
+
+
+def _validate_index_feature_dim(index_path: Path, expected_dim: Optional[int], model_path: Path) -> None:
+    if expected_dim is None:
+        return
+    try:
+        index = faiss.read_index(str(index_path))
+    except Exception as e:
+        raise ValueError(f"RVC索引文件无法读取: index={index_path}, model={model_path}") from e
+    index_dim = int(index.d)
+    if index_dim != int(expected_dim):
+        raise ValueError(
+            "RVC索引维度与模型不匹配: "
+            f"model={model_path}, index={index_path}, "
+            f"model_feature_dim={expected_dim}, index_dim={index_dim}。"
+        )
 
 
 def setup_official_env(root_dir: Path) -> dict:
@@ -166,23 +185,41 @@ def export_model_to_official(
 
     log.detail(f"导出模型到官方目录: {sid}")
 
-    if not target_model.exists() or target_model.stat().st_size != model_path.stat().st_size:
-        log.detail(f"复制模型文件: {model_path} -> {target_model}")
-        shutil.copy(model_path, target_model)
+    cpt = torch.load(model_path, map_location="cpu", weights_only=False)
+    version_info = inspect_rvc_model_version(cpt, str(model_path))
+    if version_info.metadata_mismatch:
+        log.warning(
+            "模型version字段与权重结构不一致，按权重结构规范化: "
+            f"version={version_info.raw_version_label}, "
+            f"feature_dim={version_info.feature_dim}, "
+            f"detected={version_info.version}"
+        )
+    elif not version_info.raw_version_present or version_info.raw_version != version_info.version:
+        log.detail(
+            "补全模型version字段: "
+            f"version={version_info.raw_version_label} -> {version_info.version} "
+            f"(feature_dim={version_info.feature_dim})"
+        )
     else:
-        log.detail(f"模型文件已存在，跳过复制")
+        log.detail(f"模型版本确认: {version_info.version}")
+
+    cpt["version"] = version_info.version
+    target_model.parent.mkdir(parents=True, exist_ok=True)
+    log.detail(f"写入官方模型副本: {model_path} -> {target_model}")
+    torch.save(cpt, target_model)
 
     target_index_path = None
     resolved_index = _resolve_index_path(model_path, index_path)
     if resolved_index is not None:
+        _validate_index_feature_dim(resolved_index, version_info.feature_dim, model_path)
         if index_path and Path(index_path).exists():
             log.detail(f"使用指定索引文件: {resolved_index.name}")
         else:
             log.detail(f"自动匹配索引文件: {resolved_index.name}")
         target_index = official_indexes / f"{model_path.stem}.index"
-        if not target_index.exists() or target_index.stat().st_size != resolved_index.stat().st_size:
+        if not target_index.exists() or not filecmp.cmp(resolved_index, target_index, shallow=False):
             log.detail(f"复制索引文件: {resolved_index} -> {target_index}")
-            shutil.copy(resolved_index, target_index)
+            shutil.copy2(resolved_index, target_index)
         else:
             log.detail("索引文件已存在，跳过复制")
         target_index_path = str(target_index)
@@ -347,8 +384,6 @@ def convert_vocals_official(
     log.config(f"滤波半径: {filter_radius}")
     log.config(f"RMS混合率: {rms_mix_rate}")
     log.config(f"保护系数: {protect}")
-    if repair_profile:
-        log.config("唱歌修复: 开启")
     env_paths = setup_official_env(root_dir)
 
     log.detail("导入官方VC模块...")
@@ -413,41 +448,10 @@ def convert_vocals_official(
     config.f0_rate_limit_semitones = _to_float(
         _get_cfg_value(app_cfg, "f0_rate_limit_semitones", 8.0), 8.0
     )
-    if f0_policy.requested_method == "hybrid":
-        config.f0_fallback_context_radius = 12
-        config.f0_fallback_repair_gap = 6
-        config.f0_fallback_post_gap = 4
-        config.f0_fallback_use_crepe = True
-        config.f0_fallback_crepe_max_ratio = 0.006
-        config.f0_fallback_crepe_max_frames = 160
-        if not repair_profile:
-            config.f0_stabilize = True
-            config.f0_rate_limit = True
-            config.f0_stabilize_max_semitones = min(
-                5.0,
-                float(config.f0_stabilize_max_semitones),
-            )
-            config.f0_rate_limit_semitones = min(
-                7.0,
-                float(config.f0_rate_limit_semitones),
-            )
-            log.detail("Hybrid唱歌护栏已启用: F0稳定器 + F0限速")
     if repair_profile:
-        config.is_half = False
-        config.f0_hybrid_mode = "fallback"
-        config.f0_energy_threshold_db = -42.0
-        config.unvoiced_feature_gate_floor = max(
-            0.32, float(config.unvoiced_feature_gate_floor)
+        raise ValueError(
+            "唱歌修复依赖 F0 兜底链路，严格默认路线已禁用该处理"
         )
-        config.f0_fallback_context_radius = 12
-        config.f0_fallback_repair_gap = 6
-        config.f0_fallback_post_gap = 4
-        config.f0_fallback_use_crepe = True
-        config.f0_fallback_crepe_max_ratio = 0.006
-        config.f0_fallback_crepe_max_frames = 160
-        config.f0_stabilize = True
-        config.f0_rate_limit = True
-        log.detail("唱歌修复配置已应用: FP32, 更保守F0兜底, F0稳定器, F0限速")
     log.detail(f"设备: {config.device}, 半精度: {config.is_half}")
     log.config(f"F0范围: {config.f0_min}-{config.f0_max}Hz")
     log.config(f"RMVPE阈值: {config.rmvpe_threshold}")
@@ -539,9 +543,7 @@ def _sync_upstream_reference_asset(src: Path, dst: Path, label: str) -> None:
 def setup_upstream_official_env(root_dir: Path) -> dict:
     """Prepare vendored upstream RVC layout and environment."""
     log.detail("准备内置官方 RVC 环境...")
-    official_root = root_dir / "_official_rvc"
-    if not official_root.exists():
-        raise FileNotFoundError(f"Upstream RVC directory not found: {official_root}")
+    official_root = ensure_upstream_rvc_tree(root_dir)
 
     official_models = official_root / "assets" / "weights"
     official_indexes = official_root / "assets" / "indices"

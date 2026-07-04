@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -18,7 +19,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from infer.cover_pipeline import CoverPipeline
-from infer.official_adapter import convert_vocals_official, convert_vocals_official_upstream
+from infer.official_adapter import convert_vocals_official_upstream
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,14 +46,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gap-sec", type=float, default=0.35, help="Silence gap inserted between concatenated clips.")
     parser.add_argument(
         "--variants",
-        default="existing_raw,existing_final,upstream_raw,upstream_post,upstream_index0,official_repair",
+        default="existing_raw,existing_final,upstream_raw,upstream_post,upstream_index0",
         help=(
             "Comma-separated variants. Supported: "
             "existing_raw, existing_final, upstream_raw, upstream_post, "
-            "upstream_index0, official_repair"
+            "upstream_index0"
         ),
     )
-    parser.add_argument("--f0-method", default="hybrid")
+    parser.add_argument(
+        "--f0-method",
+        default="rmvpe",
+        help="F0 method for diagnostic variants. Default matches the strict cover route.",
+    )
     parser.add_argument("--pitch-shift", type=int, default=0)
     parser.add_argument("--index-rate", type=float, default=0.5)
     parser.add_argument("--filter-radius", type=int, default=3)
@@ -439,11 +444,14 @@ def _run_variant(
                 original_vocals_path=str(lead_bundle) if lead_bundle else None,
                 output_path=str(bundle_path),
             )
+            shutil.copyfile(raw_bundle_path, variant_dir / "debug_converted_raw.wav")
             pipeline._refine_source_constrained_output(
                 source_vocals_path=str(source_bundle),
                 converted_vocals_path=str(bundle_path),
                 source_constraint_mode=args.source_constraint_mode,
                 f0_method=args.f0_method,
+                original_vocals_path=str(lead_bundle) if lead_bundle else None,
+                session_dir=variant_dir,
             )
         else:
             bundle_path.write_bytes(raw_bundle_path.read_bytes())
@@ -451,26 +459,6 @@ def _run_variant(
                 "postprocess skipped because current preprocess/source-constraint "
                 "combination would not apply it"
             )
-    elif variant == "official_repair":
-        saved_argv = sys.argv[:]
-        try:
-            sys.argv = [sys.argv[0]]
-            convert_vocals_official(
-                vocals_path=str(source_bundle),
-                output_path=str(bundle_path),
-                model_path=str(model_path),
-                index_path=str(index_path) if index_path else None,
-                f0_method=args.f0_method,
-                pitch_shift=args.pitch_shift,
-                index_rate=float(args.index_rate),
-                filter_radius=args.filter_radius,
-                rms_mix_rate=args.rms_mix_rate,
-                protect=args.protect,
-                speaker_id=args.speaker_id,
-                repair_profile=True,
-            )
-        finally:
-            sys.argv = saved_argv
     else:
         return {"name": variant, "skipped": f"unknown variant: {variant}"}
 

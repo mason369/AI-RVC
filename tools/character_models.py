@@ -8,7 +8,7 @@ import re
 import zipfile
 import shutil
 from pathlib import Path
-from typing import Optional, List, Dict, Callable
+from typing import Optional, List, Dict, Callable, Any
 from urllib.parse import quote
 
 try:
@@ -43,21 +43,36 @@ def _get_hf_token() -> Optional[str]:
         or os.environ.get("HUGGINGFACE_TOKEN")
     )
 
-# 作品归类（用于 UI 分类筛选）
+# 作品归类（用于 UI 分类筛选）。顺序很重要：更具体的来源必须先匹配。
 SERIES_ALIASES = {
-    "Love Live!": "Love Live!",
-    "Love Live! Sunshine!!": "Love Live!",
-    "Love Live! Superstar!!": "Love Live!",
-    "Love Live! 虹咲学园": "Love Live!",
-    "Love Live! 虹咲学園": "Love Live!",
-    "Love Live! 莲之空女学院学园偶像俱乐部": "Love Live!",
-    "Love Live! Sunshine!! / 幻日夜羽": "Love Live!",
-    "Hololive Japan": "Hololive",
-    "Hololive English": "Hololive",
-    "Hololive Indonesia": "Hololive",
-    "崩坏：星穹铁道": "崩坏系列",
-    "崩坏3rd": "崩坏系列",
-    "偶像大师 灰姑娘女孩": "偶像大师",
+    "Love Live! Sunshine!! / 幻日夜羽": "Love Live! / 幻日夜羽",
+    "Love Live! Sunshine!!": "Love Live! / Sunshine!!",
+    "Love Live! Superstar!!": "Love Live! / Superstar!!",
+    "Love Live! 虹咲学园": "Love Live! / 虹咲学园",
+    "Love Live! 虹咲学園": "Love Live! / 虹咲学园",
+    "Love Live! 莲之空女学院学园偶像俱乐部": "Love Live! / 莲之空",
+    "Love Live!": "Love Live! / μ's",
+    "Hololive Japan": "Hololive / JP",
+    "Hololive English": "Hololive / EN",
+    "Hololive Indonesia": "Hololive / ID",
+    "Holostars Japan": "Holostars / JP",
+    "Holostars English": "Holostars / EN",
+    "虚拟主播": "VTuber / 其他",
+    "NIJISANJI English": "NIJISANJI / EN",
+    "NIJISANJI Indonesia": "NIJISANJI / ID",
+    "原神": "米哈游 / 原神",
+    "崩坏：星穹铁道": "米哈游 / 崩坏：星穹铁道",
+    "崩坏3rd": "米哈游 / 崩坏3rd",
+    "绝区零": "米哈游 / 绝区零",
+    "偶像大师 灰姑娘女孩": "偶像大师 / 灰姑娘女孩",
+    "偶像大师": "偶像大师 / 本家",
+    "赛马娘": "赛马娘",
+    "Project SEKAI": "Project SEKAI",
+    "VOCALOID": "VOCALOID",
+    "碧蓝航线": "碧蓝航线",
+    "蔚蓝档案 / 明日方舟": "跨作品 / 蔚蓝档案 + 明日方舟",
+    "社区模型": "社区 / 其他模型",
+    "原创角色": "社区 / 原创角色",
 }
 
 
@@ -69,6 +84,13 @@ def normalize_series(source: str) -> str:
         if source.startswith(key):
             return series
     return source
+
+
+def _get_character_category(info: Dict) -> str:
+    category = str(info.get("category") or "").strip()
+    if category:
+        return category
+    return normalize_series(str(info.get("source") or "未知"))
 
 
 def _dedupe_parts(parts: List[str]) -> List[str]:
@@ -512,6 +534,7 @@ def _build_download_url(info: Dict) -> Optional[str]:
 
 def _build_character_record(name: str, info: Dict) -> Dict:
     source = info.get("source", "未知")
+    category = _get_character_category(info)
     base_display = _get_base_display_name(info, name)
     display = _get_display_name(info, name)
     repo_id = _get_registry_repo_id(info)
@@ -528,7 +551,8 @@ def _build_character_record(name: str, info: Dict) -> Dict:
         "base_display": base_display,
         "display": display,
         "source": source,
-        "series": normalize_series(source),
+        "series": category,
+        "category": category,
         "variant": str(info.get("variant") or "").strip(),
         "version_note": version_note,
         "version_label": version_label,
@@ -1611,6 +1635,602 @@ CHARACTER_MODELS = {
     },
 }
 
+CHARACTER_MODELS.update({
+    # ===== 原神：mrmocciai/genshin-impact 成对权重 =====
+    "genshin_aether_mrmocciai": {
+        "files": ["model/weights/aether-v2.pth", "model/aether-v2/added_IVF596_Flat_nprobe_1_aether-v2_v2.index"],
+        "zh_name": "空",
+        "en_name": "Aether",
+        "jp_name": "空",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_amber_mrmocciai": {
+        "files": ["model/weights/amber-v2.pth", "model/amber-v2/added_IVF837_Flat_nprobe_1_amber-v2_v2.index"],
+        "zh_name": "安柏",
+        "en_name": "Amber",
+        "jp_name": "アンバー",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_arlecchino_mrmocciai": {
+        "files": ["model/weights/arle_rmvpe.pth", "model/arle_rmvpe/added_IVF656_Flat_nprobe_1_arle_rmvpe_v2.index"],
+        "zh_name": "阿蕾奇诺",
+        "en_name": "Arlecchino",
+        "jp_name": "アルレッキーノ",
+        "variant": "RMVPE",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_ayaka_mrmocciai": {
+        "files": ["model/weights/ayaka-rmvpe.pth", "model/ayaka-rmvpe/added_IVF1228_Flat_nprobe_1_kamisato_ayaka_v2.index"],
+        "zh_name": "神里绫华",
+        "en_name": "Kamisato Ayaka",
+        "jp_name": "神里綾華",
+        "variant": "RMVPE",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_beidou_mrmocciai": {
+        "files": ["model/weights/beidou_rmvpe.pth", "model/beidou_rmvpe/added_IVF857_Flat_nprobe_1_beidou_rmvpe_v2.index"],
+        "zh_name": "北斗",
+        "en_name": "Beidou",
+        "jp_name": "北斗",
+        "variant": "RMVPE",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_bennett_mrmocciai": {
+        "files": ["model/weights/bennett-v2.pth", "model/bennett-v2/added_IVF900_Flat_nprobe_1_benett-v2_v2.index"],
+        "zh_name": "班尼特",
+        "en_name": "Bennett",
+        "jp_name": "ベネット",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_candace_mrmocciai": {
+        "files": ["model/weights/candez.pth", "model/candez-v2/added_IVF920_Flat_nprobe_1_candez_v2.index"],
+        "zh_name": "坎蒂丝",
+        "en_name": "Candace",
+        "jp_name": "キャンディス",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_childe_mrmocciai": {
+        "files": ["model/weights/childe-v2.pth", "model/childe-v2/added_IVF684_Flat_nprobe_1_childe-v2_v2.index"],
+        "zh_name": "达达利亚",
+        "en_name": "Childe",
+        "jp_name": "タルタリヤ",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_chiori_mrmocciai": {
+        "files": ["model/weights/chiori_rmvpe.pth", "model/chiori_rmvpe/added_IVF450_Flat_nprobe_1_chiori_rmvpe_v2.index"],
+        "zh_name": "千织",
+        "en_name": "Chiori",
+        "jp_name": "千織",
+        "variant": "RMVPE",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_clorinde_mrmocciai": {
+        "files": ["model/weights/clorinde.pth", "model/clorinde/added_IVF217_Flat_nprobe_1_clorinde_v2.index"],
+        "zh_name": "克洛琳德",
+        "en_name": "Clorinde",
+        "jp_name": "クロリンデ",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_collei_mrmocciai": {
+        "files": ["model/weights/collei-v2.pth", "model/collei-v2/added_IVF1127_Flat_nprobe_1_collei_v2.index"],
+        "zh_name": "柯莱",
+        "en_name": "Collei",
+        "jp_name": "コレイ",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_dehya_mrmocciai": {
+        "files": ["model/weights/dehya_rmvpe.pth", "model/dehya_rmvpe/added_IVF493_Flat_nprobe_1_dehya_rmvpe_v2.index"],
+        "zh_name": "迪希雅",
+        "en_name": "Dehya",
+        "jp_name": "ディシア",
+        "variant": "RMVPE",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_ei_mrmocciai": {
+        "files": ["model/weights/ei2_rmvpe.pth", "model/ei2_rmvpe/added_IVF480_Flat_nprobe_1_ei2_rmvpe_v2.index"],
+        "zh_name": "雷电影",
+        "en_name": "Raiden Ei",
+        "jp_name": "雷電影",
+        "variant": "RMVPE",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_eula_mrmocciai": {
+        "files": ["model/weights/eula_rmvpe.pth", "model/eula_rmvpe/added_IVF1185_Flat_nprobe_1_eula-v2_v2.index"],
+        "zh_name": "优菈",
+        "en_name": "Eula",
+        "jp_name": "エウルア",
+        "variant": "RMVPE",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_faruzan_mrmocciai": {
+        "files": ["model/weights/faruzan_rmvpe.pth", "model/faruzan_rmvpe/added_IVF1101_Flat_nprobe_1_faruzan_rmvpe_v2.index"],
+        "zh_name": "珐露珊",
+        "en_name": "Faruzan",
+        "jp_name": "ファルザン",
+        "variant": "RMVPE",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_furina_mrmocciai": {
+        "files": ["model/weights/furina_rmvpe.pth", "model/furina_rmvpe/added_IVF1203_Flat_nprobe_1_furina_rmvpe_v2.index"],
+        "zh_name": "芙宁娜",
+        "en_name": "Furina",
+        "jp_name": "フリーナ",
+        "variant": "RMVPE",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_ganyu_mrmocciai": {
+        "files": ["model/weights/ganyu-v2.pth", "model/ganyu-v2/added_IVF816_Flat_nprobe_1_ganyu_v2.index"],
+        "zh_name": "甘雨",
+        "en_name": "Ganyu",
+        "jp_name": "甘雨",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_hutao_mrmocciai": {
+        "files": ["model/weights/hutao-v2.pth", "model/hutao-v2/added_IVF601_Flat_nprobe_1_hutao_v2.index"],
+        "zh_name": "胡桃",
+        "en_name": "Hu Tao",
+        "jp_name": "胡桃",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_jean_mrmocciai": {
+        "files": ["model/weights/jean-v2.pth", "model/jean-v2/added_IVF675_Flat_nprobe_1_jean-v2_v2.index"],
+        "zh_name": "琴",
+        "en_name": "Jean",
+        "jp_name": "ジン",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_kaveh_mrmocciai": {
+        "files": ["model/weights/kaveh_v2.pth", "model/kaveh-v2/added_IVF613_Flat_nprobe_1_kaveh_v2_v2.index"],
+        "zh_name": "卡维",
+        "en_name": "Kaveh",
+        "jp_name": "カーヴェ",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_kazuha_mrmocciai": {
+        "files": ["model/weights/kazuha-v2.pth", "model/kazuha-v2/added_IVF860_Flat_nprobe_1_kazuha_v2.index"],
+        "zh_name": "枫原万叶",
+        "en_name": "Kaedehara Kazuha",
+        "jp_name": "楓原万葉",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_keqing_mrmocciai": {
+        "files": ["model/weights/keqing-v2.pth", "model/keqing-v2/added_IVF1430_Flat_nprobe_1_keqing-v2_v2.index"],
+        "zh_name": "刻晴",
+        "en_name": "Keqing",
+        "jp_name": "刻晴",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_kirara_mrmocciai": {
+        "files": ["model/weights/kirara_rmvpe.pth", "model/kirara_rmvpe/added_IVF443_Flat_nprobe_1_kirara_rmvpe_v2.index"],
+        "zh_name": "绮良良",
+        "en_name": "Kirara",
+        "jp_name": "綺良々",
+        "variant": "RMVPE",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_kokomi_mrmocciai": {
+        "files": ["model/weights/kokomi-v2.pth", "model/kokomi-v2/added_IVF934_Flat_nprobe_1_kokomi_v2.index"],
+        "zh_name": "珊瑚宫心海",
+        "en_name": "Sangonomiya Kokomi",
+        "jp_name": "珊瑚宮心海",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_kujou_sara_mrmocciai": {
+        "files": ["model/weights/kujou_sara.pth", "model/kujou_sara/added_IVF398_Flat_nprobe_1_kujou_sara_v2.index"],
+        "zh_name": "九条裟罗",
+        "en_name": "Kujou Sara",
+        "jp_name": "九条裟羅",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_layla_mrmocciai": {
+        "files": ["model/weights/layla-v2.pth", "model/layla-v2/added_IVF1099_Flat_nprobe_1_layla-v2_v2.index"],
+        "zh_name": "莱依拉",
+        "en_name": "Layla",
+        "jp_name": "レイラ",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_lisa_mrmocciai": {
+        "files": ["model/weights/lisa-v2.pth", "model/lisa-v2/added_IVF758_Flat_nprobe_1_lisa_v2.index"],
+        "zh_name": "丽莎",
+        "en_name": "Lisa",
+        "jp_name": "リサ",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_lumine_mrmocciai": {
+        "files": ["model/weights/lumine_rmvpe.pth", "model/lumine_rmvpe/added_IVF1329_Flat_nprobe_1_lumine-rmvpe_v2.index"],
+        "zh_name": "荧",
+        "en_name": "Lumine",
+        "jp_name": "蛍",
+        "variant": "RMVPE",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_lynette_mrmocciai": {
+        "files": ["model/weights/lynette_rmvpe.pth", "model/lynette_rmvpe/added_IVF386_Flat_nprobe_1_lynette_rmvpe_v2.index"],
+        "zh_name": "琳妮特",
+        "en_name": "Lynette",
+        "jp_name": "リネット",
+        "variant": "RMVPE",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_lyney_mrmocciai": {
+        "files": ["model/weights/lyney_rmvpe.pth", "model/lyney_rmvpe/added_IVF467_Flat_nprobe_1_lyney_rmvpe_v2.index"],
+        "zh_name": "林尼",
+        "en_name": "Lyney",
+        "jp_name": "リネ",
+        "variant": "RMVPE",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_mavuika_mrmocciai": {
+        "files": ["model/weights/mavuika-rmvpe.pth", "model/mavuika-rmvpe/added_IVF406_Flat_nprobe_1_mavuika_v2.index"],
+        "zh_name": "玛薇卡",
+        "en_name": "Mavuika",
+        "jp_name": "マーヴィカ",
+        "variant": "RMVPE",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_mualani_mrmocciai": {
+        "files": ["model/weights/mualani-jp.pth", "model/mualani- jp/added_IVF126_Flat_nprobe_1_mualani-jp_v2.index"],
+        "zh_name": "玛拉妮",
+        "en_name": "Mualani",
+        "jp_name": "ムアラニ",
+        "variant": "日语",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_navia_mrmocciai": {
+        "files": ["model/weights/navia_rmvpe.pth", "model/navia_rmvpe/added_IVF453_Flat_nprobe_1_navia_rmvpe_v2.index"],
+        "zh_name": "娜维娅",
+        "en_name": "Navia",
+        "jp_name": "ナヴィア",
+        "variant": "RMVPE",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_neuvillette_mrmocciai": {
+        "files": ["model/weights/neuvillette.pth", "model/neuvillette/added_IVF353_Flat_nprobe_1_neuvillette_v2.index"],
+        "zh_name": "那维莱特",
+        "en_name": "Neuvillette",
+        "jp_name": "ヌヴィレット",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_paimon_mrmocciai": {
+        "files": ["model/weights/paimon_rmvpe.pth", "model/paimon_rmvpe/added_IVF1480_Flat_nprobe_1_paimon_rmvpe_v2.index"],
+        "zh_name": "派蒙",
+        "en_name": "Paimon",
+        "jp_name": "パイモン",
+        "variant": "RMVPE",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_raiden_puppet_mrmocciai": {
+        "files": ["model/weights/raiden-puppet-rmvpe.pth", "model/raiden-puppet-rmvpe/added_IVF645_Flat_nprobe_1_raiden-puppet_rmvpe_v2.index"],
+        "zh_name": "雷电将军",
+        "en_name": "Raiden Shogun",
+        "jp_name": "雷電将軍",
+        "variant": "RMVPE",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_shenhe_mrmocciai": {
+        "files": ["model/weights/shenhe_rmvpe.pth", "model/shenhe_rmvpe/added_IVF453_Flat_nprobe_1_shenhe_rmvpe_v2.index"],
+        "zh_name": "申鹤",
+        "en_name": "Shenhe",
+        "jp_name": "申鶴",
+        "variant": "RMVPE",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_venti_mrmocciai": {
+        "files": ["model/weights/venti_rmvpe.pth", "model/venti_rmvpe/added_IVF463_Flat_nprobe_1_venti_rmvpe_v2.index"],
+        "zh_name": "温迪",
+        "en_name": "Venti",
+        "jp_name": "ウェンティ",
+        "variant": "RMVPE",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_wanderer_mrmocciai": {
+        "files": ["model/weights/warderer-v2.pth", "model/warderer-v2/added_IVF953_Flat_nprobe_1_wanderer-v2_v2.index"],
+        "zh_name": "流浪者",
+        "en_name": "Wanderer",
+        "jp_name": "放浪者",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_wriothesley_mrmocciai": {
+        "files": ["model/weights/wriothesley.pth", "model/wriothesley/added_IVF408_Flat_nprobe_1_wriothesley_v2.index"],
+        "zh_name": "莱欧斯利",
+        "en_name": "Wriothesley",
+        "jp_name": "リオセスリ",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_xiangling_mrmocciai": {
+        "files": ["model/weights/xiangling-v2.pth", "model/xiangling-v2/added_IVF814_Flat_nprobe_1_xianling-v2_v2.index"],
+        "zh_name": "香菱",
+        "en_name": "Xiangling",
+        "jp_name": "香菱",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_xianyun_mrmocciai": {
+        "files": ["model/weights/xianyun-jp.pth", "model/Xianyun-jp/added_IVF145_Flat_nprobe_1_xianyun-jp_v2.index"],
+        "zh_name": "闲云",
+        "en_name": "Xianyun",
+        "jp_name": "閑雲",
+        "variant": "日语",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_xiao_mrmocciai": {
+        "files": ["model/weights/xiao-v2.pth", "model/xiao-v2/added_IVF647_Flat_nprobe_1_xiao_v2.index"],
+        "zh_name": "魈",
+        "en_name": "Xiao",
+        "jp_name": "魈",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_xinyan_mrmocciai": {
+        "files": ["model/weights/xinyan-v2.pth", "model/xinyan-v2/added_IVF971_Flat_nprobe_1_xinyan_v2.index"],
+        "zh_name": "辛焱",
+        "en_name": "Xinyan",
+        "jp_name": "辛炎",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_yae_miko_mrmocciai": {
+        "files": ["model/weights/yae-v2.pth", "model/yae-v2/added_IVF1097_Flat_nprobe_1_yae-v2_v2.index"],
+        "zh_name": "八重神子",
+        "en_name": "Yae Miko",
+        "jp_name": "八重神子",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_yanfei_mrmocciai": {
+        "files": ["model/weights/yanfei.pth", "model/yanfei/added_IVF1271_Flat_nprobe_1_yanfei-v2_v2.index"],
+        "zh_name": "烟绯",
+        "en_name": "Yanfei",
+        "jp_name": "煙緋",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_yelan_mrmocciai": {
+        "files": ["model/weights/yelan-v2.pth", "model/yelan-v2/added_IVF1017_Flat_nprobe_1_yelan-v2_v2.index"],
+        "zh_name": "夜兰",
+        "en_name": "Yelan",
+        "jp_name": "夜蘭",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_yoimiya_mrmocciai": {
+        "files": ["model/weights/yoimiya-v2.pth", "model/yoimiya-v2/added_IVF871_Flat_nprobe_1_yoimiya-v2_v2.index"],
+        "zh_name": "宵宫",
+        "en_name": "Yoimiya",
+        "jp_name": "宵宮",
+        "variant": "v2",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    "genshin_zhongli_mrmocciai": {
+        "files": ["model/weights/zhongli_rmvpe.pth", "model/zhongli_rmvpe/added_IVF1059_Flat_nprobe_1_zhongli_rmvpe_v2.index"],
+        "zh_name": "钟离",
+        "en_name": "Zhongli",
+        "jp_name": "鍾離",
+        "variant": "RMVPE",
+        "source": "原神",
+        "repo": "mrmocciai/genshin-impact",
+    },
+    # ===== Hololive / VTuber：Kit-Lemonfoot zip 模型 =====
+    "azki_kit_hybrid": {
+        "file": "AZKi (Hybrid).zip",
+        "zh_name": "AZKi",
+        "en_name": "AZKi",
+        "jp_name": "AZKi",
+        "variant": "Hybrid",
+        "role": "混合 RVC 模型",
+        "source": "Hololive Japan",
+        "repo": "Kit-Lemonfoot/kitlemonfoot_rvc_models",
+    },
+    "azki_black_kit_singing": {
+        "file": "AZKi BLaCK (Singing)(KitLemonfoot).zip",
+        "zh_name": "AZKi BLaCK",
+        "en_name": "AZKi BLaCK",
+        "jp_name": "AZKi BLaCK",
+        "variant": "Singing",
+        "role": "歌唱 RVC 模型",
+        "source": "Hololive Japan",
+        "repo": "Kit-Lemonfoot/kitlemonfoot_rvc_models",
+    },
+    "airani_iofifteen_kit": {
+        "file": "Airani Iofifteen (Speaking).zip",
+        "zh_name": "艾拉妮·伊欧菲芙汀",
+        "en_name": "Airani Iofifteen",
+        "jp_name": "アイラニ・イオフィフティーン",
+        "variant": "Speaking",
+        "role": "说话 RVC 模型",
+        "source": "Hololive Indonesia",
+        "repo": "Kit-Lemonfoot/kitlemonfoot_rvc_models",
+    },
+    "cecilia_immergreen_kit": {
+        "file": "Cecilia Immergreen (Singing)(KitLemonfoot).zip",
+        "zh_name": "塞西莉亚·伊默格林",
+        "en_name": "Cecilia Immergreen",
+        "jp_name": "セシリア・イマーグリーン",
+        "variant": "Singing",
+        "role": "歌唱 RVC 模型",
+        "source": "Hololive English",
+        "repo": "Kit-Lemonfoot/kitlemonfoot_rvc_models",
+    },
+    "ichijou_ririka_kit": {
+        "file": "Ichijou Ririka (Speaking)(KitLemonfoot).zip",
+        "zh_name": "一条莉莉华",
+        "en_name": "Ichijou Ririka",
+        "jp_name": "一条莉々華",
+        "variant": "Speaking",
+        "role": "说话 RVC 模型",
+        "source": "Hololive Japan",
+        "repo": "Kit-Lemonfoot/kitlemonfoot_rvc_models",
+    },
+    "kanade_izuru_kit": {
+        "file": "Kanade Izuru (Singing).zip",
+        "zh_name": "奏手一弦",
+        "en_name": "Kanade Izuru",
+        "jp_name": "奏手イヅル",
+        "variant": "Singing",
+        "role": "歌唱 RVC 模型",
+        "source": "Holostars Japan",
+        "repo": "Kit-Lemonfoot/kitlemonfoot_rvc_models",
+    },
+    "shiranui_flare_kit": {
+        "file": "Shiranui Flare (Speaking)(KitLemonfoot).zip",
+        "zh_name": "不知火芙蕾雅",
+        "en_name": "Shiranui Flare",
+        "jp_name": "不知火フレア",
+        "variant": "Speaking",
+        "role": "说话 RVC 模型",
+        "source": "Hololive Japan",
+        "repo": "Kit-Lemonfoot/kitlemonfoot_rvc_models",
+    },
+    "shirogane_noel_kit": {
+        "file": "Shirogane Noel (Speaking).zip",
+        "zh_name": "白银诺艾尔",
+        "en_name": "Shirogane Noel",
+        "jp_name": "白銀ノエル",
+        "variant": "Speaking",
+        "role": "说话 RVC 模型",
+        "source": "Hololive Japan",
+        "repo": "Kit-Lemonfoot/kitlemonfoot_rvc_models",
+    },
+    "tsukumo_sana_kit": {
+        "file": "Tsukumo Sana (Singing).zip",
+        "zh_name": "九十九佐命",
+        "en_name": "Tsukumo Sana",
+        "jp_name": "九十九佐命",
+        "variant": "Singing",
+        "role": "歌唱 RVC 模型",
+        "source": "Hololive English",
+        "repo": "Kit-Lemonfoot/kitlemonfoot_rvc_models",
+    },
+    "regis_altare_kit": {
+        "file": "Regis Altare (Speaking)(KitLemonfoot).zip",
+        "zh_name": "雷吉斯·阿尔泰尔",
+        "en_name": "Regis Altare",
+        "jp_name": "リージス・アルテア",
+        "variant": "Speaking",
+        "role": "说话 RVC 模型",
+        "source": "Holostars English",
+        "repo": "Kit-Lemonfoot/kitlemonfoot_rvc_models",
+    },
+    "axel_syrios_kit": {
+        "file": "Axel Syrios (Speaking)(KitLemonfoot).zip",
+        "zh_name": "阿克塞尔·西里奥斯",
+        "en_name": "Axel Syrios",
+        "jp_name": "アクセル・シリオス",
+        "variant": "Speaking",
+        "role": "说话 RVC 模型",
+        "source": "Holostars English",
+        "repo": "Kit-Lemonfoot/kitlemonfoot_rvc_models",
+    },
+    "octavio_kit": {
+        "file": "Octavio (Speaking)(KitLemonfoot).zip",
+        "zh_name": "奥克塔维奥",
+        "en_name": "Octavio",
+        "jp_name": "オクタビオ",
+        "variant": "Speaking",
+        "role": "说话 RVC 模型",
+        "source": "Holostars English",
+        "repo": "Kit-Lemonfoot/kitlemonfoot_rvc_models",
+    },
+    "crimzon_ruze_kit": {
+        "file": "Crimzon Ruze (Speaking)(KitLemonfoot).zip",
+        "zh_name": "克里姆森·鲁兹",
+        "en_name": "Crimzon Ruze",
+        "jp_name": "クリムゾン・ルーズ",
+        "variant": "Speaking",
+        "role": "说话 RVC 模型",
+        "source": "Holostars English",
+        "repo": "Kit-Lemonfoot/kitlemonfoot_rvc_models",
+    },
+    "finana_ryugu_kit": {
+        "file": "Finana Ryugu (Hybrid)(KitLemonfoot).zip",
+        "zh_name": "菲娜娜·龙宫",
+        "en_name": "Finana Ryugu",
+        "jp_name": "フィナーナ竜宮",
+        "variant": "Hybrid",
+        "role": "混合 RVC 模型",
+        "source": "NIJISANJI English",
+        "repo": "Kit-Lemonfoot/kitlemonfoot_rvc_models",
+    },
+    "mika_melatika_kit": {
+        "file": "Mika Melatika (Speaking)(KitLemonfoot).zip",
+        "zh_name": "米卡·梅拉提卡",
+        "en_name": "Mika Melatika",
+        "jp_name": "ミカ・メラティカ",
+        "variant": "Speaking",
+        "role": "说话 RVC 模型",
+        "source": "NIJISANJI Indonesia",
+        "repo": "Kit-Lemonfoot/kitlemonfoot_rvc_models",
+    },
+})
+
 
 def get_project_root() -> Path:
     """获取项目根目录"""
@@ -1620,6 +2240,147 @@ def get_project_root() -> Path:
 def get_character_models_dir() -> Path:
     """获取角色模型目录"""
     return get_project_root() / "assets" / "weights" / "characters"
+
+
+def _uploaded_file_path(file_value: Any) -> Optional[Path]:
+    if not file_value:
+        return None
+    if isinstance(file_value, (str, os.PathLike)):
+        return Path(file_value)
+    name = getattr(file_value, "name", None)
+    if name:
+        return Path(name)
+    raise TypeError(f"无法识别上传文件对象: {type(file_value).__name__}")
+
+
+def _sanitize_custom_model_key(text: str) -> str:
+    key = re.sub(r"[^\w.-]+", "_", str(text or ""), flags=re.UNICODE).strip("._-")
+    key = re.sub(r"_+", "_", key)
+    if not key:
+        raise ValueError("自定义模型名称不能为空")
+    return key[:80]
+
+
+def _assert_under_directory(path: Path, directory: Path):
+    resolved_path = path.resolve()
+    resolved_dir = directory.resolve()
+    if not resolved_path.is_relative_to(resolved_dir):
+        raise ValueError(f"目标路径越界: {resolved_path}")
+
+
+def _copy_custom_file(source: Path, dest_dir: Path, allowed_suffixes: set) -> Path:
+    if not source.exists():
+        raise FileNotFoundError(f"上传文件不存在: {source}")
+    suffix = source.suffix.lower()
+    if suffix not in allowed_suffixes:
+        expected = ", ".join(sorted(allowed_suffixes))
+        raise ValueError(f"不支持的文件类型: {source.name}，只支持 {expected}")
+    target = dest_dir / source.name
+    _assert_under_directory(target, dest_dir)
+    if target.exists():
+        raise FileExistsError(f"目标文件已存在: {target.name}")
+    shutil.copy2(source, target)
+    return target
+
+
+def _extract_custom_model_zip(source: Path, dest_dir: Path) -> List[Path]:
+    if not source.exists():
+        raise FileNotFoundError(f"上传文件不存在: {source}")
+    if source.suffix.lower() != ".zip":
+        raise ValueError(f"不支持的压缩包类型: {source.name}，只支持 .zip")
+
+    extracted: List[Path] = []
+    with zipfile.ZipFile(source, "r") as zip_ref:
+        members = [
+            member for member in zip_ref.infolist()
+            if not member.is_dir()
+        ]
+        pth_members = [
+            member for member in members
+            if Path(member.filename).suffix.lower() == ".pth"
+        ]
+        if not pth_members:
+            raise ValueError("压缩包中没有 .pth 权重文件")
+        if len(pth_members) > 1:
+            names = ", ".join(Path(member.filename).name for member in pth_members)
+            raise ValueError(f"压缩包中包含多个 .pth 文件，请拆分后上传: {names}")
+
+        allowed_suffixes = {".pth", ".index", ".json"}
+        for member in members:
+            suffix = Path(member.filename).suffix.lower()
+            if suffix not in allowed_suffixes:
+                continue
+            target = dest_dir / Path(member.filename).name
+            _assert_under_directory(target, dest_dir)
+            if target.exists():
+                raise FileExistsError(f"目标文件已存在: {target.name}")
+            with zip_ref.open(member, "r") as src, open(target, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            extracted.append(target)
+
+    return extracted
+
+
+def import_custom_character_model(
+    model_file: Any,
+    index_file: Any = None,
+    display_name: str = "",
+    source: str = "自定义模型",
+    category: str = "自定义 / 手动上传",
+) -> Dict:
+    """
+    导入用户手动上传的 RVC 模型。
+
+    支持单个 .pth、.pth + .index，或包含一个 .pth 的 .zip。
+    """
+    model_path = _uploaded_file_path(model_file)
+    index_path = _uploaded_file_path(index_file)
+    if model_path is None:
+        raise ValueError("请上传 .pth 权重文件或包含一个 .pth 的 .zip")
+
+    stem = model_path.stem
+    model_name = str(display_name or stem).strip()
+    key = _sanitize_custom_model_key(model_name)
+    models_dir = get_character_models_dir()
+    char_dir = models_dir / key
+    _assert_under_directory(char_dir, models_dir)
+    created_dir = not char_dir.exists()
+    if char_dir.exists() and list(char_dir.glob("*.pth")):
+        raise FileExistsError(f"自定义模型已存在: {key}")
+
+    char_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        if model_path.suffix.lower() == ".zip":
+            _extract_custom_model_zip(model_path, char_dir)
+        else:
+            _copy_custom_file(model_path, char_dir, {".pth"})
+
+        if index_path is not None:
+            _copy_custom_file(index_path, char_dir, {".index"})
+
+        pth_files = sorted(char_dir.glob("*.pth"))
+        if len(pth_files) != 1:
+            raise ValueError(f"导入后必须只有一个 .pth 权重文件，当前数量: {len(pth_files)}")
+
+        info = {
+            "zh_name": model_name,
+            "source": str(source or "自定义模型").strip() or "自定义模型",
+            "category": str(category or "自定义 / 手动上传").strip() or "自定义 / 手动上传",
+            "distribution": "手动上传",
+            "role": "自定义 RVC 模型",
+        }
+        _write_local_model_info(key, char_dir, info)
+        record = _build_character_record(key, info)
+        index = _find_index_file(pth_files[0])
+        record.update({
+            "model_path": str(pth_files[0]),
+            "index_path": str(index) if index else None,
+        })
+        return record
+    except Exception:
+        if created_dir and char_dir.exists():
+            shutil.rmtree(char_dir)
+        raise
 
 
 def list_available_characters() -> List[Dict]:
@@ -2012,8 +2773,7 @@ def list_available_series() -> List[str]:
     """
     series_set = set()
     for info in CHARACTER_MODELS.values():
-        source = info.get("source", "未知")
-        series_set.add(normalize_series(source))
+        series_set.add(_get_character_category(info))
     return sorted(series_set)
 
 

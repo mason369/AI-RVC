@@ -15,6 +15,7 @@ from lib.audio import load_audio, save_audio, normalize_audio, soft_clip
 from lib.device import get_device, empty_device_cache, supports_fp16
 from lib.logger import log
 from infer.f0_extractor import get_f0_extractor, shift_f0, F0Method
+from infer.rvc_version import inspect_rvc_model_version
 
 # 48Hz 高通 Butterworth 滤波器（与官方管道一致，去除低频隆隆声）
 _bh, _ah = sp_signal.butter(N=5, Wn=48, btype="high", fs=16000)
@@ -38,6 +39,7 @@ class VoiceConversionPipeline:
         self.index = None
         self.f0_extractor = None
         self.spk_count = 1
+        self.model_feature_dim = None
         self.model_version = "v2"  # 默认 v2（768 维）
 
         # 默认参数
@@ -209,33 +211,21 @@ class VoiceConversionPipeline:
 
         log.debug(f"解析后的配置: {model_config}")
 
-        # 根据gin_channels选择正确的合成器
-        # v1模型: gin_channels=256, 使用256维HuBERT特征
-        # v2模型: gin_channels=256, 使用768维HuBERT特征
-        # 判断依据：检查模型文件中是否有'version'字段，或根据实际权重形状判断
-        gin_channels = model_config.get("gin_channels", 256)
-
-        # 判断模型版本的优先级：
-        # 1. 检查'version'字段
-        # 2. 检查权重形状 enc_p.emb_phone.weight
-        # 3. 默认v2
-        model_version = None
-
-        if "version" in cpt:
-            model_version = cpt["version"]
-            log.debug(f"从version字段检测到: {model_version}")
-        elif "weight" in cpt and "enc_p.emb_phone.weight" in cpt["weight"]:
-            # 检查 enc_p.emb_phone.weight 的形状
-            # v1: [hidden_channels, 256]
-            # v2: [hidden_channels, 768]
-            emb_shape = cpt["weight"]["enc_p.emb_phone.weight"].shape
-            log.debug(f"enc_p.emb_phone.weight 形状: {emb_shape}")
-            if emb_shape[1] == 256:
-                model_version = "v1"
-                log.debug("从权重形状检测到: v1 (256维)")
-            elif emb_shape[1] == 768:
-                model_version = "v2"
-                log.debug("从权重形状检测到: v2 (768维)")
+        version_info = inspect_rvc_model_version(cpt, str(model_path))
+        model_version = version_info.version
+        self.model_feature_dim = version_info.feature_dim
+        log.debug(
+            "模型版本检测: "
+            f"version={version_info.raw_version_label}, "
+            f"feature_dim={version_info.feature_dim}, "
+            f"detected={model_version}, "
+            f"source={version_info.source}"
+        )
+        if version_info.metadata_mismatch:
+            log.warning(
+                "模型version字段与权重结构不一致，按权重结构使用: "
+                f"{version_info.raw_version_label} -> {model_version}"
+            )
 
         # 根据检测结果选择合成器
         if model_version == "v1":
@@ -282,7 +272,7 @@ class VoiceConversionPipeline:
         model_info = {
             "name": Path(model_path).stem,
             "sample_rate": self.output_sr,
-            "version": cpt.get("version", "v2")
+            "version": self.model_version,
         }
 
         log.info(f"语音模型已加载: {model_info['name']} ({self.output_sr}Hz)")
@@ -296,6 +286,14 @@ class VoiceConversionPipeline:
             index_path: 索引文件路径 (.index)
         """
         self.index = faiss.read_index(index_path)
+        if self.model_feature_dim is not None:
+            index_dim = int(self.index.d)
+            if index_dim != int(self.model_feature_dim):
+                raise ValueError(
+                    "RVC索引维度与模型不匹配: "
+                    f"model_feature_dim={self.model_feature_dim}, "
+                    f"index_dim={index_dim}, index={index_path}。"
+                )
         # 启用 direct_map 以支持 reconstruct()
         try:
             self.index.make_direct_map()

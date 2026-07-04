@@ -29,6 +29,8 @@ env/
 .idea/
 .vscode/
 .claude/
+AGENTS.md
+CLAUDE.md
 *.swp
 *.swo
 
@@ -78,3 +80,4 @@ outputs/
 /AI-RVC-Windows-GPU-Portable.7z.*
 /tools/ffmpeg/
 /scratch/
+/docs

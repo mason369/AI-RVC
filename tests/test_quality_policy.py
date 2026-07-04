@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import re
 import sys
 import unittest
@@ -31,13 +32,21 @@ resolve_cover_f0_policy = quality_policy.resolve_cover_f0_policy
 
 
 class F0RoutingPolicyTests(unittest.TestCase):
-    def test_hybrid_routes_to_conservative_rmvpe_fallback(self):
-        policy = resolve_cover_f0_policy("hybrid", "off")
+    def test_rmvpe_uses_strict_route_without_fallback(self):
+        policy = resolve_cover_f0_policy("rmvpe", "off")
 
-        self.assertEqual(policy.requested_method, "hybrid")
+        self.assertEqual(policy.requested_method, "rmvpe")
         self.assertEqual(policy.vc_method, "rmvpe")
-        self.assertEqual(policy.hybrid_mode, "fallback")
+        self.assertEqual(policy.hybrid_mode, "off")
         self.assertEqual(policy.gate_method, "rmvpe")
+
+    def test_hybrid_f0_method_is_rejected_instead_of_fallback(self):
+        with self.assertRaisesRegex(ValueError, "Hybrid F0 fallback is disabled"):
+            resolve_cover_f0_policy("hybrid", "off")
+
+    def test_f0_fallback_mode_is_rejected_instead_of_routed(self):
+        with self.assertRaisesRegex(ValueError, "F0 fallback modes are disabled"):
+            resolve_cover_f0_policy("rmvpe", "fallback")
 
 
 class ConservativeCrepeFillTests(unittest.TestCase):
@@ -114,6 +123,18 @@ class SourceConstraintPolicyTests(unittest.TestCase):
         self.assertLess(replace[0, 1], replace[0, 0])
         self.assertLessEqual(float(np.max(replace)), 0.82)
 
+    def test_stable_voiced_body_does_not_get_source_homogenized(self):
+        activity = np.array([1.0, 1.0, 0.0], dtype=np.float32)
+        soft_mask = np.array([[0.88, 0.45, 0.12]], dtype=np.float32)
+        echo_ratio = np.array([[0.22, 0.88, 0.40]], dtype=np.float32)
+        direct_ratio = np.array([0.94, 0.12, 0.10], dtype=np.float32)
+
+        replace = compute_active_source_replace(activity, soft_mask, echo_ratio, direct_ratio)
+
+        self.assertLess(replace[0, 0], 0.04)
+        self.assertGreater(replace[0, 1], 0.20)
+        self.assertGreater(replace[0, 2], 0.60)
+
     def test_cleanup_budget_caps_active_boost_below_two_x(self):
         energy_guard = np.array([0.0, 0.5, 1.0], dtype=np.float32)
         phrase_activity = np.array([0.0, 0.5, 1.0], dtype=np.float32)
@@ -187,6 +208,9 @@ class SourceRegressionTests(unittest.TestCase):
         self.assertIn("_record_quality_debug", source)
         self.assertIn("quality_debug.json", source)
         self.assertIn("debug_clips", source)
+        self.assertIn("quality_candidate_raw.wav", source)
+        self.assertIn("_apply_quality_candidate_selection", source)
+        self.assertIn("vc_quality_selected", source)
         self.assertIn("VC backend: upstream_official_raw + current postprocess", source)
         self.assertIn("convert_vocals_official_upstream(", source)
         self.assertNotIn('log.detail("使用当前项目官方封装VC进行转换")\n                convert_vocals_official(', source)
@@ -196,11 +220,22 @@ class SourceRegressionTests(unittest.TestCase):
 
         self.assertNotIn('self.f0_hybrid_mode = "rmvpe+crepe"', source)
 
-    def test_config_defaults_match_conservative_hybrid_policy(self):
+    def test_config_defaults_use_strict_rmvpe_without_fallback(self):
         source = (REPO_ROOT / "configs" / "config.json").read_text(encoding="utf-8")
+        readme_source = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        diagnose_source = (REPO_ROOT / "tools" / "diagnose_vc_session.py").read_text(encoding="utf-8")
 
-        self.assertRegex(source, r'"f0_hybrid_mode"\s*:\s*"fallback"')
+        self.assertRegex(source, r'"f0_method"\s*:\s*"rmvpe"')
+        self.assertRegex(source, r'"f0_hybrid_mode"\s*:\s*"off"')
+        self.assertNotRegex(source, r'"f0_method"\s*:\s*"hybrid"')
+        self.assertNotRegex(source, r'"f0_hybrid_mode"\s*:\s*"fallback"')
         self.assertNotRegex(source, r'"crepe_force_ratio"\s*:\s*0\.0')
+        self.assertIn('"f0_method": "rmvpe"', readme_source)
+        self.assertNotIn('"f0_method": "hybrid"', readme_source)
+        self.assertNotIn("默认是 `hybrid`", readme_source)
+        self.assertNotIn("默认请求 `hybrid`", readme_source)
+        self.assertRegex(diagnose_source, r'--f0-method",\s*default="rmvpe"')
+        self.assertNotRegex(diagnose_source, r'--f0-method",\s*default="hybrid"')
 
     def test_official_vc_pipeline_uses_breath_preserving_energy_gates(self):
         source = (REPO_ROOT / "infer" / "modules" / "vc" / "pipeline.py").read_text(encoding="utf-8")
@@ -208,7 +243,7 @@ class SourceRegressionTests(unittest.TestCase):
         self.assertIn("compute_breath_preserving_energy_gates", source)
         self.assertIn("self.unvoiced_feature_gate_floor", source)
         self.assertIn("compute_chunk_crossfade_samples", source)
-        self.assertIn("build_conservative_harvest_fill_mask", source)
+        self.assertNotIn("build_conservative_harvest_fill_mask", source)
         self.assertIn("分段边界(秒)", source)
 
     def test_config_includes_breath_gate_defaults(self):
@@ -217,26 +252,50 @@ class SourceRegressionTests(unittest.TestCase):
         self.assertRegex(source, r'"unvoiced_feature_gate_floor"\s*:\s*0\.28')
         self.assertRegex(source, r'"breath_active_margin_db"\s*:\s*52\.0')
 
-    def test_ui_only_exposes_strict_sota_vc_preprocess_modes(self):
+    def test_ui_keeps_effective_manual_controls_and_removes_deprecated_options(self):
         ui_source = (REPO_ROOT / "ui" / "app.py").read_text(encoding="utf-8")
         i18n_source = (REPO_ROOT / "i18n" / "zh_CN.json").read_text(encoding="utf-8")
+        i18n_data = json.loads(i18n_source)
+        config_source = (REPO_ROOT / "configs" / "config.json").read_text(encoding="utf-8")
+        readme_source = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        colab_source = (REPO_ROOT / "AI_RVC_Colab.ipynb").read_text(encoding="utf-8")
+        diagnose_source = (REPO_ROOT / "tools" / "diagnose_vc_session.py").read_text(encoding="utf-8")
         cover_source = (REPO_ROOT / "infer" / "cover_pipeline.py").read_text(encoding="utf-8")
         dereverb_source = (REPO_ROOT / "infer" / "advanced_dereverb.py").read_text(encoding="utf-8")
 
+        self.assertRegex(ui_source, r"t\(['\"]automatic_cover_settings['\"], ['\"]cover['\"]\)")
         self.assertIn('t("vc_preprocess_auto", "cover"): "auto"', ui_source)
         self.assertIn('t("vc_preprocess_uvr_deecho", "cover"): "uvr_deecho"', ui_source)
         self.assertNotIn('t("vc_preprocess_direct", "cover"): "direct"', ui_source)
         self.assertNotIn('t("vc_preprocess_legacy", "cover"): "legacy"', ui_source)
-        self.assertIn('vc_preprocess_mode not in {"auto", "uvr_deecho"}', ui_source)
-        self.assertIn("不可用时停止，不降级", i18n_source)
+        self.assertIn("cover_mix_preset", ui_source)
+        self.assertIn("cover_vc_preprocess_mode", ui_source)
+        self.assertIn("cover_vc_pipeline_mode", ui_source)
+        self.assertNotIn("cover_singing_repair", ui_source)
+        self.assertIn("Invalid cover config", ui_source)
+        self.assertNotIn("已改用 auto", cover_source)
+        self.assertNotIn("已改用 RoFormer De-Reverb", cover_source)
+        self.assertIn("不会偷偷降级", i18n_data["cover"]["automatic_cover_settings_info"])
+        self.assertIn('"mix_preset"', i18n_source)
+        self.assertIn('"source_constraint_mode"', i18n_source)
+        self.assertIn('"vc_pipeline_mode"', i18n_source)
+        self.assertNotIn('"singing_repair"', i18n_source)
+        self.assertNotIn('"singing_repair"', config_source)
+        self.assertNotIn('"singing_repair"', readme_source)
+        self.assertNotIn("官方唱歌修复", colab_source)
+        self.assertNotIn("official_repair", diagnose_source)
         self.assertNotIn('"vc_preprocess_direct"', i18n_source)
         self.assertNotIn('"vc_preprocess_legacy"', i18n_source)
+        self.assertIn('"vc_preprocess_auto"', i18n_source)
+        self.assertIn('"vc_preprocess_uvr_deecho"', i18n_source)
         self.assertNotIn("主唱直通", i18n_source)
         self.assertNotIn("回退到算法", i18n_source)
+        self.assertIn('default="rmvpe"', diagnose_source)
+        self.assertNotIn('default="hybrid"', diagnose_source)
         self.assertNotIn('self._last_vc_preprocess_mode == "direct"', cover_source)
         self.assertNotIn("apply_reverb_to_converted", dereverb_source)
 
-    def test_upstream_official_adapter_routes_hybrid_to_conservative_vc_method(self):
+    def test_upstream_official_adapter_uses_policy_without_silent_fallback(self):
         source = (REPO_ROOT / "infer" / "official_adapter.py").read_text(encoding="utf-8")
 
         self.assertIn("effective_f0_method = f0_policy.vc_method", source)
