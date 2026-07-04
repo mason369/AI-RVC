@@ -8,6 +8,8 @@ AI-RVC 是一个面向普通用户和创作者的 [RVC v2](https://github.com/RV
 
 **平台支持：Windows / Linux / WSL2 / Google Colab / Hugging Face Spaces**
 
+![Windows 界面](docs/Windows界面.png)
+
 ## 项目定位与搜索关键词
 
 如果你在找 **AI 翻唱、RVC 翻唱、AI cover generator、RVC voice conversion、角色声线转换、人声分离、伴奏分离、HuBERT、RMVPE、FAISS、Gradio WebUI、Colab AI 翻唱** 这类工具，AI-RVC 的目标就是把这些零散步骤串成一条更省心的工作流。
@@ -79,6 +81,8 @@ AI-RVC 是一个面向普通用户和创作者的 [RVC v2](https://github.com/RV
 - 首次启动需要 5-10 分钟下载模型
 
 ### 方式 2：Google Colab（推荐临时使用）
+
+![Colab 演示](docs/Colab演示.png)
 
 1. 打开 Colab notebook：[AI_RVC_Colab.ipynb](https://colab.research.google.com/github/mason369/AI-RVC/blob/master/AI_RVC_Colab.ipynb)
 2. 确保运行时类型设置为 **GPU**（菜单栏 → 代码执行程序 → 更改运行时类型 → T4 GPU）
