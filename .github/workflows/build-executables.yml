@@ -303,23 +303,17 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: AI-RVC-${{ matrix.platform }}-${{ matrix.variant }}
-        path: AI-RVC-${{ matrix.platform }}-${{ matrix.variant }}-Portable*
-
-  upload-release:
-    needs: [build]
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-      with:
-        merge-multiple: true
-
-    - name: List artifacts
-      run: ls -lh AI-RVC-*
+        path: |
+          AI-RVC-${{ matrix.platform }}-${{ matrix.variant }}-Portable.zip
+          AI-RVC-${{ matrix.platform }}-${{ matrix.variant }}-Portable.7z
+          AI-RVC-${{ matrix.platform }}-${{ matrix.variant }}-Portable.7z.*
+          AI-RVC-${{ matrix.platform }}-${{ matrix.variant }}-Portable.tar.gz
+          AI-RVC-${{ matrix.platform }}-${{ matrix.variant }}-Portable.tar.gz.part*
+        if-no-files-found: error
 
     - name: Determine target tag
       id: tag
+      shell: bash
       run: |
         if [ "${{ github.event_name }}" = "push" ]; then
           echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
@@ -333,11 +327,25 @@ jobs:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Upload assets to release
+      shell: bash
       run: |
+        NAME="AI-RVC-${{ matrix.platform }}-${{ matrix.variant }}"
+        PKG="${NAME}-Portable"
         TAG="${{ steps.tag.outputs.tag }}"
         echo "上传资源到 Release: ${TAG}"
-        # 收集所有构建产物（含分卷文件）
-        mapfile -t FILES < <(find . -maxdepth 1 -name "AI-RVC-*-Portable*" -type f | sort)
+        mapfile -t FILES < <(
+          find . -maxdepth 1 -type f \( \
+            -name "${PKG}.zip" -o \
+            -name "${PKG}.7z" -o \
+            -name "${PKG}.7z.*" -o \
+            -name "${PKG}.tar.gz" -o \
+            -name "${PKG}.tar.gz.part*" \
+          \) | sort
+        )
+        if [ "${#FILES[@]}" -eq 0 ]; then
+          echo "没有找到可上传的压缩产物: ${PKG}"
+          exit 1
+        fi
         upload_asset_with_retry() {
           local tag="$1"
           local file="$2"
@@ -346,7 +354,7 @@ jobs:
 
           for attempt in 1 2 3; do
             echo "上传(${attempt}/3): ${file}"
-            if timeout 30m gh release upload "${tag}" "${file}" \
+            if gh release upload "${tag}" "${file}" \
               --repo ${{ github.repository }} \
               --clobber; then
               return 0
