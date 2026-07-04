@@ -34,7 +34,7 @@ AI-RVC v1.3.0 focuses on the default cover quality route, model compatibility, a
 - Cover controls now validate values instead of clamping or silently falling back.
 - Mix presets update actual mix sliders and still allow manual adjustment.
 - README and Hugging Face README now document the current model positioning, SOTA boundaries, strict defaults, and official RVC source preparation.
-- Local agent instruction files and ignored docs artifacts are removed from Git tracking.
+- Local agent instruction files and generated audit artifacts are removed from Git tracking, while referenced docs and demo images remain tracked.
 
 ### Tests
 
