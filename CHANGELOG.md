@@ -27,6 +27,7 @@ AI-RVC v1.3.0 focuses on the default cover quality route, model compatibility, a
 - `tools/download_models.py` can prepare `_official_rvc/` and reports incomplete trees as hard errors.
 - Dependency checks now enforce exact versions for Gradio, fairseq, and audio-separator where the project depends on pinned behavior.
 - Hugging Face Hub is constrained below 1.0 to stay aligned with the Space runtime.
+- GitHub release packaging now builds against Gradio 5.49.1, pins audio-separator 0.44.1 per CPU/GPU variant, preloads the current RoFormer defaults, and bundles `_official_rvc/` into portable artifacts.
 
 ### UI And Documentation
 

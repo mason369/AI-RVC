@@ -14,6 +14,7 @@ a = Analysis(
         ('tools', 'tools'),
         ('i18n', 'i18n'),
         ('configs', 'configs'),
+        ('_official_rvc', '_official_rvc'),
         ('assets/hubert', 'assets/hubert'),
         ('assets/rmvpe', 'assets/rmvpe'),
     ],
