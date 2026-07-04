@@ -10,6 +10,24 @@ on:
         description: '要上传资源的 Release 标签（如 v1.2.0），留空则上传到最新 Release'
         required: false
         default: ''
+      platform:
+        description: '只构建指定平台'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - Windows
+          - Linux
+      variant:
+        description: '只构建指定版本'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - CPU
+          - GPU
 
 permissions:
   contents: write
@@ -53,25 +71,48 @@ jobs:
     name: Build ${{ matrix.platform }}-${{ matrix.variant }}
 
     steps:
+    - name: Select matrix entry
+      id: selection
+      shell: pwsh
+      run: |
+        $requestedPlatform = "${{ github.event.inputs.platform }}"
+        $requestedVariant = "${{ github.event.inputs.variant }}"
+        if ([string]::IsNullOrWhiteSpace($requestedPlatform)) {
+          $requestedPlatform = "all"
+        }
+        if ([string]::IsNullOrWhiteSpace($requestedVariant)) {
+          $requestedVariant = "all"
+        }
+
+        $platformMatches = $requestedPlatform -eq "all" -or $requestedPlatform -eq "${{ matrix.platform }}"
+        $variantMatches = $requestedVariant -eq "all" -or $requestedVariant -eq "${{ matrix.variant }}"
+        $shouldRun = "${{ github.event_name }}" -ne "workflow_dispatch" -or ($platformMatches -and $variantMatches)
+        $shouldRunText = $shouldRun.ToString().ToLowerInvariant()
+        "should_run=$shouldRunText" >> $env:GITHUB_OUTPUT
+        Write-Host "Selected: $shouldRunText (${{ matrix.platform }}-${{ matrix.variant }})"
+
     - name: Checkout code
+      if: steps.selection.outputs.should_run == 'true'
       uses: actions/checkout@v4
 
     - name: Set up Python
+      if: steps.selection.outputs.should_run == 'true'
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
 
     - name: Install system dependencies (Linux)
-      if: runner.os == 'Linux'
+      if: steps.selection.outputs.should_run == 'true' && runner.os == 'Linux'
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential libsndfile1 ffmpeg portaudio19-dev
 
     - name: Install FFmpeg (Windows)
-      if: runner.os == 'Windows'
+      if: steps.selection.outputs.should_run == 'true' && runner.os == 'Windows'
       run: choco install ffmpeg -y
 
     - name: Install Python dependencies
+      if: steps.selection.outputs.should_run == 'true'
       run: |
         python -m pip install --upgrade "pip<24.1"
         pip install pyinstaller
@@ -86,9 +127,11 @@ jobs:
         python -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}')"
 
     - name: Install audio-separator
+      if: steps.selection.outputs.should_run == 'true'
       run: pip install "audio-separator[${{ matrix.audio_separator_extra }}]==0.44.1"
 
     - name: Bundle FFmpeg runtime
+      if: steps.selection.outputs.should_run == 'true'
       shell: bash
       run: |
         python - <<'PY'
@@ -148,6 +191,7 @@ jobs:
         PY
 
     - name: Download all AI models
+      if: steps.selection.outputs.should_run == 'true'
       shell: bash
       env:
         PYTHONIOENCODING: utf-8
@@ -182,6 +226,7 @@ jobs:
         done
 
     - name: Build executable
+      if: steps.selection.outputs.should_run == 'true'
       shell: bash
       run: |
         SEP="${{ matrix.sep }}"
@@ -217,6 +262,7 @@ jobs:
           run.py
 
     - name: Create portable package
+      if: steps.selection.outputs.should_run == 'true'
       shell: bash
       run: |
         NAME="AI-RVC-${{ matrix.platform }}-${{ matrix.variant }}"
@@ -268,6 +314,7 @@ jobs:
         fi
 
     - name: Compress package
+      if: steps.selection.outputs.should_run == 'true'
       shell: bash
       run: |
         NAME="AI-RVC-${{ matrix.platform }}-${{ matrix.variant }}"
@@ -300,6 +347,7 @@ jobs:
         fi
 
     - name: Upload artifact
+      if: steps.selection.outputs.should_run == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: AI-RVC-${{ matrix.platform }}-${{ matrix.variant }}
@@ -312,6 +360,7 @@ jobs:
         if-no-files-found: error
 
     - name: Determine target tag
+      if: steps.selection.outputs.should_run == 'true'
       id: tag
       shell: bash
       run: |
@@ -327,6 +376,7 @@ jobs:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Upload assets to release
+      if: steps.selection.outputs.should_run == 'true'
       shell: bash
       run: |
         NAME="AI-RVC-${{ matrix.platform }}-${{ matrix.variant }}"
@@ -354,9 +404,22 @@ jobs:
 
           for attempt in 1 2 3; do
             echo "上传(${attempt}/3): ${file}"
-            if gh release upload "${tag}" "${file}" \
-              --repo ${{ github.repository }} \
-              --clobber; then
+            if python - "${tag}" "${file}" "${{ github.repository }}" <<'PY'; then
+        import subprocess
+        import sys
+
+        tag, file_path, repo = sys.argv[1:4]
+        try:
+            result = subprocess.run(
+                ["gh", "release", "upload", tag, file_path, "--repo", repo, "--clobber"],
+                timeout=1200,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"gh release upload timed out after 1200 seconds: {file_path}", file=sys.stderr)
+            sys.exit(124)
+
+        sys.exit(result.returncode)
+        PY
               return 0
             fi
 
