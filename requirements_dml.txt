@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# DirectML Torch and ONNX Runtime dependencies.
+audio-separator[dml]==0.44.1

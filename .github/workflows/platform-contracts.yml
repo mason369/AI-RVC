@@ -1,0 +1,56 @@
+name: Platform Contracts
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  platform-contracts:
+    name: ${{ matrix.os }} / Python 3.10
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-14]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install CPU PyTorch on Windows and Linux
+        if: runner.os != 'macOS'
+        run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install PyTorch on macOS
+        if: runner.os == 'macOS'
+        run: python -m pip install torch
+
+      - name: Install contract-test dependencies
+        run: python -m pip install numpy soundfile PyYAML packaging
+
+      - name: Validate installer and deployment contracts
+        run: |
+          python -m unittest discover -s tests -p "test_install_requirements.py"
+          python -m unittest discover -s tests -p "test_platform_support.py"
+          python -m unittest discover -s tests -p "test_colab_notebook.py"
+          python -m unittest discover -s tests -p "test_hf_entrypoint.py"
+
+      - name: Validate PolarFormer provider routing
+        run: >-
+          python tests/test_model_defaults.py
+          ModelDefaultTests.test_bs_polarformer_provider_selection_does_not_silently_downgrade
+          ModelDefaultTests.test_bs_polarformer_cuda_provider_preserves_device_id
+          ModelDefaultTests.test_bs_polarformer_non_onnx_accelerators_use_explicit_cpu_provider
+          ModelDefaultTests.test_bs_polarformer_rocm_uses_explicit_cpu_provider
+          ModelDefaultTests.test_bs_polarformer_directml_requires_directml_provider
+          ModelDefaultTests.test_audio_separator_runtime_honors_explicit_cpu_selection
+          ModelDefaultTests.test_audio_separator_runtime_routes_non_onnx_accelerators_to_cpu_ort

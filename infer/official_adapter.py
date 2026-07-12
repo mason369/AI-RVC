@@ -603,6 +603,7 @@ def convert_vocals_official_upstream(
     rms_mix_rate: float,
     protect: float,
     speaker_id: int = 0,
+    device: str = "auto",
 ) -> str:
     """Run vendored upstream official RVC in an isolated subprocess."""
     root_dir = Path(__file__).parent.parent
@@ -652,6 +653,8 @@ def convert_vocals_official_upstream(
         str(float(protect)),
         "--speaker-id",
         str(int(speaker_id)),
+        "--device",
+        str(device),
     ]
 
     log.progress("开始内置官方VC转换...")

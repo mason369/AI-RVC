@@ -176,6 +176,97 @@ class ModelDefaultTests(unittest.TestCase):
             ],
         )
 
+    def test_bs_polarformer_non_onnx_accelerators_use_explicit_cpu_provider(self):
+        from infer import separator
+
+        class CpuOrt:
+            @staticmethod
+            def get_available_providers():
+                return ["CPUExecutionProvider"]
+
+        for device in ("xpu", "xpu:0", "mps"):
+            with self.subTest(device=device):
+                self.assertEqual(
+                    separator._BSPolarFormerRuntime._select_onnx_providers(
+                        CpuOrt,
+                        device,
+                    ),
+                    ["CPUExecutionProvider"],
+                )
+
+    def test_bs_polarformer_rocm_uses_explicit_cpu_provider(self):
+        from infer import separator
+
+        class CpuOrt:
+            @staticmethod
+            def get_available_providers():
+                return ["CPUExecutionProvider"]
+
+        with patch.object(separator.torch.version, "hip", "6.2", create=True):
+            self.assertEqual(
+                separator._BSPolarFormerRuntime._select_onnx_providers(
+                    CpuOrt,
+                    "cuda:0",
+                ),
+                ["CPUExecutionProvider"],
+            )
+
+    def test_bs_polarformer_directml_requires_directml_provider(self):
+        from infer import separator
+
+        class DirectMlOrt:
+            @staticmethod
+            def get_available_providers():
+                return ["DmlExecutionProvider", "CPUExecutionProvider"]
+
+        self.assertEqual(
+            separator._BSPolarFormerRuntime._select_onnx_providers(
+                DirectMlOrt,
+                "privateuseone:0",
+            ),
+            ["DmlExecutionProvider", "CPUExecutionProvider"],
+        )
+
+    def test_audio_separator_runtime_honors_explicit_cpu_selection(self):
+        from infer import separator
+
+        runtime = type("Runtime", (), {})()
+        runtime.torch_device = separator.torch.device("cuda")
+        runtime.onnx_execution_provider = ["CUDAExecutionProvider"]
+
+        separator._configure_audio_separator_runtime(runtime, "cpu")
+
+        self.assertEqual(str(runtime.torch_device), "cpu")
+        self.assertEqual(runtime.onnx_execution_provider, ["CPUExecutionProvider"])
+
+    def test_audio_separator_runtime_routes_non_onnx_accelerators_to_cpu_ort(self):
+        from infer import separator
+        import onnxruntime
+
+        class Probe:
+            @staticmethod
+            def to(_device):
+                return Probe()
+
+        for device in ("xpu", "mps"):
+            runtime = type("Runtime", (), {})()
+            with self.subTest(device=device), patch.object(
+                separator.torch,
+                "zeros",
+                return_value=Probe(),
+            ), patch.object(
+                onnxruntime,
+                "get_available_providers",
+                return_value=["CPUExecutionProvider"],
+            ):
+                separator._configure_audio_separator_runtime(runtime, device)
+
+            self.assertEqual(str(runtime.torch_device), device)
+            self.assertEqual(
+                runtime.onnx_execution_provider,
+                ["CPUExecutionProvider"],
+            )
+
     def test_bs_polarformer_chunk_size_matches_telknet_runtime_cap(self):
         from infer import separator
 

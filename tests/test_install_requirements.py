@@ -143,6 +143,8 @@ class InstallRequirementTests(unittest.TestCase):
             "install.pip_install", side_effect=fake_pip_install
         ), mock.patch(
             "install.check_dependency_consistency", return_value=True
+        ), mock.patch(
+            "install.check_backend_available", return_value=True
         ), contextlib.redirect_stdout(io.StringIO()):
             ok = install.install_all("python", gpu=False)
 
@@ -184,6 +186,9 @@ class InstallRequirementTests(unittest.TestCase):
             return_value=True,
         ) as install_stack, mock.patch(
             "install.check_dependency_consistency",
+            return_value=True,
+        ), mock.patch(
+            "install.check_backend_available",
             return_value=True,
         ), contextlib.redirect_stdout(io.StringIO()):
             ok = install.install_all("python", gpu=True)
@@ -258,6 +263,100 @@ class InstallRequirementTests(unittest.TestCase):
             saved = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(saved["device"], "cpu")
 
+    def test_runtime_device_supports_every_declared_backend(self):
+        expected = {
+            "cpu": "cpu",
+            "cuda": "cuda",
+            "rocm": "cuda",
+            "xpu": "xpu",
+            "directml": "directml",
+            "mps": "mps",
+        }
+        for backend, device in expected.items():
+            with self.subTest(backend=backend):
+                self.assertEqual(
+                    install.BACKEND_SETTINGS[backend]["runtime_device"],
+                    device,
+                )
+
+    def test_backend_settings_select_matching_runtime_extras(self):
+        expected = {
+            "cpu": ("cpu", "onnxruntime"),
+            "cuda": ("gpu", "onnxruntime-gpu"),
+            "rocm": ("cpu", "onnxruntime"),
+            "xpu": ("cpu", "onnxruntime"),
+            "directml": ("dml", "onnxruntime-directml"),
+            "mps": ("cpu", "onnxruntime"),
+        }
+        for backend, values in expected.items():
+            with self.subTest(backend=backend):
+                settings = install.BACKEND_SETTINGS[backend]
+                self.assertEqual(
+                    (settings["audio_extra"], settings["runtime_dist"]),
+                    values,
+                )
+
+    def test_auto_backend_uses_mps_only_on_apple_silicon(self):
+        with mock.patch.object(install.sys, "platform", "darwin"), mock.patch(
+            "install.platform.machine",
+            return_value="arm64",
+        ):
+            self.assertEqual(install.resolve_install_backend("auto"), "mps")
+
+        with mock.patch.object(install.sys, "platform", "darwin"), mock.patch(
+            "install.platform.machine",
+            return_value="x86_64",
+        ):
+            self.assertEqual(install.resolve_install_backend("auto"), "cpu")
+
+    def test_directml_install_uses_dml_extra_without_replacing_torch(self):
+        audio_separator_info = install.PACKAGES["audio_separator"]
+        with mock.patch("install.check_all", return_value=[audio_separator_info]), mock.patch(
+            "install.get_installed_version",
+            side_effect=lambda _python, dist: (
+                "1.23.2" if dist == "onnxruntime-directml" else None
+            ),
+        ), mock.patch("install.pip_install", return_value=True) as pip_install, mock.patch(
+            "install.pip_install_packages", return_value=True
+        ) as install_torch, mock.patch(
+            "install.check_backend_available", return_value=True
+        ), mock.patch(
+            "install.check_dependency_consistency", return_value=True
+        ), contextlib.redirect_stdout(io.StringIO()):
+            ok = install.install_all("python", backend="directml")
+
+        self.assertTrue(ok)
+        install_torch.assert_not_called()
+        pip_install.assert_called_once_with(
+            "python",
+            "audio-separator",
+            extra="dml",
+            version_spec="==0.44.1",
+        )
+
+    def test_specialized_backend_does_not_replace_missing_torch_stack(self):
+        for backend in ("rocm", "xpu", "directml"):
+            with self.subTest(backend=backend), mock.patch(
+                "install.check_all", return_value=[install.PACKAGES["torch"]]
+            ), mock.patch(
+                "install.get_installed_version",
+                side_effect=lambda _python, dist: (
+                    "1.23.2"
+                    if dist == install.BACKEND_SETTINGS[backend]["runtime_dist"]
+                    else None
+                ),
+            ), mock.patch(
+                "install.pip_install_packages", return_value=True
+            ) as install_torch, mock.patch(
+                "install.check_backend_available", return_value=False
+            ), mock.patch(
+                "install.check_dependency_consistency", return_value=True
+            ), contextlib.redirect_stdout(io.StringIO()):
+                ok = install.install_all("python", backend=backend)
+
+            self.assertFalse(ok)
+            install_torch.assert_not_called()
+
     def test_runtime_variant_check_rejects_conflicting_distribution(self):
         versions = {
             "onnxruntime": "1.23.2",
@@ -275,6 +374,31 @@ class InstallRequirementTests(unittest.TestCase):
             side_effect=lambda _python, dist: versions.get(dist),
         ), contextlib.redirect_stdout(io.StringIO()):
             self.assertTrue(install.check_onnx_runtime_variant("python", gpu=True))
+
+    def test_directml_runtime_variant_rejects_other_onnx_distributions(self):
+        versions = {
+            "onnxruntime": "1.23.2",
+            "onnxruntime-directml": "1.23.2",
+        }
+        with mock.patch(
+            "install.get_installed_version",
+            side_effect=lambda _python, dist: versions.get(dist),
+        ), contextlib.redirect_stdout(io.StringIO()):
+            self.assertFalse(
+                install.check_onnx_runtime_variant("python", backend="directml")
+            )
+
+    def test_backend_requirement_files_select_explicit_runtime_extra(self):
+        expected = {
+            "requirements_cpu.txt": "audio-separator[cpu]==0.44.1",
+            "requirements_cuda.txt": "audio-separator[gpu]==0.44.1",
+            "requirements_dml.txt": "audio-separator[dml]==0.44.1",
+        }
+        for filename, requirement in expected.items():
+            with self.subTest(filename=filename):
+                source = Path(filename).read_text(encoding="utf-8")
+                self.assertIn("-r requirements.txt", source)
+                self.assertIn(requirement, source)
 
     def test_portable_build_sets_device_and_has_no_cpu_fallback_claim(self):
         workflow = Path(".github/workflows/build-executables.yml").read_text(

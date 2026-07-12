@@ -4346,6 +4346,7 @@ class CoverPipeline:
                     rms_mix_rate=rms_mix_rate,
                     protect=protect,
                     speaker_id=speaker_id,
+                    device=self.device,
                 )
                 self._record_quality_debug(
                     session_dir=session_dir,
@@ -4375,6 +4376,7 @@ class CoverPipeline:
                     rms_mix_rate=rms_mix_rate,
                     protect=protect,
                     speaker_id=speaker_id,
+                    device=self.device,
                 )
                 self._record_quality_debug(
                     session_dir=session_dir,

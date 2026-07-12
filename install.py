@@ -8,10 +8,13 @@ RVC 安装脚本
   python install.py --check    # 仅检查依赖
   python install.py --no-run   # 安装但不启动
   python install.py --cpu      # 安装 CPU 版本
+  python install.py --backend mps       # Apple MPS
+  python install.py --backend directml  # Windows DirectML
 """
 import subprocess
 import sys
 import os
+import platform
 import json
 from pathlib import Path
 
@@ -29,6 +32,52 @@ PYTHON310_CANDIDATES = [
     r"C:\Program Files\Python310\python.exe",
     r"C:\Program Files (x86)\Python310\python.exe",
 ]
+
+SUPPORTED_BACKENDS = ("auto", "cpu", "cuda", "rocm", "xpu", "directml", "mps")
+BACKEND_SETTINGS = {
+    "cpu": {
+        "audio_extra": "cpu",
+        "runtime_dist": "onnxruntime",
+        "conflicting_runtime_dists": ("onnxruntime-gpu", "onnxruntime-directml"),
+        "runtime_device": "cpu",
+        "torch_install": "cpu",
+    },
+    "cuda": {
+        "audio_extra": "gpu",
+        "runtime_dist": "onnxruntime-gpu",
+        "conflicting_runtime_dists": ("onnxruntime", "onnxruntime-directml"),
+        "runtime_device": "cuda",
+        "torch_install": "cuda",
+    },
+    "rocm": {
+        "audio_extra": "cpu",
+        "runtime_dist": "onnxruntime",
+        "conflicting_runtime_dists": ("onnxruntime-gpu", "onnxruntime-directml"),
+        "runtime_device": "cuda",
+        "torch_install": "preinstalled",
+    },
+    "xpu": {
+        "audio_extra": "cpu",
+        "runtime_dist": "onnxruntime",
+        "conflicting_runtime_dists": ("onnxruntime-gpu", "onnxruntime-directml"),
+        "runtime_device": "xpu",
+        "torch_install": "preinstalled",
+    },
+    "directml": {
+        "audio_extra": "dml",
+        "runtime_dist": "onnxruntime-directml",
+        "conflicting_runtime_dists": ("onnxruntime", "onnxruntime-gpu"),
+        "runtime_device": "directml",
+        "torch_install": "preinstalled",
+    },
+    "mps": {
+        "audio_extra": "cpu",
+        "runtime_dist": "onnxruntime",
+        "conflicting_runtime_dists": ("onnxruntime-gpu", "onnxruntime-directml"),
+        "runtime_device": "mps",
+        "torch_install": "pypi",
+    },
+}
 
 PACKAGES = {
     "torch": {"import": "torch", "name": "PyTorch", "pip": "torch"},
@@ -254,6 +303,94 @@ def detect_cuda_version():
     return None
 
 
+def resolve_install_backend(requested: str, venv_py: str = None) -> str:
+    """Resolve an explicit installer backend; only ``auto`` performs detection."""
+    backend = str(requested or "auto").strip().lower()
+    if backend not in SUPPORTED_BACKENDS:
+        raise ValueError(f"不支持的安装后端: {requested!r}")
+    if backend != "auto":
+        return backend
+    if venv_py and os.path.isfile(venv_py):
+        probe = (
+            "import torch\n"
+            "backend = 'cpu'\n"
+            "if getattr(torch.version, 'hip', None) and torch.cuda.is_available(): backend = 'rocm'\n"
+            "elif hasattr(torch, 'xpu') and torch.xpu.is_available(): backend = 'xpu'\n"
+            "elif torch.cuda.is_available(): backend = 'cuda'\n"
+            "elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available(): backend = 'mps'\n"
+            "else:\n"
+            "    try:\n"
+            "        import torch_directml\n"
+            "        torch.zeros(1).to(torch_directml.device(torch_directml.default_device()))\n"
+            "        backend = 'directml'\n"
+            "    except Exception:\n"
+            "        pass\n"
+            "print(backend)\n"
+        )
+        result = subprocess.run(
+            [venv_py, "-c", probe],
+            capture_output=True,
+            text=True,
+        )
+        detected = result.stdout.strip().lower() if result.returncode == 0 else ""
+        if detected in BACKEND_SETTINGS and detected != "cpu":
+            return detected
+    if sys.platform == "darwin":
+        machine = platform.machine().lower()
+        return "mps" if machine in {"arm64", "aarch64"} else "cpu"
+    if detect_cuda_version():
+        return "cuda"
+    return "cpu"
+
+
+def check_backend_available(venv_py: str, backend: str) -> bool:
+    """Verify that the selected accelerator stack is importable and usable."""
+    checks = {
+        "cpu": "import torch; torch.zeros(1, device='cpu')",
+        "cuda": (
+            "import torch; "
+            "assert torch.version.hip is None, 'ROCm PyTorch cannot satisfy CUDA mode'; "
+            "assert torch.cuda.is_available(), 'CUDA is unavailable'; "
+            "torch.zeros(1, device='cuda')"
+        ),
+        "rocm": (
+            "import torch; "
+            "assert torch.version.hip is not None, 'PyTorch is not a ROCm build'; "
+            "assert torch.cuda.is_available(), 'ROCm device is unavailable'; "
+            "torch.zeros(1, device='cuda')"
+        ),
+        "xpu": (
+            "import torch, intel_extension_for_pytorch; "
+            "assert hasattr(torch, 'xpu') and torch.xpu.is_available(), 'XPU is unavailable'; "
+            "torch.zeros(1, device='xpu')"
+        ),
+        "directml": (
+            "import torch, torch_directml; "
+            "device = torch_directml.device(torch_directml.default_device()); "
+            "torch.zeros(1).to(device)"
+        ),
+        "mps": (
+            "import torch; "
+            "assert hasattr(torch.backends, 'mps') and torch.backends.mps.is_available(), "
+            "'MPS is unavailable'; "
+            "torch.zeros(1, device='mps')"
+        ),
+    }
+    result = subprocess.run(
+        [venv_py, "-c", checks[backend]],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        print(f"  [v] 计算后端可用: {backend}")
+        return True
+    details = (result.stderr or result.stdout).strip().splitlines()
+    print(f"  [x] 计算后端不可用: {backend}")
+    if details:
+        print(f"      {details[-1]}")
+    return False
+
+
 def pip_install(venv_py, package, extra="", index_url=None, no_deps=False, version_spec=""):
     """用虚拟环境的 pip 安装包"""
     target = f"{package}[{extra}]{version_spec}" if extra else f"{package}{version_spec}"
@@ -365,29 +502,35 @@ def check_all(venv_py):
     return missing
 
 
-def install_all(venv_py, gpu=True):
-    """安装所有缺失的依赖"""
+def install_all(venv_py, gpu=True, backend=None):
+    """安装所有缺失依赖，并保持所选计算后端的运行时组合。"""
+    backend = str(backend or ("cuda" if gpu else "cpu")).strip().lower()
+    if backend not in BACKEND_SETTINGS:
+        raise ValueError(f"不支持的安装后端: {backend!r}")
+    settings = BACKEND_SETTINGS[backend]
     missing = check_all(venv_py)
 
-    # 检测 CUDA 版本
-    cuda_index_url = None
-    if gpu:
+    torch_index_url = None
+    if settings["torch_install"] == "cuda":
         cuda_index_url = detect_cuda_version()
         if cuda_index_url:
             print(f"\n  检测到 CUDA，使用 PyTorch 源: {cuda_index_url}")
+            torch_index_url = cuda_index_url
         else:
             print("\n  [错误] 未检测到支持的 CUDA，GPU 安装停止。")
             print("  如需 CPU 版 PyTorch，请显式使用 --cpu。")
             return False
+    elif settings["torch_install"] == "cpu":
+        torch_index_url = "https://download.pytorch.org/whl/cpu"
 
-    runtime_dist = "onnxruntime-gpu" if gpu else "onnxruntime"
-    conflicting_runtime_dist = "onnxruntime" if gpu else "onnxruntime-gpu"
-    if get_installed_version(venv_py, conflicting_runtime_dist):
-        print(
-            f"\n  [错误] 检测到冲突的 {conflicting_runtime_dist}。"
-            f"当前安装模式只允许 {runtime_dist}，请删除 venv310 后重新安装。"
-        )
-        return False
+    runtime_dist = settings["runtime_dist"]
+    for conflicting_runtime_dist in settings["conflicting_runtime_dists"]:
+        if get_installed_version(venv_py, conflicting_runtime_dist):
+            print(
+                f"\n  [错误] 检测到冲突的 {conflicting_runtime_dist}。"
+                f"当前安装模式只允许 {runtime_dist}，请删除 venv310 后重新安装。"
+            )
+            return False
 
     if not get_installed_version(venv_py, runtime_dist):
         audio_separator_info = PACKAGES["audio_separator"]
@@ -396,19 +539,23 @@ def install_all(venv_py, gpu=True):
 
     if not missing:
         print("\n无需安装，所有依赖已就绪。")
-        return check_dependency_consistency(venv_py)
+        return (
+            check_backend_available(venv_py, backend)
+            and check_dependency_consistency(venv_py)
+        )
 
     print(f"\n开始安装 {len(missing)} 个缺失的依赖...\n")
     failed = []
     torch_stack_names = {"torch", "torchvision", "torchaudio"}
     torch_stack_missing = [info for info in missing if info["pip"] in torch_stack_names]
     if torch_stack_missing:
-        torch_index_url = (
-            cuda_index_url
-            if gpu and cuda_index_url
-            else "https://download.pytorch.org/whl/cpu"
-        )
-        if not pip_install_packages(
+        if settings["torch_install"] == "preinstalled":
+            print(
+                f"  [错误] {backend} 需要先安装并验证对应的 PyTorch 运行栈；"
+                "安装器不会用其他 PyTorch 版本覆盖它"
+            )
+            failed.extend(info["name"] for info in torch_stack_missing)
+        elif not pip_install_packages(
             venv_py,
             ("torch", "torchvision", "torchaudio"),
             index_url=torch_index_url,
@@ -426,7 +573,7 @@ def install_all(venv_py, gpu=True):
             ok = pip_install(
                 venv_py,
                 pip_name,
-                extra="gpu" if gpu else "cpu",
+                extra=settings["audio_extra"],
                 version_spec=version_spec,
             )
         else:
@@ -436,6 +583,8 @@ def install_all(venv_py, gpu=True):
 
     if not get_installed_version(venv_py, runtime_dist):
         failed.append(runtime_dist)
+    if not check_backend_available(venv_py, backend):
+        failed.append(f"{backend} backend")
     if not check_dependency_consistency(venv_py):
         failed.append("pip dependency consistency")
 
@@ -449,7 +598,7 @@ def install_all(venv_py, gpu=True):
 
 def save_runtime_device(device: str) -> None:
     """把显式安装模式写入运行配置，避免设备被隐式改写。"""
-    if device not in {"cpu", "cuda"}:
+    if device not in {"cpu", "cuda", "xpu", "directml", "mps"}:
         raise ValueError(f"安装脚本不支持写入设备: {device!r}")
     config_path = ROOT_DIR / "configs" / "config.json"
     with open(config_path, "r", encoding="utf-8") as handle:
@@ -461,17 +610,21 @@ def save_runtime_device(device: str) -> None:
     print(f"已写入运行设备: {device} ({config_path})")
 
 
-def check_onnx_runtime_variant(venv_py: str, gpu: bool) -> bool:
+def check_onnx_runtime_variant(venv_py: str, gpu: bool = None, backend: str = None) -> bool:
     """检查当前安装模式只存在对应的 ONNX Runtime 发行包。"""
-    required_dist = "onnxruntime-gpu" if gpu else "onnxruntime"
-    conflicting_dist = "onnxruntime" if gpu else "onnxruntime-gpu"
-    conflicting_version = get_installed_version(venv_py, conflicting_dist)
-    if conflicting_version:
-        print(
-            f"  [x] ONNX Runtime 检测到冲突: {conflicting_dist} "
-            f"{conflicting_version}；当前模式只允许 {required_dist}"
-        )
-        return False
+    backend = str(backend or ("cuda" if gpu else "cpu")).strip().lower()
+    if backend not in BACKEND_SETTINGS:
+        raise ValueError(f"不支持的安装后端: {backend!r}")
+    settings = BACKEND_SETTINGS[backend]
+    required_dist = settings["runtime_dist"]
+    for conflicting_dist in settings["conflicting_runtime_dists"]:
+        conflicting_version = get_installed_version(venv_py, conflicting_dist)
+        if conflicting_version:
+            print(
+                f"  [x] ONNX Runtime 检测到冲突: {conflicting_dist} "
+                f"{conflicting_version}；当前模式只允许 {required_dist}"
+            )
+            return False
     required_version = get_installed_version(venv_py, required_dist)
     if not required_version:
         print(f"  [x] ONNX Runtime 缺少 {required_dist}")
@@ -495,10 +648,20 @@ def launch_app(venv_py):
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="RVC 安装脚本")
-    parser.add_argument("--cpu", action="store_true", help="安装 CPU 版本")
+    parser.add_argument("--cpu", action="store_true", help="安装 CPU 版本（--backend cpu 的兼容别名）")
+    parser.add_argument(
+        "--backend",
+        choices=SUPPORTED_BACKENDS,
+        default=None,
+        help="安装后端: auto/cpu/cuda/rocm/xpu/directml/mps",
+    )
     parser.add_argument("--check", action="store_true", help="仅检查依赖")
     parser.add_argument("--no-run", action="store_true", help="安装后不启动")
     args = parser.parse_args()
+
+    if args.cpu and args.backend not in {None, "cpu"}:
+        parser.error("--cpu 不能与非 CPU 的 --backend 同时使用")
+    requested_backend = "cpu" if args.cpu else (args.backend or "auto")
 
     print("=" * 50)
     print("RVC 安装程序")
@@ -510,23 +673,26 @@ def main():
         sys.exit(1)
 
     venv_py = get_venv_python()
+    backend = resolve_install_backend(requested_backend, venv_py=venv_py)
+    settings = BACKEND_SETTINGS[backend]
+    print(f"安装后端: {backend}")
 
     # 2. 安装依赖
     print(f"\n[2/3] 检查依赖")
     if args.check:
         missing = check_all(venv_py)
-        runtime_ok = check_onnx_runtime_variant(venv_py, gpu=not args.cpu)
+        runtime_ok = check_onnx_runtime_variant(venv_py, backend=backend)
+        backend_ok = check_backend_available(venv_py, backend)
         dependencies_ok = check_dependency_consistency(venv_py)
-        if missing or not runtime_ok or not dependencies_ok:
+        if missing or not runtime_ok or not backend_ok or not dependencies_ok:
             sys.exit(1)
         return
 
-    gpu = not args.cpu
-    if not install_all(venv_py, gpu=gpu):
+    if not install_all(venv_py, backend=backend):
         print("\n部分依赖安装失败，可尝试手动安装。")
         sys.exit(1)
 
-    save_runtime_device("cuda" if gpu else "cpu")
+    save_runtime_device(settings["runtime_device"])
 
     # 3. 启动应用
     if args.no_run:

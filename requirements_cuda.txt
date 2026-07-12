@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# CUDA ONNX Runtime. Install a matching CUDA PyTorch stack first.
+audio-separator[gpu]==0.44.1

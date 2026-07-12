@@ -1590,5 +1590,22 @@
   "齿音主要集中在": "Sibilance is mainly concentrated in",
   "齿音和呼吸音处理": "Sibilance and breath sound processing",
   "齿音衰减量": "Sibilance attenuation",
-  "龙宫": "Dragon Palace"
+  "龙宫": "Dragon Palace",
+  "安装所有缺失依赖": "Install all missing dependencies",
+  "并保持所选计算后端的运行时组合": "while preserving the selected compute backend runtime combination",
+  "计算后端不可用": "Compute backend is unavailable",
+  "计算后端可用": "Compute backend is available",
+  "的兼容别名": " compatibility alias",
+  "安装后端": "Installation backend",
+  "不能与非": "cannot be used with a non-",
+  "同时使用": "at the same time",
+  "不支持的安装后端": "Unsupported installation backend",
+  "需要先安装并验证对应的": "requires the matching ",
+  "运行栈": "runtime stack to be installed and verified first",
+  "安装器不会用其他": "The installer will not use another ",
+  "版本覆盖它": "version to overwrite it",
+  "不支持当前计算设备": "does not support the selected compute device",
+  "未启用该": "did not enable the requested ",
+  "无法使用所选计算设备": "cannot use the selected compute device",
+  "实际运行设备": "active runtime device"
 }

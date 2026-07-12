@@ -22,7 +22,10 @@ class ColabNotebookTests(unittest.TestCase):
         self.assertIn("uv python install 3.10", self.source)
         self.assertIn("uv venv --seed --python 3.10 venv310", self.source)
         self.assertIn("$PY -m pip --version", self.source)
-        self.assertIn("uv run --python 3.10 python install.py --no-run", self.source)
+        self.assertIn(
+            "uv run --python 3.10 python install.py --backend cuda --no-run",
+            self.source,
+        )
         self.assertIn("assert sys.version_info[:2] == (3, 10)", self.source)
 
     def test_colab_preinstalls_gpu_torch_before_project_dependencies(self):
@@ -43,9 +46,10 @@ class ColabNotebookTests(unittest.TestCase):
             "ROFORMER_DEREVERB_DEFAULT_MODEL == 'dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt'",
             self.source,
         )
-        self.assertIn("'onnxruntime-gpu': '1.18.0'", self.source)
+        self.assertIn("'onnxruntime-gpu': '>=1.17'", self.source)
+        self.assertIn("SpecifierSet(constraint)", self.source)
         self.assertIn("'CUDAExecutionProvider' not in onnxruntime.get_available_providers()", self.source)
-        self.assertNotIn("'onnxruntime': '1.18.0'", self.source)
+        self.assertNotIn("'onnxruntime':", self.source)
 
     def test_colab_no_longer_documents_legacy_single_roformer_as_default(self):
         self.assertNotIn("MVSEP Vocals SDR 11.01", self.source)

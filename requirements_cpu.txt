@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# CPU ONNX Runtime for CPU, ROCm, XPU, and MPS routes.
+audio-separator[cpu]==0.44.1

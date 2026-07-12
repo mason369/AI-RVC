@@ -55,7 +55,10 @@ def get_audio_separator_unavailable_reason() -> str:
 
 
 def _audio_separator_install_message() -> str:
-    message = "请安装 audio-separator[cpu] 或 audio-separator[gpu]"
+    message = (
+        "请安装 audio-separator[cpu]、audio-separator[gpu] "
+        "或 audio-separator[dml]"
+    )
     reason = get_audio_separator_unavailable_reason()
     if reason:
         message += f"；原始错误: {reason}"
@@ -504,11 +507,64 @@ def _install_custom_audio_separator_models(separator: Separator) -> None:
     separator._ai_rvc_custom_models_installed = True
 
 
+def _configure_audio_separator_runtime(separator: Separator, device: str) -> None:
+    """Bind audio-separator to the device selected by AI-RVC."""
+    normalized = str(device).strip().lower()
+    import onnxruntime as ort
+
+    if normalized.startswith("privateuseone") or normalized.startswith("dml"):
+        import torch_directml
+
+        torch_device = torch_directml.device(torch_directml.default_device())
+        expected_provider = "DmlExecutionProvider"
+    elif normalized.startswith("cuda"):
+        torch_device = torch.device(normalized)
+        expected_provider = (
+            "CPUExecutionProvider"
+            if getattr(torch.version, "hip", None) is not None
+            else "CUDAExecutionProvider"
+        )
+    elif normalized.startswith("xpu"):
+        torch_device = torch.device(normalized)
+        expected_provider = "CPUExecutionProvider"
+    elif normalized == "mps":
+        torch_device = torch.device("mps")
+        expected_provider = "CPUExecutionProvider"
+    elif normalized == "cpu":
+        torch_device = torch.device("cpu")
+        expected_provider = "CPUExecutionProvider"
+    else:
+        raise RuntimeError(f"audio-separator 不支持当前计算设备: {device}")
+
+    try:
+        probe = torch.zeros(1).to(torch_device)
+        del probe
+    except Exception as exc:
+        raise RuntimeError(
+            f"audio-separator 无法使用所选计算设备 {torch_device}: {exc}"
+        ) from exc
+
+    available_providers = ort.get_available_providers()
+    if expected_provider not in available_providers:
+        raise RuntimeError(
+            f"audio-separator 请求 {expected_provider}，但 ONNX Runtime 未提供；"
+            f"available_providers={available_providers}"
+        )
+
+    separator.torch_device = torch_device
+    separator.onnx_execution_provider = [expected_provider]
+    log.info(
+        "audio-separator 实际运行设备: "
+        f"torch={torch_device}, onnx={separator.onnx_execution_provider}"
+    )
+
+
 def _load_audio_separator_model(
     *,
     model_spec: ModelSpec,
     output_dir: str,
     model_dir: str,
+    device: str,
 ) -> Separator:
     preset_name = _parse_ensemble_preset(model_spec)
     custom_preset = _CUSTOM_ENSEMBLE_PRESETS.get(preset_name or "")
@@ -516,11 +572,13 @@ def _load_audio_separator_model(
         "log_level": _logging.WARNING,
         "output_dir": output_dir,
         "model_file_dir": model_dir,
+        "use_directml": str(device).lower().startswith(("dml", "privateuseone")),
     }
     if preset_name and custom_preset is None:
         separator_kwargs["ensemble_preset"] = preset_name
 
     separator = Separator(**separator_kwargs)
+    _configure_audio_separator_runtime(separator, device)
     _install_custom_audio_separator_models(separator)
     if custom_preset is not None:
         separator.ensemble_preset = preset_name
@@ -624,9 +682,27 @@ class _BSPolarFormerRuntime:
         return onnx_path, config_path
 
     @staticmethod
+    def _onnx_provider_kind(device: str) -> str:
+        """Map each compute backend to the explicitly supported PolarFormer provider."""
+        normalized = str(device).strip().lower()
+        if normalized.startswith("cuda"):
+            if getattr(torch.version, "hip", None) is not None:
+                return "cpu"
+            return "cuda"
+        if normalized.startswith("dml") or normalized.startswith("privateuseone"):
+            return "directml"
+        if normalized == "cpu" or normalized.startswith("xpu") or normalized == "mps":
+            return "cpu"
+        raise RuntimeError(
+            "BS PolarFormer ONNX 不支持当前计算设备；"
+            f"当前设备为 {device}"
+        )
+
+    @staticmethod
     def _select_onnx_providers(ort_module, device: str) -> list:
         available = ort_module.get_available_providers()
-        if device.startswith("cuda"):
+        provider_kind = _BSPolarFormerRuntime._onnx_provider_kind(device)
+        if provider_kind == "cuda":
             if "CUDAExecutionProvider" not in available:
                 raise RuntimeError(
                     "已选择 CUDA，但 onnxruntime 未提供 CUDAExecutionProvider；"
@@ -642,7 +718,7 @@ class _BSPolarFormerRuntime:
                 "CPUExecutionProvider",
             ]
 
-        if device.startswith("dml") or device.startswith("privateuseone"):
+        if provider_kind == "directml":
             if "DmlExecutionProvider" not in available:
                 raise RuntimeError(
                     "已选择 DirectML，但 onnxruntime 未提供 DmlExecutionProvider；"
@@ -650,11 +726,6 @@ class _BSPolarFormerRuntime:
                 )
             return ["DmlExecutionProvider", "CPUExecutionProvider"]
 
-        if device != "cpu":
-            raise RuntimeError(
-                "BS PolarFormer ONNX 当前只支持 CPU、CUDA 或 DirectML provider；"
-                f"当前设备为 {device}"
-            )
         if "CPUExecutionProvider" not in available:
             raise RuntimeError("onnxruntime 未提供 CPUExecutionProvider")
         return ["CPUExecutionProvider"]
@@ -671,17 +742,21 @@ class _BSPolarFormerRuntime:
             config = yaml.full_load(handle)
 
         providers = self._select_onnx_providers(ort, self.device)
+        provider_kind = self._onnx_provider_kind(self.device)
         log.info(
             f"正在加载 {BS_POLARFORMER_DISPLAY_NAME}: "
             f"{onnx_path.name}, providers={providers}"
         )
         self._session = ort.InferenceSession(str(onnx_path), providers=providers)
         active_providers = self._session.get_providers()
-        if self.device.startswith("cuda") and (
-            not active_providers or active_providers[0] != "CUDAExecutionProvider"
-        ):
+        expected_provider = {
+            "cuda": "CUDAExecutionProvider",
+            "directml": "DmlExecutionProvider",
+            "cpu": "CPUExecutionProvider",
+        }[provider_kind]
+        if not active_providers or active_providers[0] != expected_provider:
             raise RuntimeError(
-                "BS PolarFormer 请求 CUDA，但 ONNX Runtime 未启用 CUDAExecutionProvider；"
+                f"BS PolarFormer 请求 {expected_provider}，但 ONNX Runtime 未启用该 provider；"
                 f"active_providers={active_providers}"
             )
         log.info(f"BS PolarFormer 实际 ONNX providers: {active_providers}")
@@ -1034,6 +1109,7 @@ class _HybridLeapXePolarFormerRuntime:
             model_spec=LEAP_XE_VOCALS_MODEL,
             output_dir=str(leap_dir),
             model_dir=self.model_dir,
+            device=self.device,
         )
         try:
             leap_input_path, original_duration = _pad_audio_to_min_duration(
@@ -1155,6 +1231,7 @@ class RoformerSeparator:
                 model_spec=model_name,
                 output_dir=target_dir,
                 model_dir=model_dir,
+                device=self.device,
             )
         self.separator = separator
         self._init_output_dir = target_dir
@@ -1328,6 +1405,7 @@ class KaraokeSeparator:
             model_spec=model_name,
             output_dir=target_dir,
             model_dir=model_dir,
+            device=self.device,
         )
         self.separator = separator
         self._init_output_dir = target_dir
@@ -1533,6 +1611,7 @@ class RoformerDereverbSeparator:
             model_spec=model_name,
             output_dir=target_dir,
             model_dir=model_dir,
+            device=self.device,
         )
         self.separator = separator
         self._init_output_dir = target_dir

@@ -16,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.console_i18n import console_print as print
+from lib.device import get_device
 
 
 def parse_args() -> argparse.Namespace:
@@ -31,11 +32,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rms-mix-rate", type=float, required=True)
     parser.add_argument("--protect", type=float, required=True)
     parser.add_argument("--speaker-id", type=int, required=True)
+    parser.add_argument("--device", default="auto")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    selected_device = get_device(args.device)
     repo_root = Path(__file__).resolve().parent.parent
     official_root = repo_root / "_official_rvc"
 
@@ -49,6 +52,8 @@ def main() -> int:
     from infer.modules.vc.modules import VC  # type: ignore
 
     config = Config()
+    config.device = selected_device
+    config.dml = str(selected_device).startswith("privateuseone")
     vc = VC(config)
     vc.get_vc(args.sid)
 
