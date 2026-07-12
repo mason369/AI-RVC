@@ -81,3 +81,9 @@ outputs/
 /tools/ffmpeg/
 /scratch/
 /docs/default-quality-audit.md
+
+# Private planning and analysis documents
+/docs/plans/
+/docs/reports/
+/docs/superpowers/plans/
+/docs/superpowers/specs/
