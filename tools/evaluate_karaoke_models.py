@@ -153,7 +153,7 @@ def parse_args() -> argparse.Namespace:
         "--models",
         nargs="*",
         default=None,
-        help="Karaoke model filenames. Defaults to the current strict SOTA default.",
+        help="Karaoke model filenames. Defaults to the current MVSep 9205 avg_wave route.",
     )
     parser.add_argument("--reference-lead", default=None, help="Optional ground-truth/reference lead stem.")
     parser.add_argument("--reference-backing", default=None, help="Optional ground-truth/reference backing stem.")

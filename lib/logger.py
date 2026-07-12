@@ -6,6 +6,11 @@ import sys
 import logging
 from datetime import datetime
 
+from lib.console_encoding import configure_console_encoding
+from lib.console_i18n import localize_console_message
+
+configure_console_encoding()
+
 try:
     from colorama import init, Fore, Style, Back
     init(autoreset=True)  # 初始化 colorama (Windows 兼容), autoreset确保每行重置
@@ -23,13 +28,6 @@ except ImportError:
 
 class Logger:
     """统一日志工具"""
-
-    SAFE_CHAR_MAP = {
-        "✓": "[OK] ",
-        "✗": "[X] ",
-        "→": "->",
-        "◆": "*",
-    }
 
     COLORS = {
         "DEBUG": Fore.LIGHTBLACK_EX,
@@ -53,34 +51,9 @@ class Logger:
     verbose = True
 
     @staticmethod
-    def _sanitize_console_text(text: str) -> str:
-        """将不兼容当前终端编码的字符替换为安全文本。"""
-        sanitized = text
-        for src, dst in Logger.SAFE_CHAR_MAP.items():
-            sanitized = sanitized.replace(src, dst)
-        return sanitized
-
-    @staticmethod
     def _emit(text: str):
-        """安全输出到终端，避免 Windows/GBK 控制台因 Unicode 崩溃。"""
-        try:
-            print(text, flush=True)
-            return
-        except UnicodeEncodeError:
-            pass
-
-        fallback = Logger._sanitize_console_text(text)
-        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
-        try:
-            print(
-                fallback.encode(encoding, errors="replace").decode(encoding),
-                flush=True,
-            )
-        except Exception:
-            print(
-                fallback.encode("ascii", errors="replace").decode("ascii"),
-                flush=True,
-            )
+        """Localize and write one project log line to the UTF-8 console."""
+        print(localize_console_message(text), flush=True)
 
     @staticmethod
     def _log(level: str, msg: str, force_print: bool = True):
@@ -223,7 +196,8 @@ class ColoredFormatter(logging.Formatter):
         module_name = record.name
 
         # 格式化输出
-        formatted = f"{color}{timestamp} | {level_name} | {module_name} | {record.getMessage()}{reset}"
+        message = localize_console_message(record.getMessage())
+        formatted = f"{color}{timestamp} | {level_name} | {module_name} | {message}{reset}"
         return formatted
 
 

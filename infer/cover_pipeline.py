@@ -21,6 +21,8 @@ from infer.separator import (
     ROFORMER_DEFAULT_MODEL,
     ROFORMER_DEREVERB_DEFAULT_MODEL,
     KARAOKE_DEFAULT_MODEL,
+    _is_hybrid_leap_xe_polarformer_model_spec,
+    get_separator_chain_labels,
     check_demucs_available,
     check_roformer_available,
     get_audio_separator_unavailable_reason,
@@ -76,6 +78,7 @@ def _clean_output_suffixes(output_name_suffixes: Optional[Dict[str, str]]) -> Di
         "vocals": "vocals",
         "converted_vocals": "converted",
         "accompaniment": "accompaniment",
+        "accompaniment_without_harmony": "accompaniment_without_harmony",
         "lead_vocals": "lead_vocals",
         "backing_vocals": "backing_vocals",
     }
@@ -1002,8 +1005,16 @@ class CoverPipeline:
             split=split
         )
 
+    def _release_primary_separator(self) -> None:
+        """Unload the primary separator before the next GPU-heavy stage."""
+        if self.separator is not None:
+            self.separator.unload_model()
+            self.separator = None
+        gc.collect()
+        empty_device_cache()
+
     def _init_karaoke_separator(self, model_name: str = KARAOKE_DEFAULT_MODEL):
-        """初始化主唱/和声分离器"""
+        """初始化卡拉OK分离器；默认 MVSep 9205 输出主唱与带和声伴奏。"""
         if not check_roformer_available():
             raise ImportError("请安装 audio-separator: pip install audio-separator[gpu]")
 
@@ -1025,17 +1036,17 @@ class CoverPipeline:
 
     def _separate_karaoke(
         self,
-        vocals_path: str,
+        source_audio_path: str,
         session_dir: Path,
         karaoke_model: str = KARAOKE_DEFAULT_MODEL,
     ) -> Tuple[str, str]:
-        """分离主唱与和声，并在分离后立即释放显存"""
+        """按 TelKNet 口径从原始整曲分离主唱与带和声伴奏，并立即释放显存。"""
         karaoke_dir = session_dir / "karaoke"
         karaoke_dir.mkdir(parents=True, exist_ok=True)
 
         self._init_karaoke_separator(karaoke_model)
-        lead_vocals_path, backing_vocals_path = self.karaoke_separator.separate(
-            vocals_path,
+        lead_vocals_path, accompaniment_with_harmony_path = self.karaoke_separator.separate(
+            source_audio_path,
             str(karaoke_dir),
         )
 
@@ -1045,7 +1056,7 @@ class CoverPipeline:
         gc.collect()
         empty_device_cache()
 
-        return lead_vocals_path, backing_vocals_path
+        return lead_vocals_path, accompaniment_with_harmony_path
 
     @staticmethod
     def _ensure_2d(audio: np.ndarray) -> np.ndarray:
@@ -3559,99 +3570,62 @@ class CoverPipeline:
         sf.write(str(out_path), mono, sr)
         return str(out_path)
 
-    def _suppress_lead_bleed_from_backing(
+    def _derive_backing_vocals(
         self,
-        lead_audio: np.ndarray,
-        backing_audio: np.ndarray,
-    ) -> np.ndarray:
-        """
-        抑制 backing 里残留的主唱，减少 converted lead + 原主唱残留造成的重音。
-        """
-        import librosa
-
-        n_fft = 4096
-        hop_length = 1024
-        suppression = 0.9
-        min_mask = 0.08
-        eps = 1e-8
-
-        cleaned = np.zeros_like(backing_audio, dtype=np.float32)
-        for ch in range(backing_audio.shape[0]):
-            backing_ch = backing_audio[ch]
-            lead_ch = lead_audio[ch]
-            backing_spec = librosa.stft(
-                backing_ch, n_fft=n_fft, hop_length=hop_length, win_length=n_fft
-            )
-            lead_spec = librosa.stft(
-                lead_ch, n_fft=n_fft, hop_length=hop_length, win_length=n_fft
-            )
-
-            backing_mag = np.abs(backing_spec)
-            lead_mag = np.abs(lead_spec)
-            residual_mag = np.maximum(backing_mag - suppression * lead_mag, 0.0)
-            soft_mask = residual_mag / (backing_mag + eps)
-            soft_mask = np.clip(soft_mask, min_mask, 1.0)
-
-            cleaned_spec = backing_spec * soft_mask
-            cleaned[ch] = librosa.istft(
-                cleaned_spec, hop_length=hop_length, win_length=n_fft, length=len(backing_ch)
-            )
-
-        return cleaned.astype(np.float32)
-
-    def _merge_backing_into_accompaniment(
-        self,
-        backing_vocals_path: str,
-        accompaniment_path: str,
-        session_dir: Path,
-        lead_vocals_path: Optional[str] = None,
+        vocals_with_harmony_path: str,
+        lead_vocals_path: str,
+        output_path: str,
     ) -> str:
-        """将和声轨混入伴奏轨；可选抑制 backing 内残留主唱"""
-        import librosa
+        """按 TelKNet 口径用“人声混合轨 - 主唱”生成纯和声轨。"""
         import soundfile as sf
 
-        backing, backing_sr = librosa.load(backing_vocals_path, sr=None, mono=False)
-        accompaniment, accompaniment_sr = librosa.load(accompaniment_path, sr=None, mono=False)
+        vocal_mix, vocal_mix_sr = sf.read(
+            vocals_with_harmony_path,
+            dtype="float32",
+            always_2d=True,
+        )
+        lead, lead_sr = sf.read(
+            lead_vocals_path,
+            dtype="float32",
+            always_2d=True,
+        )
+        vocal_mix = vocal_mix.T
+        lead = lead.T
+        lead = self._resample_audio(
+            lead,
+            orig_sr=lead_sr,
+            target_sr=vocal_mix_sr,
+        )
+        lead = self._match_channels(lead, vocal_mix.shape[0])
 
-        backing = self._ensure_2d(backing).astype(np.float32)
-        accompaniment = self._ensure_2d(accompaniment).astype(np.float32)
-
-        if backing_sr != accompaniment_sr:
-            backing = self._resample_audio(backing, orig_sr=backing_sr, target_sr=accompaniment_sr)
-
-        if lead_vocals_path:
-            lead, lead_sr = librosa.load(lead_vocals_path, sr=None, mono=False)
-            lead = self._ensure_2d(lead).astype(np.float32)
-            if lead_sr != accompaniment_sr:
-                lead = self._resample_audio(lead, orig_sr=lead_sr, target_sr=accompaniment_sr)
-            lead = self._match_channels(lead, backing.shape[0])
-
-            min_len = min(backing.shape[1], lead.shape[1])
-            backing = backing[:, :min_len]
-            lead = lead[:, :min_len]
-            backing = self._suppress_lead_bleed_from_backing(
-                lead_audio=lead,
-                backing_audio=backing,
+        max_len = max(vocal_mix.shape[1], lead.shape[1])
+        if vocal_mix.shape[1] < max_len:
+            vocal_mix = np.pad(
+                vocal_mix,
+                ((0, 0), (0, max_len - vocal_mix.shape[1])),
+                mode="constant",
+            )
+        if lead.shape[1] < max_len:
+            lead = np.pad(
+                lead,
+                ((0, 0), (0, max_len - lead.shape[1])),
+                mode="constant",
             )
 
-        accompaniment = self._match_channels(accompaniment, backing.shape[0])
-        max_len = max(accompaniment.shape[1], backing.shape[1])
-        if accompaniment.shape[1] < max_len:
-            accompaniment = np.pad(
-                accompaniment, ((0, 0), (0, max_len - accompaniment.shape[1])), mode="constant"
-            )
-        if backing.shape[1] < max_len:
-            backing = np.pad(backing, ((0, 0), (0, max_len - backing.shape[1])), mode="constant")
+        backing = vocal_mix - lead
+        peak = float(np.max(np.abs(backing))) if backing.size else 0.0
+        if peak > 0.98:
+            backing = backing * (0.98 / peak)
 
-        backing_gain = 1.00
-        backing = backing * backing_gain
-        log.detail(f"和声混入伴奏增益: {backing_gain:.2f}")
-        mixed = accompaniment + backing
-        mixed = soft_clip(mixed, threshold=0.92, ceiling=0.98)
-
-        out_path = session_dir / "accompaniment_with_backing.wav"
-        sf.write(str(out_path), mixed.T, accompaniment_sr)
-        return str(out_path)
+        destination = Path(output_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        sf.write(
+            str(destination),
+            backing.T.astype(np.float32),
+            vocal_mix_sr,
+            subtype="PCM_24",
+        )
+        return str(destination)
 
     def _init_rvc_pipeline(self):
         """初始化 RVC 管道"""
@@ -4053,7 +4027,7 @@ class CoverPipeline:
             demucs_shifts: Demucs shifts 参数
             demucs_overlap: Demucs overlap 参数
             demucs_split: Demucs split 参数
-            roformer_model: RoFormer / audio-separator 模型或 ensemble preset
+            roformer_model: 混合 SOTA / BS PolarFormer ONNX / RoFormer audio-separator 模型或 ensemble preset
             hubert_layer: HuBERT 输出层
             silence_gate: 是否启用静音门限
             silence_threshold_db: 静音阈值 (dB, 相对峰值)
@@ -4086,6 +4060,15 @@ class CoverPipeline:
         effective_karaoke_separation = False if effective_official_mode else karaoke_separation
         effective_karaoke_merge_backing = False if effective_official_mode else karaoke_merge_backing_into_accompaniment
         effective_use_official = True if effective_official_mode else use_official
+
+        if (
+            effective_karaoke_separation
+            and str(karaoke_model).strip().lower() != KARAOKE_DEFAULT_MODEL.lower()
+        ):
+            raise ValueError(
+                "当前翻唱输出合同只支持 ensemble:mvsep_9205_avg；"
+                "其他 Karaoke 模型可使用评估工具单独运行，不能接入默认成品混音"
+            )
 
         # 官方模式：强制使用官方推荐参数，确保1:1纯净推理
         if effective_official_mode:
@@ -4135,7 +4118,7 @@ class CoverPipeline:
             log.config(f"UVR5模型: {uvr5_model or '自动选择'}")
             log.config(f"UVR5激进度: {uvr5_agg}")
         elif effective_separator == "roformer":
-            log.config(f"Roformer模型: {roformer_model}")
+            log.config(f"分离模型: {roformer_model}")
         else:
             log.config(f"Demucs模型: {demucs_model}")
             log.config(f"Demucs shifts: {demucs_shifts}")
@@ -4148,11 +4131,26 @@ class CoverPipeline:
         if effective_karaoke_separation:
             log.config(f"Karaoke模型: {karaoke_model}")
             log.config(
-                "Karaoke和声混入伴奏: "
-                f"{'开启' if effective_karaoke_merge_backing else '关闭'}"
+                "成品伴奏来源: "
+                + (
+                    "MVSep Back+Instrumental（带和声伴奏）"
+                    if effective_karaoke_merge_backing
+                    else "基础分离器伴奏"
+                )
             )
         elif effective_official_mode:
             log.config("Karaoke分离: 官方模式下关闭")
+
+        separator_chain_labels = get_separator_chain_labels(
+            separator_name=effective_separator,
+            roformer_model=roformer_model,
+            karaoke_enabled=effective_karaoke_separation,
+            karaoke_model=karaoke_model,
+        )
+        if separator_chain_labels:
+            log.config("TelKNet分离链路（本次实际执行）:")
+            for separator_chain_label in separator_chain_labels:
+                log.config(f"  {separator_chain_label}")
 
         def report_progress(msg: str, step: int):
             if progress_callback:
@@ -4161,7 +4159,16 @@ class CoverPipeline:
 
         try:
             # ===== 步骤 1: 人声分离 =====
-            report_progress("正在分离人声和伴奏...", 1)
+            default_pure_accompaniment_route = (
+                effective_separator == "roformer"
+                and _is_hybrid_leap_xe_polarformer_model_spec(roformer_model)
+            )
+            report_progress(
+                "正在分离人声和纯伴奏..."
+                if default_pure_accompaniment_route
+                else "正在分离人声和伴奏...",
+                1,
+            )
 
             if effective_official_mode:
                 log.model("官方模式：使用内置官方UVR5进行人声分离")
@@ -4188,7 +4195,11 @@ class CoverPipeline:
                 )
                 log.success("UVR5分离完成")
             elif effective_separator == "roformer":
-                log.model("使用高质量 RoFormer ensemble 进行人声分离")
+                log.model(
+                    "使用当前高质量分离模型进行人声/纯伴奏分离"
+                    if default_pure_accompaniment_route
+                    else "使用当前高质量分离模型进行人声/伴奏分离"
+                )
                 self._init_separator(
                     "roformer",
                     roformer_model=roformer_model,
@@ -4197,7 +4208,11 @@ class CoverPipeline:
                     input_audio,
                     str(session_dir)
                 )
-                log.success("RoFormer ensemble 分离完成")
+                log.success(
+                    "人声/纯伴奏分离完成"
+                    if default_pure_accompaniment_route
+                    else "人声/伴奏分离完成"
+                )
             else:
                 log.model(f"使用Demucs进行人声分离: {demucs_model}")
                 self._init_separator(
@@ -4211,27 +4226,58 @@ class CoverPipeline:
                     str(session_dir)
                 )
                 log.success("Demucs分离完成")
-            gc.collect()
-            empty_device_cache()
+            self._release_primary_separator()
             log.detail("已清理设备缓存")
 
-            # ===== 步骤 1.5: Karaoke 分离（主唱/和声）=====
+            # ===== 步骤 1.5: Karaoke 分离（默认：主唱 / 带和声伴奏）=====
             original_vocals_path = vocals_path
             lead_vocals_path = None
             backing_vocals_path = None
+            accompaniment_with_harmony_path = None
 
             if effective_karaoke_separation:
-                report_progress("正在分离主唱和和声...", step_karaoke)
-                lead_vocals_path, backing_vocals_path = self._separate_karaoke(
-                    vocals_path=vocals_path,
+                report_progress("正在从原曲分离主唱和带和声伴奏...", step_karaoke)
+                lead_vocals_path, accompaniment_with_harmony_path = self._separate_karaoke(
+                    source_audio_path=input_audio,
                     session_dir=session_dir,
                     karaoke_model=karaoke_model,
+                )
+                backing_vocals_path = self._derive_backing_vocals(
+                    vocals_with_harmony_path=original_vocals_path,
+                    lead_vocals_path=lead_vocals_path,
+                    output_path=str(session_dir / "backing_vocals.wav"),
                 )
                 lead_size = Path(lead_vocals_path).stat().st_size if Path(lead_vocals_path).exists() else 0
                 backing_size = Path(backing_vocals_path).stat().st_size if Path(backing_vocals_path).exists() else 0
                 log.audio(f"主唱文件: {Path(lead_vocals_path).name} ({_format_size(lead_size)})")
                 log.audio(f"和声文件: {Path(backing_vocals_path).name} ({_format_size(backing_size)})")
                 vocals_path = lead_vocals_path
+
+            accompaniment_without_harmony_path = accompaniment_path
+            mix_accompaniment_path = accompaniment_without_harmony_path
+            if effective_karaoke_separation and accompaniment_with_harmony_path:
+                # 公开输出合同固定：accompaniment 始终是 MVSep Back+Instrumental。
+                accompaniment_path = accompaniment_with_harmony_path
+                accompaniment_size = (
+                    Path(accompaniment_path).stat().st_size
+                    if Path(accompaniment_path).exists()
+                    else 0
+                )
+                log.audio(
+                    "带和声伴奏文件: "
+                    f"{Path(accompaniment_path).name} "
+                    f"({_format_size(accompaniment_size)})"
+                )
+                if effective_karaoke_merge_backing:
+                    mix_accompaniment_path = accompaniment_path
+                    log.detail(
+                        "成品直接使用 MVSep Back+Instrumental，不叠加 PolarFormer 纯伴奏"
+                    )
+                else:
+                    log.detail(
+                        "成品使用 PolarFormer 纯伴奏；accompaniment.wav 仍按公开合同导出 "
+                        "MVSep Back+Instrumental"
+                    )
 
             normalized_vc_preprocess_mode = str(vc_preprocess_mode).strip().lower()
             if normalized_vc_preprocess_mode not in {"auto", "uvr_deecho"}:
@@ -4613,23 +4659,10 @@ class CoverPipeline:
                 except Exception as e:
                     log.warning(f"混入原始人声失败，使用转换人声: {e}")
 
-            if (
-                effective_karaoke_separation
-                and effective_karaoke_merge_backing
-                and backing_vocals_path
-            ):
-                accompaniment_path = self._merge_backing_into_accompaniment(
-                    backing_vocals_path=backing_vocals_path,
-                    accompaniment_path=accompaniment_path,
-                    session_dir=session_dir,
-                    lead_vocals_path=lead_vocals_path,
-                )
-                log.detail("已将和声混入伴奏轨道")
-
             foreground_report = self._prepare_mix_vocal_foreground(
                 source_vocals_path=vc_input_path,
                 vocals_path=mix_vocals_path,
-                accompaniment_path=accompaniment_path,
+                accompaniment_path=mix_accompaniment_path,
                 output_path=str(session_dir / "converted_vocals_foreground.wav"),
             )
             mix_vocals_path = str(foreground_report.get("vocals_path", mix_vocals_path))
@@ -4643,7 +4676,7 @@ class CoverPipeline:
 
             mix_vocals_and_accompaniment(
                 vocals_path=mix_vocals_path,
-                accompaniment_path=accompaniment_path,
+                accompaniment_path=mix_accompaniment_path,
                 output_path=cover_path,
                 vocals_volume=vocals_volume,
                 accompaniment_volume=accompaniment_volume,
@@ -4683,6 +4716,10 @@ class CoverPipeline:
                 final_cover = str(output_path / f"{base_name}_{suffixes['cover']}.wav")
                 final_vocals = str(output_path / f"{base_name}_{suffixes['vocals']}.wav")
                 final_converted = str(output_path / f"{base_name}_{suffixes['converted_vocals']}.wav")
+                final_accompaniment_without_harmony = str(
+                    output_path
+                    / f"{base_name}_{suffixes['accompaniment_without_harmony']}.wav"
+                )
                 final_accompaniment = str(output_path / f"{base_name}_{suffixes['accompaniment']}.wav")
                 final_lead = str(output_path / f"{base_name}_{suffixes['lead_vocals']}.wav")
                 final_backing = str(output_path / f"{base_name}_{suffixes['backing_vocals']}.wav")
@@ -4693,6 +4730,14 @@ class CoverPipeline:
                 shutil.copy(original_vocals_path, final_vocals)
                 log.detail(f"复制转换人声: {final_converted}")
                 shutil.copy(converted_vocals_path, final_converted)
+                if effective_karaoke_separation:
+                    log.detail(
+                        f"复制不带和声伴奏文件: {final_accompaniment_without_harmony}"
+                    )
+                    shutil.copy(
+                        accompaniment_without_harmony_path,
+                        final_accompaniment_without_harmony,
+                    )
                 log.detail(f"复制伴奏文件: {final_accompaniment}")
                 shutil.copy(accompaniment_path, final_accompaniment)
 
@@ -4702,7 +4747,7 @@ class CoverPipeline:
                     log.detail(f"复制和声文件: {final_backing}")
                     shutil.copy(backing_vocals_path, final_backing)
 
-                # 完整保留本次会话所有中间文件（分离结果、主唱/和声、回灌前后文件等）
+                # 完整保留本次会话所有中间文件（分离结果、主唱/卡拉OK第二路、混音前后文件等）
                 all_files_dir = output_path / f"{input_name}{tag}_all_files_{session_dir.name}"
                 log.detail(f"复制全部中间文件: {all_files_dir}")
                 shutil.copytree(session_dir, all_files_dir, dirs_exist_ok=True)
@@ -4714,6 +4759,10 @@ class CoverPipeline:
                     "accompaniment": final_accompaniment,
                     "all_files_dir": str(all_files_dir),
                 }
+                if effective_karaoke_separation:
+                    result["accompaniment_without_harmony"] = (
+                        final_accompaniment_without_harmony
+                    )
                 if effective_karaoke_separation and lead_vocals_path and backing_vocals_path:
                     result["lead_vocals"] = final_lead
                     result["backing_vocals"] = final_backing
@@ -4725,13 +4774,13 @@ class CoverPipeline:
                     "accompaniment": accompaniment_path,
                     "all_files_dir": str(session_dir),
                 }
+                if effective_karaoke_separation:
+                    result["accompaniment_without_harmony"] = (
+                        accompaniment_without_harmony_path
+                    )
                 if effective_karaoke_separation and lead_vocals_path and backing_vocals_path:
                     result["lead_vocals"] = lead_vocals_path
                     result["backing_vocals"] = backing_vocals_path
-                if karaoke_separation and lead_vocals_path and backing_vocals_path:
-                    result["lead_vocals"] = lead_vocals_path
-                    result["backing_vocals"] = backing_vocals_path
-
             log.separator()
             report_progress("翻唱完成!", step_finalize)
             log.success(f"最终输出: {result['cover']}")

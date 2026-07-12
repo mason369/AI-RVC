@@ -11,6 +11,12 @@ from pathlib import Path
 
 import soundfile as sf
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from lib.console_i18n import console_print as print
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run vendored upstream RVC VC")

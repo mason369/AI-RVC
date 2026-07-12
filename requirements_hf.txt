@@ -4,6 +4,7 @@
 
 # PyTorch
 torch>=2.0.0
+torchvision>=0.15.0
 torchaudio>=2.0.0
 
 # Gradio 界面
@@ -19,6 +20,8 @@ librosa>=0.9.0
 soundfile>=0.12.0
 scipy>=1.10.0
 numpy>=2,<3
+PyYAML>=6.0
+einops>=0.7.0
 praat-parselmouth>=0.4.3
 torchcrepe>=0.0.20
 

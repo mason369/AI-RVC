@@ -94,7 +94,7 @@ def _run_case(case: Dict[str, Any], input_audio: Path, model_path: Path, index_p
             demucs_shifts=1,
             demucs_overlap=0.25,
             demucs_split=True,
-            roformer_model="ensemble:vocal_rvc",
+            roformer_model="hybrid:leap_xe90_vocals+polarformer62_instrumental",
             separator=case["separator"],
             uvr5_model="HP2_all_vocals",
             uvr5_agg=10,
@@ -106,7 +106,7 @@ def _run_case(case: Dict[str, Any], input_audio: Path, model_path: Path, index_p
             reverb_amount=0.0,
             backing_mix=0.0,
             karaoke_separation=bool(case["karaoke_separation"]),
-            karaoke_model="ensemble:karaoke",
+            karaoke_model="ensemble:mvsep_9205_avg",
             karaoke_merge_backing_into_accompaniment=True,
             vc_preprocess_mode=case["vc_preprocess_mode"],
             source_constraint_mode=case["source_constraint_mode"],
@@ -116,7 +116,13 @@ def _run_case(case: Dict[str, Any], input_audio: Path, model_path: Path, index_p
         )
         keys = ["cover", "vocals", "converted_vocals", "accompaniment", "all_files_dir"]
         if case["karaoke_separation"]:
-            keys.extend(["lead_vocals", "backing_vocals"])
+            keys.extend(
+                [
+                    "lead_vocals",
+                    "backing_vocals",
+                    "accompaniment_without_harmony",
+                ]
+            )
         return {
             "name": case["name"],
             "status": "pass",

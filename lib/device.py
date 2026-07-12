@@ -3,7 +3,16 @@
 设备检测模块 - 自动检测并选择最佳计算设备
 支持: CUDA (NVIDIA / AMD ROCm), XPU (Intel Arc via IPEX), DirectML, MPS (Apple), CPU
 """
+import sys
+from pathlib import Path
+
 import torch
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from lib.console_i18n import console_print as print
 
 
 def _has_xpu() -> bool:
@@ -42,30 +51,52 @@ def _is_rocm() -> bool:
 
 def get_device(preferred: str = "cuda") -> torch.device:
     """
-    获取计算设备，按优先级自动回退
+    获取明确指定的计算设备；只有 ``auto`` 会自动选择。
 
     Args:
-        preferred: 首选设备 ("cuda", "xpu", "directml", "mps", "cpu")
+        preferred: 设备 ("cuda", "xpu", "directml", "mps", "cpu", "auto")
 
     Returns:
         torch.device: 可用的计算设备
     """
     p = preferred.lower().strip()
 
-    # 精确匹配请求
-    if p in ("cuda", "cuda:0") and torch.cuda.is_available():
-        return torch.device("cuda")
-    if p in ("xpu", "xpu:0") and _has_xpu():
-        return torch.device("xpu")
-    if (p == "directml" or p.startswith("privateuseone")) and _has_directml():
+    if p.startswith("cuda"):
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                f"已选择 CUDA 设备 {preferred!r}，但当前 PyTorch 无法使用 CUDA/ROCm"
+            )
+        try:
+            return torch.device(p)
+        except (RuntimeError, ValueError) as exc:
+            raise ValueError(f"CUDA 设备名称无效: {preferred!r}") from exc
+
+    if p.startswith("xpu"):
+        if not _has_xpu():
+            raise RuntimeError(f"已选择 XPU 设备 {preferred!r}，但当前 XPU 不可用")
+        try:
+            return torch.device(p)
+        except (RuntimeError, ValueError) as exc:
+            raise ValueError(f"XPU 设备名称无效: {preferred!r}") from exc
+
+    if p == "directml" or p.startswith("privateuseone"):
+        if not _has_directml():
+            raise RuntimeError("已选择 DirectML，但当前未安装或无法使用 torch-directml")
         import torch_directml
         return torch_directml.device(torch_directml.default_device())
-    if p == "mps" and _has_mps():
+
+    if p == "mps":
+        if not _has_mps():
+            raise RuntimeError("已选择 MPS，但当前 Apple MPS 不可用")
         return torch.device("mps")
+
     if p == "cpu":
         return torch.device("cpu")
 
-    # 自动检测: CUDA (含 ROCm) > XPU > DirectML > MPS > CPU
+    if p != "auto":
+        raise ValueError(f"不支持的计算设备: {preferred!r}")
+
+    # 只有显式 auto 才按 CUDA（含 ROCm）> XPU > DirectML > MPS > CPU 选择。
     if torch.cuda.is_available():
         return torch.device("cuda")
     if _has_xpu():

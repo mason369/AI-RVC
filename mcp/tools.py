@@ -229,5 +229,13 @@ def get_model_status() -> Dict[str, bool]:
     Returns:
         Dict: 模型名称 -> 是否已下载
     """
-    from tools.download_models import check_all_models
-    return check_all_models()
+    from tools.download_models import check_all_models, check_default_separator_models
+
+    status = check_all_models()
+    status.update(
+        {
+            f"default_separator:{name}": exists
+            for name, exists in check_default_separator_models().items()
+        }
+    )
+    return status

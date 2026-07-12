@@ -32,12 +32,20 @@ class ColabNotebookTests(unittest.TestCase):
         self.assertNotIn("https://download.pytorch.org/whl/cpu", self.source)
 
     def test_colab_checks_current_processing_model_defaults(self):
-        self.assertIn("ROFORMER_DEFAULT_MODEL == 'ensemble:vocal_rvc'", self.source)
-        self.assertIn("KARAOKE_DEFAULT_MODEL == 'ensemble:karaoke'", self.source)
+        self.assertIn(
+            "ROFORMER_DEFAULT_MODEL == 'hybrid:leap_xe90_vocals+polarformer62_instrumental'",
+            self.source,
+        )
+        self.assertIn("KARAOKE_DEFAULT_MODEL == 'ensemble:mvsep_9205_avg'", self.source)
+        self.assertIn("check_required_default_separator_models", self.source)
+        self.assertIn("get_missing_default_separator_model_files", self.source)
         self.assertIn(
             "ROFORMER_DEREVERB_DEFAULT_MODEL == 'dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt'",
             self.source,
         )
+        self.assertIn("'onnxruntime-gpu': '1.18.0'", self.source)
+        self.assertIn("'CUDAExecutionProvider' not in onnxruntime.get_available_providers()", self.source)
+        self.assertNotIn("'onnxruntime': '1.18.0'", self.source)
 
     def test_colab_no_longer_documents_legacy_single_roformer_as_default(self):
         self.assertNotIn("MVSEP Vocals SDR 11.01", self.source)

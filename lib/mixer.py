@@ -22,12 +22,15 @@ except ImportError:
     PEDALBOARD_AVAILABLE = False
 
 
-def _probe_sample_rate(path: str, fallback: int = 44100) -> int:
-    """Probe sample rate from file metadata."""
+def _probe_sample_rate(path: str) -> int:
+    """Probe sample rate from file metadata and expose failures explicitly."""
     try:
-        return int(sf.info(path).samplerate)
-    except Exception:
-        return int(fallback)
+        sample_rate = int(sf.info(path).samplerate)
+    except Exception as exc:
+        raise RuntimeError(f"无法读取混音输入的采样率: {path}") from exc
+    if sample_rate <= 0:
+        raise RuntimeError(f"混音输入的采样率无效: {path}, sample_rate={sample_rate}")
+    return sample_rate
 
 
 def load_audio_for_mix(path: str, target_sr: Optional[int] = None) -> tuple:

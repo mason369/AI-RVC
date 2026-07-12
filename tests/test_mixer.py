@@ -1,11 +1,12 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import soundfile as sf
 
-from lib.mixer import mix_vocals_and_accompaniment
+from lib.mixer import _probe_sample_rate, mix_vocals_and_accompaniment
 
 
 def _rms(audio: np.ndarray) -> float:
@@ -13,6 +14,11 @@ def _rms(audio: np.ndarray) -> float:
 
 
 class MixStabilityTests(unittest.TestCase):
+    def test_sample_rate_probe_failure_is_not_replaced_with_a_default(self):
+        with mock.patch("lib.mixer.sf.info", side_effect=RuntimeError("broken metadata")):
+            with self.assertRaisesRegex(RuntimeError, "无法读取混音输入的采样率"):
+                _probe_sample_rate("broken.wav")
+
     def test_default_mix_does_not_duck_accompaniment_when_vocal_enters(self):
         sr = 48000
         duration = 3.0

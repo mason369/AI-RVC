@@ -49,9 +49,15 @@ def _compute_runtime_build_info() -> Dict[str, str]:
 RUNTIME_BUILD_INFO = _compute_runtime_build_info()
 
 
-def get_runtime_build_label() -> str:
+def get_runtime_build_label(language: str = "zh_CN") -> str:
     info = RUNTIME_BUILD_INFO
-    return f"当前运行代码标记: {info['timestamp']} ({info['source']})"
+    if language == "zh_CN":
+        prefix = "当前运行代码标记"
+    elif language == "en_US":
+        prefix = "Runtime build"
+    else:
+        raise ValueError(f"Unsupported runtime build label language: {language}")
+    return f"{prefix}: {info['timestamp']} ({info['source']})"
 
 
 def get_runtime_build_short_label() -> str:

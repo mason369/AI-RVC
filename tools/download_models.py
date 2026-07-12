@@ -7,9 +7,17 @@ import hashlib
 import shutil
 import subprocess
 import requests
+import logging as _logging
+import sys
 from pathlib import Path
 from tqdm import tqdm
 from typing import Optional, Dict, List
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from lib.console_i18n import console_print as print
 
 # 模型下载配置
 MODELS = {
@@ -231,6 +239,166 @@ def download_model(name: str) -> bool:
     return download_file(model_info["url"], model_path, name)
 
 
+def _download_hf_file(repo_id: str, filename: str, model_dir: Path) -> Path:
+    """Download a Hugging Face file into a local directory."""
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError as exc:
+        raise ImportError("请先安装 huggingface_hub，才能下载默认分离模型") from exc
+
+    try:
+        downloaded = hf_hub_download(
+            repo_id=repo_id,
+            filename=filename,
+            local_dir=str(model_dir),
+            local_dir_use_symlinks=False,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"下载默认分离模型失败: repo={repo_id}, file={filename}"
+        ) from exc
+    return Path(downloaded)
+
+
+def get_default_separator_asset_paths(
+    root_dir: Optional[Path] = None,
+) -> Dict[str, List[Path]]:
+    """Return required files for the current default separation route."""
+    from infer.separator import (
+        BS_POLARFORMER_CONFIG_FILENAME,
+        BS_POLARFORMER_ONNX_FILENAME,
+        KARAOKE_SOTA_MODELS,
+        LEAP_XE_VOCALS_MODEL,
+        ROFORMER_DEREVERB_DEFAULT_MODEL,
+        _CUSTOM_AUDIO_SEPARATOR_MODELS,
+    )
+
+    project_root = Path(root_dir) if root_dir is not None else get_project_root()
+    model_dir = project_root / "assets" / "separator_models"
+    leap_spec = _CUSTOM_AUDIO_SEPARATOR_MODELS[LEAP_XE_VOCALS_MODEL]
+    assets: Dict[str, List[Path]] = {
+        "Leap XE 90 vocals": [
+            model_dir / leap_spec["model_filename"],
+            model_dir / leap_spec["config_filename"],
+            *(
+                [model_dir / leap_spec["runtime_config_filename"]]
+                if "runtime_config_filename" in leap_spec
+                else []
+            ),
+        ],
+        "BS PolarFormer public ONNX 62 bands": [
+            model_dir / "bs_polarformer" / BS_POLARFORMER_ONNX_FILENAME,
+            model_dir / "bs_polarformer" / BS_POLARFORMER_CONFIG_FILENAME,
+        ],
+        "RoFormer De-Reverb": [
+            model_dir / ROFORMER_DEREVERB_DEFAULT_MODEL,
+        ],
+    }
+    for model_name in KARAOKE_SOTA_MODELS:
+        spec = _CUSTOM_AUDIO_SEPARATOR_MODELS[model_name]
+        assets[f"MVSep 9205 {model_name}"] = [
+            model_dir / spec["model_filename"],
+            model_dir / spec["config_filename"],
+        ]
+    return assets
+
+
+def get_missing_default_separator_model_files(
+    root_dir: Optional[Path] = None,
+) -> List[str]:
+    """List missing files for the default hybrid SOTA separator route."""
+    project_root = Path(root_dir) if root_dir is not None else get_project_root()
+    missing = []
+    for label, paths in get_default_separator_asset_paths(project_root).items():
+        for path in paths:
+            if not path.exists():
+                try:
+                    display_path = path.relative_to(project_root)
+                except ValueError:
+                    display_path = path
+                missing.append(f"{label}: {display_path}")
+    return missing
+
+
+def check_required_default_separator_models(root_dir: Optional[Path] = None) -> bool:
+    """Return whether the current default separation models are present."""
+    return not get_missing_default_separator_model_files(root_dir)
+
+
+def check_default_separator_models(root_dir: Optional[Path] = None) -> Dict[str, bool]:
+    """Return status by default separator model group."""
+    project_root = Path(root_dir) if root_dir is not None else get_project_root()
+    return {
+        label: all(path.exists() for path in paths)
+        for label, paths in get_default_separator_asset_paths(project_root).items()
+    }
+
+
+def download_default_separator_models(root_dir: Optional[Path] = None) -> bool:
+    """Download the default hybrid SOTA, MVSep 9205, and De-Reverb assets."""
+    from infer.separator import (
+        BS_POLARFORMER_CONFIG_FILENAME,
+        BS_POLARFORMER_HF_REPO,
+        BS_POLARFORMER_ONNX_FILENAME,
+        KARAOKE_SOTA_MODELS,
+        LEAP_XE_VOCALS_MODEL,
+        ROFORMER_DEREVERB_DEFAULT_MODEL,
+        _install_custom_audio_separator_models,
+    )
+
+    project_root = Path(root_dir) if root_dir is not None else get_project_root()
+    model_dir = project_root / "assets" / "separator_models"
+    model_dir.mkdir(parents=True, exist_ok=True)
+
+    print("=" * 50)
+    print("准备默认分离模型...")
+    print("=" * 50)
+
+    success = True
+    polarformer_dir = model_dir / "bs_polarformer"
+    polarformer_dir.mkdir(parents=True, exist_ok=True)
+    for filename in (BS_POLARFORMER_ONNX_FILENAME, BS_POLARFORMER_CONFIG_FILENAME):
+        try:
+            path = _download_hf_file(BS_POLARFORMER_HF_REPO, filename, polarformer_dir)
+            print(f"[OK] BS PolarFormer: {path}")
+        except Exception as exc:
+            print(f"[ERROR] BS PolarFormer 下载失败: {exc}")
+            success = False
+
+    try:
+        from audio_separator.separator import Separator
+    except ImportError as exc:
+        print(f"[ERROR] audio-separator 不可用，无法下载 Leap XE / MVSep 9205 / De-Reverb: {exc}")
+        return False
+
+    separator = Separator(
+        log_level=_logging.WARNING,
+        output_dir=str(project_root / "temp" / "separator_download"),
+        model_file_dir=str(model_dir),
+    )
+    _install_custom_audio_separator_models(separator)
+    for model_name in [
+        LEAP_XE_VOCALS_MODEL,
+        *KARAOKE_SOTA_MODELS,
+        ROFORMER_DEREVERB_DEFAULT_MODEL,
+    ]:
+        try:
+            separator.download_model_files(model_name)
+            print(f"[OK] 分离模型: {model_name}")
+        except Exception as exc:
+            print(f"[ERROR] 分离模型下载失败: {model_name}; {exc}")
+            success = False
+
+    missing = get_missing_default_separator_model_files(project_root)
+    if missing:
+        print("[ERROR] 默认分离模型仍有缺失:")
+        for item in missing:
+            print(f"  - {item}")
+        success = False
+
+    return success
+
+
 def get_upstream_rvc_root(root_dir: Optional[Path] = None) -> Path:
     """Return the local vendored official RVC directory."""
     project_root = Path(root_dir) if root_dir is not None else get_project_root()
@@ -345,6 +513,9 @@ def download_required_models() -> bool:
         else:
             print(f"[OK] {name} 已存在")
 
+    if not download_default_separator_models():
+        success = False
+
     try:
         ensure_upstream_rvc_tree()
     except Exception as e:
@@ -372,6 +543,9 @@ def download_all_models() -> bool:
                 success = False
         else:
             print(f"[OK] {name} 已存在")
+
+    if not download_default_separator_models():
+        success = False
 
     try:
         ensure_upstream_rvc_tree()
@@ -440,6 +614,20 @@ def print_model_status():
             print(f"      [必需]")
         print()
 
+    print("=" * 50)
+    print("默认分离模型状态")
+    print("=" * 50)
+    separator_status = check_default_separator_models()
+    for name, exists in separator_status.items():
+        mark = "OK" if exists else "MISSING"
+        print(f"  {mark} {name}")
+    missing_separator = get_missing_default_separator_model_files()
+    if missing_separator:
+        print("  缺失文件:")
+        for item in missing_separator:
+            print(f"    - {item}")
+    print()
+
 
 if __name__ == "__main__":
     import argparse
@@ -449,6 +637,7 @@ if __name__ == "__main__":
     parser.add_argument("--all", action="store_true", help="下载所有模型")
     parser.add_argument("--model", type=str, help="下载指定模型")
     parser.add_argument("--official-rvc", action="store_true", help="准备内置官方 RVC 源码")
+    parser.add_argument("--separator", action="store_true", help="准备默认混合 SOTA / MVSep 分离模型")
 
     args = parser.parse_args()
 
@@ -461,6 +650,8 @@ if __name__ == "__main__":
             print("[OK] 内置官方 RVC")
     elif args.official_rvc:
         ensure_upstream_rvc_tree()
+    elif args.separator:
+        download_default_separator_models()
     elif args.model:
         download_model(args.model)
     elif args.all:

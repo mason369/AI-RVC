@@ -1,14 +1,36 @@
 import json
 import inspect
+import os
 import re
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from ui import app as ui_app
 
 
 class UiLanguageTests(unittest.TestCase):
+    def test_load_config_applies_only_explicit_valid_device_override(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "config.json"
+            config_path.write_text(
+                json.dumps({"device": "cuda", "language": "zh_CN"}),
+                encoding="utf-8",
+            )
+            with mock.patch.object(ui_app, "CONFIG_PATH", config_path), mock.patch.dict(
+                os.environ,
+                {"AI_RVC_DEVICE": "cpu"},
+            ):
+                self.assertEqual(ui_app.load_config()["device"], "cpu")
+
+            with mock.patch.object(ui_app, "CONFIG_PATH", config_path), mock.patch.dict(
+                os.environ,
+                {"AI_RVC_DEVICE": "unsupported"},
+            ):
+                with self.assertRaisesRegex(ValueError, "Unsupported AI_RVC_DEVICE"):
+                    ui_app.load_config()
+
     def test_default_language_is_chinese_when_config_has_no_language(self):
         self.assertEqual(ui_app.get_configured_language({}), "zh_CN")
 
@@ -211,6 +233,24 @@ class UiLanguageTests(unittest.TestCase):
 
         self.assertIn("默认质量链路", status)
         self.assertIn("内置官方 RVC", status)
+
+    def test_english_route_status_has_no_chinese_runtime_build_label(self):
+        original_i18n = ui_app.i18n
+        original_config = ui_app.config
+        try:
+            ui_app.i18n = ui_app.load_i18n("en_US")
+            ui_app.config = {**original_config, "language": "en_US"}
+            status = ui_app.get_cover_vc_route_status("auto", "current", True)
+        finally:
+            ui_app.i18n = original_i18n
+            ui_app.config = original_config
+
+        self.assertIn("Runtime build:", status)
+        self.assertFalse(any("一" <= char <= "鿿" for char in status))
+
+    def test_runtime_build_label_rejects_unsupported_language(self):
+        with self.assertRaisesRegex(ValueError, "Unsupported runtime build label language"):
+            ui_app.get_runtime_build_label("ja_JP")
 
     def test_route_status_accepts_dropdown_labels(self):
         _, vc_value_to_label = ui_app.get_vc_preprocess_option_maps()

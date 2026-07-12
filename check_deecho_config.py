@@ -3,12 +3,15 @@
 """
 回声处理配置验证脚本
 
-检查当前配置是否正确启用了激进的去回声处理
+检查当前配置是否对齐严格默认翻唱链路：
+Leap XE 提取人声、BS PolarFormer 提取纯伴奏、MVSep 9205 主唱/带和声伴奏分离、纯和声差分、RoFormer De-Reverb。
 """
 
 import json
 import os
 from pathlib import Path
+
+from lib.console_i18n import console_print as print
 
 def check_deecho_models():
     """检查 DeEcho 模型是否存在"""
@@ -80,7 +83,7 @@ def check_config():
 
     print()
     if all_correct:
-        print("[OK] Config optimized for aggressive deecho")
+        print("[OK] Config optimized for the current strict cover route")
     else:
         print("[WARN] Some configs not optimized")
 
@@ -93,10 +96,12 @@ def print_recommendations():
     print("=" * 60)
 
     print("""
-1. 当前配置使用自动模式：
-   - 优先使用 UVR DeEcho 模型，缺模型时回退到算法去混响
-   - DeEcho 质量好时跳过 blend 直接使用，避免混回原始回音
-   - 源约束仅在去过回音的预处理下自动启用
+1. 当前配置使用严格默认链路：
+   - 输入规范：非 WAV 统一解码为 44.1 kHz 双声道 PCM16
+   - 整曲人声/纯伴奏分离：Leap XE 90 vocals + BS PolarFormer public ONNX 62 accompaniment
+   - 主唱/带和声伴奏分离：MVSep 9205 三 BS-RoFormer avg_wave ensemble
+   - 纯和声：Leap 人声减去 MVSep 主唱
+   - VC 前处理：RoFormer De-Reverb；运行环境缺失时会停止并显示错误
 
 2. 如果回声仍然明显，可以尝试：
    - 在 UI 中调整"索引率"（降低到 0.2-0.3）
@@ -104,7 +109,7 @@ def print_recommendations():
    - 使用更高质量的输入音频
 
 3. 处理流程：
-   原始音频 → Karaoke 分离 → UVR DeEcho(或算法去混响) → RVC 转换 → 输出
+   统一 PCM → Leap XE vocals + BS PolarFormer pure accompaniment → MVSep 9205 Karaoke → 纯和声差分 → RoFormer De-Reverb → RVC 转换 → 混音输出
 
 4. 测试建议：
    - 选择一首有明显回声的歌曲

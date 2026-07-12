@@ -121,7 +121,7 @@ jobs:
         pip install PyYAML antlr4-python3-runtime hydra-core
         pip install fairseq==0.12.2 --no-deps
         pip install "gradio==5.49.1" "fastapi>=0.115,<1" "anyio>=3,<5" "pydantic>=2,<3" "jinja2>=3.1,<4" "pandas>=2,<3"
-        pip install "librosa>=0.10.0" "soundfile>=0.12.0" "scipy>=1.10.0" "numpy>=2,<3" "praat-parselmouth>=0.4.3" "pyworld>=0.3.4" "faiss-cpu>=1.7.4" "tqdm>=4.65.0" "requests>=2.28.0" "python-dotenv>=1.0.0" "colorama>=0.4.6" "huggingface_hub>=0.19.0,<1.0" "pedalboard>=0.7.0" "ffmpeg-python>=0.2.0" "av>=10.0.0" "imageio-ffmpeg>=0.5.1"
+        pip install "librosa>=0.10.0" "soundfile>=0.12.0" "scipy>=1.10.0" "numpy>=2,<3" "PyYAML>=6.0" "einops>=0.7.0" "praat-parselmouth>=0.4.3" "pyworld>=0.3.4" "faiss-cpu>=1.7.4" "tqdm>=4.65.0" "requests>=2.28.0" "python-dotenv>=1.0.0" "colorama>=0.4.6" "huggingface_hub>=0.19.0,<1.0" "pedalboard>=0.7.0" "ffmpeg-python>=0.2.0" "av>=10.0.0" "imageio-ffmpeg>=0.5.1"
         pip install demucs torchcrepe --no-deps
         pip install julius dora-search lameenc openunmix treetable
         python -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}')"
@@ -196,28 +196,8 @@ jobs:
       env:
         PYTHONIOENCODING: utf-8
       run: |
-        echo "=== Download all base models and official RVC source ==="
+        echo "=== Download all models, separator defaults, and official RVC source ==="
         python tools/download_models.py --all
-
-        echo "=== Download current RoFormer separator defaults ==="
-        python -c "
-        from audio_separator.separator import Separator
-        import os
-        model_dir = os.path.join('assets', 'separator_models')
-        os.makedirs(model_dir, exist_ok=True)
-        for model_name in [
-            'melband_roformer_big_beta6x.ckpt',
-            'mel_band_roformer_vocals_fv4_gabox.ckpt',
-            'dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt',
-            'mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt',
-            'mel_band_roformer_karaoke_gabox_v2.ckpt',
-            'mel_band_roformer_karaoke_becruily.ckpt',
-        ]:
-            sep = Separator(output_dir='.', model_file_dir=model_dir)
-            sep.load_model(model_name)
-            del sep
-        print('Roformer models downloaded.')
-        "
 
         echo "=== Verify downloaded models ==="
         find assets/ -name "*.pt" -o -name "*.pth" -o -name "*.ckpt" -o -name "*.onnx" | while read f; do
@@ -229,6 +209,21 @@ jobs:
       if: steps.selection.outputs.should_run == 'true'
       shell: bash
       run: |
+        python - "${{ matrix.variant }}" <<'PY'
+        import json
+        import sys
+        from pathlib import Path
+
+        config_path = Path("configs/config.json")
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["device"] = "cpu" if sys.argv[1] == "CPU" else "cuda"
+        config_path.write_text(
+            json.dumps(config, ensure_ascii=False, indent=4) + "\n",
+            encoding="utf-8",
+        )
+        print(f"Packaged device: {config['device']}")
+        PY
+
         SEP="${{ matrix.sep }}"
         NAME="AI-RVC-${{ matrix.platform }}-${{ matrix.variant }}"
         pyinstaller --name "${NAME}" \
@@ -275,7 +270,7 @@ jobs:
 
         if [ "${{ matrix.variant }}" = "GPU" ]; then
           VARIANT_NOTE="GPU 版（CUDA 12.1），支持 NVIDIA 显卡加速
-        如果没有 NVIDIA 显卡，程序会自动回退到 CPU 推理"
+        必须使用可用的 NVIDIA CUDA 环境；CUDA 不可用时程序会明确报错并停止"
         else
           VARIANT_NOTE="CPU 版，无需显卡即可运行
         如需 GPU 加速，请下载 GPU 版本或使用本地安装方式：python install.py"
@@ -404,22 +399,7 @@ jobs:
 
           for attempt in 1 2 3; do
             echo "上传(${attempt}/3): ${file}"
-            if python - "${tag}" "${file}" "${{ github.repository }}" <<'PY'; then
-        import subprocess
-        import sys
-
-        tag, file_path, repo = sys.argv[1:4]
-        try:
-            result = subprocess.run(
-                ["gh", "release", "upload", tag, file_path, "--repo", repo, "--clobber"],
-                timeout=1200,
-            )
-        except subprocess.TimeoutExpired:
-            print(f"gh release upload timed out after 1200 seconds: {file_path}", file=sys.stderr)
-            sys.exit(124)
-
-        sys.exit(result.returncode)
-        PY
+            if timeout 30m gh release upload "${tag}" "${file}" --repo "${{ github.repository }}" --clobber; then
               return 0
             fi
 

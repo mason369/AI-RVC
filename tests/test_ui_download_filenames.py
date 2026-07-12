@@ -51,6 +51,7 @@ class UiDownloadFilenameTests(unittest.TestCase):
             "",
             None,
             "accompaniment.wav",
+            "accompaniment_without_harmony.wav",
         )
 
         self.assertEqual(updates[0]["value"], "cover.wav")
@@ -62,6 +63,11 @@ class UiDownloadFilenameTests(unittest.TestCase):
         self.assertFalse(updates[3]["visible"])
         self.assertEqual(updates[5]["value"], "accompaniment.wav")
         self.assertTrue(updates[5]["visible"])
+        self.assertEqual(
+            updates[6]["value"],
+            "accompaniment_without_harmony.wav",
+        )
+        self.assertTrue(updates[6]["visible"])
 
     def test_gradio_file_route_patch_sets_header_on_actual_handler(self):
         app = fastapi.FastAPI()

@@ -7,9 +7,16 @@ import json
 import re
 import zipfile
 import shutil
+import sys
 from pathlib import Path
 from typing import Optional, List, Dict, Callable, Any
 from urllib.parse import quote
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from lib.console_i18n import console_print as print
 
 try:
     from huggingface_hub import hf_hub_download, list_repo_files

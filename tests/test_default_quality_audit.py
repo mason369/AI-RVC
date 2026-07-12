@@ -167,9 +167,9 @@ class DefaultQualityAuditTests(unittest.TestCase):
         config = {
             "cover": {
                 "separator": "roformer",
-                "roformer_model": "ensemble:vocal_rvc",
+                "roformer_model": "hybrid:leap_xe90_vocals+polarformer62_instrumental",
                 "karaoke_separation": True,
-                "karaoke_model": "ensemble:karaoke",
+                "karaoke_model": "ensemble:mvsep_9205_avg",
                 "karaoke_merge_backing_into_accompaniment": True,
                 "uvr5_model": "HP2_all_vocals",
                 "uvr5_agg": 10,

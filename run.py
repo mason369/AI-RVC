@@ -13,6 +13,7 @@ ROOT_DIR = Path(__file__).parent
 sys.path.insert(0, str(ROOT_DIR))
 
 from lib.ffmpeg_runtime import configure_ffmpeg_runtime
+from lib.console_i18n import get_console_language
 from lib.logger import log
 from lib.runtime_build import get_runtime_build_label
 
@@ -22,7 +23,7 @@ configure_ffmpeg_runtime()
 def check_environment():
     """检查运行环境"""
     log.header("RVC AI 翻唱系统")
-    log.info(get_runtime_build_label())
+    log.info(get_runtime_build_label(get_console_language()))
 
     # 检查 Python 版本
     py_version = sys.version_info
@@ -52,7 +53,10 @@ def check_environment():
         elif _has_mps():
             log.info("Apple MPS 加速可用")
         else:
-            log.warning("未检测到 GPU 加速，将使用 CPU")
+            log.warning(
+                "未检测到 GPU 加速；运行时将严格使用配置中的 device，"
+                "若该设备不可用会停止并报错"
+            )
     except ImportError:
         log.error("未安装 PyTorch")
         return False
@@ -64,7 +68,9 @@ def check_models():
     """检查必需模型"""
     from tools.download_models import (
         check_model,
+        check_required_default_separator_models,
         ensure_upstream_rvc_tree,
+        get_missing_default_separator_model_files,
         REQUIRED_MODELS,
     )
 
@@ -79,6 +85,17 @@ def check_models():
         from tools.download_models import download_required_models
         if not download_required_models():
             log.error("模型下载失败，请检查网络连接")
+            return False
+
+    if not check_required_default_separator_models(ROOT_DIR):
+        missing_separator = get_missing_default_separator_model_files(ROOT_DIR)
+        log.warning("缺少默认分离模型:")
+        for item in missing_separator:
+            log.warning(f"  - {item}")
+        log.info("正在下载默认分离模型...")
+        from tools.download_models import download_required_models
+        if not download_required_models():
+            log.error("默认分离模型下载失败，请检查网络连接或 Hugging Face 访问权限")
             return False
 
     config_path = ROOT_DIR / "configs" / "config.json"

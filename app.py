@@ -18,10 +18,17 @@ configure_ffmpeg_runtime()
 # 设置环境变量
 os.environ["GRADIO_SERVER_NAME"] = "0.0.0.0"
 os.environ["GRADIO_SERVER_PORT"] = "7860"
+# requirements_hf.txt 使用 audio-separator[cpu]，Space 默认明确走 CPU。
+# 自建 GPU Space 可显式设置 AI_RVC_DEVICE=cuda 并安装 GPU extra。
+os.environ.setdefault("AI_RVC_DEVICE", "cpu")
 
 # 导入并启动应用
 if __name__ == "__main__":
+    from tools.download_models import download_required_models
     from ui.app import launch
+
+    if not download_required_models():
+        raise RuntimeError("Hugging Face Space 必需模型准备失败，应用停止启动")
 
     # 启动 Gradio 界面
     launch(

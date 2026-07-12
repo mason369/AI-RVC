@@ -11,6 +11,7 @@ import gradio as gr
 from pathlib import Path
 from typing import Optional, Tuple, Dict, List, Any, Set
 
+from lib.console_i18n import localize_console_message, set_console_language
 from lib.logger import log
 from lib.runtime_build import get_runtime_build_label
 from infer.separator import ROFORMER_DEFAULT_MODEL, KARAOKE_DEFAULT_MODEL
@@ -38,11 +39,23 @@ def load_i18n(lang: str = "zh_CN") -> dict:
 
 # 加载配置
 def load_config() -> dict:
-    """加载配置"""
+    """加载配置，并应用调用方显式提供的运行设备。"""
     if CONFIG_PATH.exists():
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+            loaded = json.load(f)
+    else:
+        loaded = {}
+
+    explicit_device = os.environ.get("AI_RVC_DEVICE", "").strip().lower()
+    if explicit_device:
+        allowed_devices = {"auto", "cuda", "xpu", "directml", "mps", "cpu"}
+        if explicit_device not in allowed_devices:
+            raise ValueError(
+                f"Unsupported AI_RVC_DEVICE={explicit_device!r}; "
+                f"expected one of: {', '.join(sorted(allowed_devices))}"
+            )
+        loaded["device"] = explicit_device
+    return loaded
 
 
 def normalize_config(config: dict) -> dict:
@@ -160,6 +173,7 @@ def save_language_setting(language_choice: str, config_path: Optional[Path] = No
     if target_path == CONFIG_PATH:
         config = next_config
         i18n = load_i18n(language)
+        set_console_language(language)
 
     message_i18n = load_i18n(language)
     return message_i18n["settings"]["language_saved_restart"].format(
@@ -874,19 +888,20 @@ def process_cover(
     rms_mix_rate: float,
     backing_mix: float,
     progress=gr.Progress()
-) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[str], Optional[str], str]:
+) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[str], Optional[str], Optional[str], str]:
     """
     处理翻唱
 
     Returns:
-        Tuple[cover, converted_vocals, original_vocals, lead_vocals, backing_vocals, accompaniment, status]
+        Tuple[cover, converted_vocals, original_vocals, lead_vocals, backing_vocals,
+        accompaniment, accompaniment_without_harmony, status]
     """
-    _none6 = (None, None, None, None, None, None)
+    _none7 = (None, None, None, None, None, None, None)
     if audio_path is None:
-        return *_none6, t("please_upload_song", "messages")
+        return *_none7, t("please_upload_song", "messages")
 
     if not character_name:
-        return *_none6, t("please_select_character", "messages")
+        return *_none7, t("please_select_character", "messages")
 
     try:
         from tools.character_models import get_character_model_path, get_character_info
@@ -897,12 +912,15 @@ def process_cover(
         char_meta = get_character_info(resolved_name, downloaded_only=True) or {}
         model_info = get_character_model_path(resolved_name)
         if model_info is None:
-            return *_none6, tf("character_model_missing", "messages", name=resolved_name)
+            return *_none7, tf("character_model_missing", "messages", name=resolved_name)
 
         # 进度回调
         def progress_callback(msg: str, step: int, total: int):
             if total > 0:
-                progress(step / total, desc=msg)
+                progress(
+                    step / total,
+                    desc=localize_console_message(msg, get_configured_language()),
+                )
 
         # 获取流水线
         device = config.get("device", "cuda")
@@ -1018,6 +1036,10 @@ def process_cover(
                 "vocals": re.sub(r"\s*[（(][^）)]*[）)]\s*$", "", t("original_vocals", "cover")),
                 "converted_vocals": t("converted_vocals", "cover"),
                 "accompaniment": t("accompaniment", "cover"),
+                "accompaniment_without_harmony": t(
+                    "accompaniment_without_harmony",
+                    "cover",
+                ),
                 "lead_vocals": t("lead_vocals", "cover"),
                 "backing_vocals": t("backing_vocals", "cover"),
             },
@@ -1031,6 +1053,7 @@ def process_cover(
             "lead_vocals",
             "backing_vocals",
             "accompaniment",
+            "accompaniment_without_harmony",
         ):
             if result.get(output_key):
                 result[output_key] = normalize_download_output_path(result[output_key])
@@ -1043,7 +1066,7 @@ def process_cover(
             status_msg += "\n" + tf("character_continuity_status", "messages", value=char_meta["continuity"])
         if char_meta.get("repo"):
             status_msg += "\n" + tf("model_source_status", "messages", value=char_meta["repo"])
-        status_msg += f"\n{get_runtime_build_label()}"
+        status_msg += f"\n{get_runtime_build_label(get_configured_language())}"
         if result.get("all_files_dir"):
             status_msg += "\n" + tf("all_files_dir_status", "messages", value=result["all_files_dir"])
 
@@ -1054,6 +1077,7 @@ def process_cover(
             result.get("lead_vocals"),
             result.get("backing_vocals"),
             result["accompaniment"],
+            result.get("accompaniment_without_harmony"),
             status_msg
         )
 
@@ -1061,7 +1085,15 @@ def process_cover(
         import traceback
         error_msg = str(e) if str(e) else traceback.format_exc()
         log.error(f"处理失败: {error_msg}")
-        return None, None, None, None, None, None, tf("cover_process_failed", "messages", error=error_msg)
+        localized_error = localize_console_message(
+            error_msg,
+            get_configured_language(),
+        )
+        return None, None, None, None, None, None, None, tf(
+            "cover_process_failed",
+            "messages",
+            error=localized_error,
+        )
 
 
 def _download_button_update(path: Optional[str]) -> Dict[str, Any]:
@@ -1075,7 +1107,8 @@ def _cover_download_button_updates(
     lead_vocals: Optional[str],
     backing_vocals: Optional[str],
     accompaniment: Optional[str],
-) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    accompaniment_without_harmony: Optional[str],
+) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     return (
         _download_button_update(cover),
         _download_button_update(converted_vocals),
@@ -1083,6 +1116,7 @@ def _cover_download_button_updates(
         _download_button_update(lead_vocals),
         _download_button_update(backing_vocals),
         _download_button_update(accompaniment),
+        _download_button_update(accompaniment_without_harmony),
     )
 
 
@@ -1110,6 +1144,8 @@ def process_cover_with_downloads(
     Optional[str],
     Optional[str],
     Optional[str],
+    Optional[str],
+    Dict[str, Any],
     Dict[str, Any],
     Dict[str, Any],
     Dict[str, Any],
@@ -1118,7 +1154,16 @@ def process_cover_with_downloads(
     Dict[str, Any],
     str,
 ]:
-    cover, converted, original, lead, backing, accompaniment, status = process_cover(
+    (
+        cover,
+        converted,
+        original,
+        lead,
+        backing,
+        accompaniment,
+        accompaniment_without_harmony,
+        status,
+    ) = process_cover(
         audio_path,
         character_name,
         pitch_shift,
@@ -1143,7 +1188,16 @@ def process_cover_with_downloads(
         lead,
         backing,
         accompaniment,
-        *_cover_download_button_updates(cover, converted, original, lead, backing, accompaniment),
+        accompaniment_without_harmony,
+        *_cover_download_button_updates(
+            cover,
+            converted,
+            original,
+            lead,
+            backing,
+            accompaniment,
+            accompaniment_without_harmony,
+        ),
         status,
     )
 
@@ -1216,7 +1270,7 @@ def get_cover_vc_route_status(
     roformer_ready = check_roformer_available()
     preferred = f"RoFormer {ROFORMER_DEREVERB_DEFAULT_MODEL}" if roformer_ready else None
     newline = chr(10)
-    build_label = get_runtime_build_label()
+    build_label = get_runtime_build_label(get_configured_language())
 
     if pipeline_mode == "official":
         return newline.join([
@@ -1266,11 +1320,21 @@ def get_cover_vc_route_status(
 
 def check_models_status() -> str:
     """检查模型状态"""
-    from tools.download_models import check_model, REQUIRED_MODELS
+    from tools.download_models import (
+        check_default_separator_models,
+        check_model,
+        REQUIRED_MODELS,
+    )
 
     status_lines = []
     for name in REQUIRED_MODELS:
         exists = check_model(name)
+        icon = "✅" if exists else "❌"
+        status_lines.append(f"{icon} {name}")
+
+    status_lines.append("")
+    status_lines.append(t("default_separator_models", "models"))
+    for name, exists in check_default_separator_models().items():
         icon = "✅" if exists else "❌"
         status_lines.append(f"{icon} {name}")
 
@@ -2681,6 +2745,22 @@ def create_ui() -> gr.Blocks:
                             variant="secondary",
                             elem_classes=["cover-download-button"],
                         )
+                    with gr.Column():
+                        cover_accompaniment_without_harmony_output = gr.Audio(
+                            label=t("accompaniment_without_harmony", "cover"),
+                            type="filepath",
+                            interactive=False
+                        )
+                        cover_accompaniment_without_harmony_download_btn = gr.DownloadButton(
+                            label=_cover_download_label(
+                                t("accompaniment_without_harmony", "cover")
+                            ),
+                            value=None,
+                            visible=False,
+                            size="sm",
+                            variant="secondary",
+                            elem_classes=["cover-download-button"],
+                        )
 
                 # 事件绑定
                 refresh_char_btn.click(
@@ -2864,12 +2944,14 @@ def create_ui() -> gr.Blocks:
                         cover_lead_vocals_output,
                         cover_backing_vocals_output,
                         cover_accompaniment_output,
+                        cover_accompaniment_without_harmony_output,
                         cover_download_btn,
                         cover_converted_vocals_download_btn,
                         cover_original_vocals_download_btn,
                         cover_lead_vocals_download_btn,
                         cover_backing_vocals_download_btn,
                         cover_accompaniment_download_btn,
+                        cover_accompaniment_without_harmony_download_btn,
                         cover_status
                     ]
                 )

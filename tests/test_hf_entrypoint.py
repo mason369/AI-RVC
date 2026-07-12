@@ -24,6 +24,16 @@ class HuggingFaceEntrypointTests(unittest.TestCase):
             {"host", "port", "share"},
         )
 
+    def test_entrypoint_prepares_required_models_before_launch(self):
+        source = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
+
+        self.assertIn("download_required_models", source)
+        self.assertIn("Hugging Face Space 必需模型准备失败", source)
+        self.assertLess(
+            source.index("download_required_models"),
+            source.index("launch("),
+        )
+
     def test_space_metadata_pins_python_310(self):
         readme = (REPO_ROOT / "README_HF.md").read_text(encoding="utf-8")
 
@@ -40,8 +50,16 @@ class HuggingFaceEntrypointTests(unittest.TestCase):
         self.assertIn("jinja2>=3.1,<4", requirements)
         self.assertIn("pandas>=2,<3", requirements)
         self.assertIn("numpy>=2,<3", requirements)
+        self.assertIn("PyYAML>=6.0", requirements)
+        self.assertIn("einops>=0.7.0", requirements)
+        self.assertNotIn("onnxruntime>=1.18.0", requirements)
         self.assertIn("audio-separator[cpu]==0.44.1", requirements)
         self.assertIn("huggingface_hub>=0.19.0,<1.0", requirements)
+
+    def test_space_entrypoint_selects_cpu_explicitly(self):
+        source = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
+
+        self.assertIn('os.environ.setdefault("AI_RVC_DEVICE", "cpu")', source)
 
     def test_cover_current_default_uses_quality_upstream_official_route(self):
         config = json.loads(
@@ -56,6 +74,8 @@ class HuggingFaceEntrypointTests(unittest.TestCase):
         source = (REPO_ROOT / "run.py").read_text(encoding="utf-8")
 
         self.assertIn("ensure_upstream_rvc_tree", source)
+        self.assertIn("check_required_default_separator_models", source)
+        self.assertIn("get_missing_default_separator_model_files", source)
         self.assertIn('cover_cfg.get("use_official", True)', source)
 
 
