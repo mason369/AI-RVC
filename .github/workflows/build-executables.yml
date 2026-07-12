@@ -134,7 +134,7 @@ jobs:
       if: steps.selection.outputs.should_run == 'true'
       run: |
         pip install "audio-separator[${{ matrix.audio_separator_extra }}]==0.44.1"
-        python -c "import torch, torchvision, torchaudio; expected='${{ matrix.torch_stack }}'; actual=f'torch=={torch.__version__.split(\"+\")[0]} torchvision=={torchvision.__version__.split(\"+\")[0]} torchaudio=={torchaudio.__version__.split(\"+\")[0]}'; assert actual == expected, f'PyTorch stack changed after audio-separator install: expected {expected}, got {actual}'; print(actual)"
+        python -c "import torch, torchvision, torchaudio; expected='${{ matrix.torch_stack }}'; actual='torch=={} torchvision=={} torchaudio=={}'.format(torch.__version__.split('+')[0], torchvision.__version__.split('+')[0], torchaudio.__version__.split('+')[0]); assert actual == expected, 'PyTorch stack changed after audio-separator install: expected {}, got {}'.format(expected, actual); print(actual)"
 
     - name: Bundle FFmpeg runtime
       if: steps.selection.outputs.should_run == 'true'

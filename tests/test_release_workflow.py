@@ -28,6 +28,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
         )
         self.assertIn("import torch, torchvision, torchaudio", self.workflow)
         self.assertIn("PyTorch stack changed after audio-separator install", self.workflow)
+        self.assertIn("torch.__version__.split('+')[0]", self.workflow)
+        self.assertNotIn('split(\\"+\\")', self.workflow)
         self.assertNotIn("pip install torch torchaudio", self.workflow)
 
     def test_release_upload_retry_preserves_the_real_exit_code(self):
