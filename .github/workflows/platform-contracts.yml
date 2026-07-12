@@ -35,7 +35,7 @@ jobs:
         run: python -m pip install torch
 
       - name: Install contract-test dependencies
-        run: python -m pip install numpy soundfile PyYAML packaging
+        run: python -m pip install numpy soundfile PyYAML packaging onnxruntime
 
       - name: Validate installer and deployment contracts
         run: |
