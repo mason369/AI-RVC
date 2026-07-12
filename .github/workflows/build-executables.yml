@@ -42,6 +42,7 @@ jobs:
             variant: CPU
             platform: Windows
             pytorch_url: https://download.pytorch.org/whl/cpu
+            torch_stack: torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0
             audio_separator_extra: cpu
             sep: ";"
             shell: pwsh
@@ -49,6 +50,7 @@ jobs:
             variant: GPU
             platform: Windows
             pytorch_url: https://download.pytorch.org/whl/cu121
+            torch_stack: torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1
             audio_separator_extra: gpu
             sep: ";"
             shell: pwsh
@@ -56,6 +58,7 @@ jobs:
             variant: CPU
             platform: Linux
             pytorch_url: https://download.pytorch.org/whl/cpu
+            torch_stack: torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0
             audio_separator_extra: cpu
             sep: ":"
             shell: bash
@@ -63,6 +66,7 @@ jobs:
             variant: GPU
             platform: Linux
             pytorch_url: https://download.pytorch.org/whl/cu121
+            torch_stack: torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1
             audio_separator_extra: gpu
             sep: ":"
             shell: bash
@@ -116,7 +120,7 @@ jobs:
       run: |
         python -m pip install --upgrade "pip<24.1"
         pip install pyinstaller
-        pip install torch torchaudio --index-url ${{ matrix.pytorch_url }}
+        pip install ${{ matrix.torch_stack }} --index-url ${{ matrix.pytorch_url }}
         pip install omegaconf==2.0.6 --no-deps
         pip install PyYAML antlr4-python3-runtime hydra-core
         pip install fairseq==0.12.2 --no-deps
@@ -128,7 +132,9 @@ jobs:
 
     - name: Install audio-separator
       if: steps.selection.outputs.should_run == 'true'
-      run: pip install "audio-separator[${{ matrix.audio_separator_extra }}]==0.44.1"
+      run: |
+        pip install "audio-separator[${{ matrix.audio_separator_extra }}]==0.44.1"
+        python -c "import torch, torchvision, torchaudio; expected='${{ matrix.torch_stack }}'; actual=f'torch=={torch.__version__.split(\"+\")[0]} torchvision=={torchvision.__version__.split(\"+\")[0]} torchaudio=={torchaudio.__version__.split(\"+\")[0]}'; assert actual == expected, f'PyTorch stack changed after audio-separator install: expected {expected}, got {actual}'; print(actual)"
 
     - name: Bundle FFmpeg runtime
       if: steps.selection.outputs.should_run == 'true'
@@ -401,9 +407,9 @@ jobs:
             echo "上传(${attempt}/3): ${file}"
             if timeout 30m gh release upload "${tag}" "${file}" --repo "${{ github.repository }}" --clobber; then
               return 0
+            else
+              exit_code=$?
             fi
-
-            exit_code=$?
             echo "上传失败(退出码=${exit_code}): ${file}"
             if [ "${attempt}" -lt 3 ]; then
               sleep $(( attempt * 20 ))
