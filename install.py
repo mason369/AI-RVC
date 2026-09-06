@@ -86,8 +86,10 @@ TORCH_MIN_VERSION = (
 )
 TORCH_REQUIREMENT = f"torch>={TORCH_MIN_VERSION},<3"
 TORCH_STACK_NAMES = ("torch", "torchvision", "torchaudio")
+# TorchAudio 2.11 uses the stable ABI and supports PyTorch 2.11 and newer.
+# https://docs.pytorch.org/audio/main/installation.html
 TORCH_INSTALL_PACKAGES = (
-    ("torch==2.13.0", "torchvision==0.28.0", "torchaudio==2.13.0")
+    ("torch==2.13.0", "torchvision==0.28.0", "torchaudio==2.11.0")
     if TORCH_MIN_VERSION == "2.13.0"
     else ("torch==2.11.0", "torchvision==0.26.0", "torchaudio==2.11.0")
 )
@@ -101,7 +103,10 @@ PACKAGES = {
     "torch": {"import": "torch", "name": "PyTorch", "pip": "torch", "dist": "torch",
               "min_version": TORCH_MIN_VERSION, "max_exclusive_version": "3.0.0"},
     "torchvision": {"import": "torchvision", "name": "torchvision", "pip": "torchvision"},
-    "torchaudio": {"import": "torchaudio", "name": "torchaudio", "pip": "torchaudio"},
+    "torchaudio": {
+        "import": "torchaudio", "name": "torchaudio", "pip": "torchaudio", "dist": "torchaudio",
+        "min_version": "2.11.0" if TORCH_MIN_VERSION == "2.13.0" else "2.0.0",
+    },
     "gradio": {
         "import": "gradio",
         "name": "Gradio",

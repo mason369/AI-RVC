@@ -17,6 +17,8 @@ class InstallerTorchContractTests(unittest.TestCase):
     def test_platform_minimum_matches_upstream_and_requirements(self):
         source = (ROOT / "requirements.txt").read_text(encoding="utf-8")
         requirements = [Requirement(line) for line in source.splitlines() if line.startswith("torch>")]
+        audio_requirements = [Requirement(line.split("#", 1)[0].strip())
+                              for line in source.splitlines() if line.startswith("torchaudio>")]
         for system, machine, minimum in (("win32", "AMD64", "2.3.0"), ("linux", "x86_64", "2.3.0"),
                                          ("darwin", "arm64", "2.13.0"), ("darwin", "x86_64", "2.3.0")):
             with self.subTest(system=system, machine=machine), mock.patch.object(sys, "platform", system), \
@@ -28,8 +30,26 @@ class InstallerTorchContractTests(unittest.TestCase):
                 self.assertIn(minimum, active[0].specifier)
                 self.assertNotIn("2.2.0", active[0].specifier)
                 self.assertNotIn("3.0.0", active[0].specifier)
+                active_audio = [r for r in audio_requirements
+                                if r.marker.evaluate({"sys_platform": system, "platform_machine": machine})]
+                self.assertEqual(len(active_audio), 1)
+                audio_minimum = values["PACKAGES"]["torchaudio"]["min_version"]
+                self.assertIn(audio_minimum, active_audio[0].specifier)
                 if machine == "arm64":
                     self.assertNotIn("2.12.0", active[0].specifier)
+                    self.assertNotIn("2.10.0", active_audio[0].specifier)
+                    self.assertEqual(audio_minimum, "2.11.0")
+
+    def test_installed_torchaudio_resamples_with_the_selected_torch(self):
+        import torch
+        import torchaudio
+
+        source = torch.sin(2 * torch.pi * 440 * torch.arange(4410, dtype=torch.float32) / 44100)
+        result = torchaudio.functional.resample(source, 44100, 48000)
+        expected = torch.sin(2 * torch.pi * 440 * torch.arange(4800, dtype=torch.float32) / 48000)
+        self.assertEqual(result.shape, expected.shape)
+        self.assertTrue(torch.isfinite(result).all())
+        torch.testing.assert_close(result[32:-32], expected[32:-32], atol=0.002, rtol=0)
 
     def test_old_torch_is_marked_before_installing_separator(self):
         with mock.patch.dict(install.PACKAGES, {"torch": install.PACKAGES["torch"]}, clear=True), \
@@ -61,7 +81,7 @@ class InstallerTorchContractTests(unittest.TestCase):
     def test_every_dependency_keeps_all_three_versions_and_build_suffixes(self):
         for backend, suffix in (("cpu", "+cpu"), ("cuda", "+cu128"), ("xpu", "+xpu"),
                                 ("rocm", "+rocm6.4"), ("directml", ""), ("mps", "")):
-            versions = {"torch": f"2.13.0{suffix}", "torchvision": f"0.28.0{suffix}", "torchaudio": f"2.13.0{suffix}",
+            versions = {"torch": f"2.13.0{suffix}", "torchvision": f"0.28.0{suffix}", "torchaudio": f"2.11.0{suffix}",
                         install.BACKEND_SETTINGS[backend]["runtime_dist"]: "1.23.2"}
             with self.subTest(backend=backend), mock.patch("install.check_all", return_value=[
                 install.PACKAGES["audio_separator"], install.PACKAGES["transformers"],

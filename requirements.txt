@@ -4,7 +4,8 @@
 torch>=2.3,<3; sys_platform != "darwin" or platform_machine != "arm64"
 torch>=2.13,<3; sys_platform == "darwin" and platform_machine == "arm64"
 torchvision>=0.15.0  # required transitively by audio-separator/onnx2torch; keep aligned with torch
-torchaudio>=2.0.0
+torchaudio>=2.0.0; sys_platform != "darwin" or platform_machine != "arm64"
+torchaudio>=2.11.0; sys_platform == "darwin" and platform_machine == "arm64"  # stable ABI supports torch>=2.11
 
 # Gradio 界面
 gradio==5.49.1

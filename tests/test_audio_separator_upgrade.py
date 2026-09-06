@@ -140,7 +140,7 @@ class AudioSeparatorUpgradeTests(unittest.TestCase):
         self.assertIn('"audio-separator[cpu]==0.47.0"', ci)
         self.assertIn('"test_audio_separator_upgrade.py"', ci)
         self.assertIn('brew install libsamplerate', ci)
-        self.assertIn('torch==2.13.0 torchvision==0.28.0 torchaudio==2.13.0', ci)
+        self.assertIn('torch==2.13.0 torchvision==0.28.0 torchaudio==2.11.0', ci)
 
 
 if __name__ == "__main__":
