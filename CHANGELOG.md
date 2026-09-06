@@ -1,9 +1,10 @@
 # Changelog
 
-## 1.5.1 — 2026-09-06
+## 1.5.2 — 2026-09-06
 
 ### 中文
 
+- 修复 PyTorch 2.11 经由 cuda-toolkit 间接引入的 NVIDIA 动态库漏装：激活官方收集钩子并补齐带版本号的动态库和插件；本地 spec 与 Actions 同步，GPU 成品必须通过 NVRTC 实际编译检查。1.5.1 草稿因 Linux GPU 真实翻唱发现缺库而未发布，不关闭源约束或降低质量参数规避错误。
 - 同时准备固定版 VC 与 UVR5 源码，修复干净构建环境只内置 VC、切换 UVR5 时缺少官方源码的问题。Actions 与本地 spec 在打包前后逐文件校验两套源码。1.5.0 草稿在成品验收中被拦截，未公开发布；本版包含以下全部更新。
 - 修正 Windows 英文系统读取中文依赖清单时的编码错误；相关 CI 命令采用遇错即停的 shell，避免前面的安装或测试失败被后续成功命令覆盖。
 - 修正 Apple Silicon 安装器和 CI 引用了不存在的 TorchAudio 2.13：采用官方稳定 ABI 兼容组合 PyTorch 2.13.0 / torchvision 0.28.0 / TorchAudio 2.11.0，依赖清单与版本检查同步约束；增加真实重采样回归。分离模型、推理参数及 Windows/Linux 运行栈保持不变。
@@ -12,7 +13,7 @@
 - 配置原子保存保留容器文件软链接，升级镜像继续使用原有配置和模型；本地浏览器启动行为保持，容器可无浏览器启动并设置反向代理子路径。
 - 兼容新版 FastAPI 的懒路由，保留下载鉴权、Range 和中文文件名；容器仅开放实际输出目录供下载。启动配置固定设备时，界面只读且保存接口明确拒绝无效修改。
 - 六个默认分离模型固定到已实测的提交与 SHA-256，已有有效缓存可断网使用；CPU 环境不预加载 CUDA 库，实际依赖或下载错误继续完整报告。
-- 发布工作流默认生成审核产物，上传草稿必须绑定一致的版本标签；完整回归、前端构建、包内文件清单和压缩包校验码进入流程，公开文档和截图随便携包分发。源码版本、Compose 默认镜像与 OCI 构建版本统一为 1.5.1。
+- 发布工作流默认生成审核产物，上传草稿必须绑定一致的版本标签；完整回归、前端构建、包内文件清单和压缩包校验码进入流程，公开文档和截图随便携包分发。源码版本、Compose 默认镜像与 OCI 构建版本统一为 1.5.2。
 
 - 完全移除 PolarFormer 运行封装、混合预设、专用窗口参数及下载入口，新包不再包含遗留权重；旧配置显式报错。纯伴奏统一使用已设为默认的 Leap Instrumental，保留历史对比测量。
 
@@ -68,7 +69,8 @@
 - Keep configuration symlinks intact during atomic saves. Recreated containers retain settings and models; headless startup and reverse-proxy paths are optional without changing desktop startup defaults.
 - Support lazy routers in newer FastAPI while preserving download authentication, ranges and Unicode filenames. Allow only the actual output directory for container downloads. Make startup-pinned device settings read-only and reject ineffective save requests.
 - Pin all six default separator models to tested revisions and SHA-256 hashes for offline cache reuse. Avoid CUDA library preloading on CPU; retain complete dependency and download errors.
-- Make manual release builds review-only by default. Draft uploads require matching source/version tags; run the full suite, build the player, include public documentation and generate package inventories/checksums. Align the source, Compose image defaults and OCI build version at 1.5.1.
+- Collect NVIDIA libraries introduced indirectly through PyTorch 2.11's cuda-toolkit dependencies, using upstream hooks plus versioned library/plugin collection. Require a real NVRTC compilation check in both local and Actions GPU builds. The v1.5.1 draft was rejected after its Linux GPU cover exposed the omission; source constraints and quality settings remain enabled.
+- Make manual release builds review-only by default. Draft uploads require matching source/version tags; run the full suite, build the player, include public documentation and generate package inventories/checksums. Align the source, Compose image defaults and OCI build version at 1.5.2.
 
 - Remove the PolarFormer runtime, hybrid preset, dedicated window controls, and download entry points; new builds exclude any remaining cached weights. Retired model IDs fail explicitly. Pure accompaniment uses the existing Leap Instrumental default; historical comparison measurements remain available.
 

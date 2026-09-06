@@ -5,6 +5,9 @@ import sys
 
 sys.path.insert(0, str(Path(SPEC).resolve().parent))
 from tools.package_runtime import validate_upstream_sources
+from tools.package_runtime import validate_cuda_runtime
+
+import torch
 
 validate_upstream_sources(Path(SPEC).resolve().parent)
 
@@ -21,6 +24,9 @@ for package in ('torch', 'torchaudio', 'gradio', 'gradio_client', 'torchfcpe', '
     bundle_datas.extend(package_datas)
     bundle_binaries.extend(package_binaries)
     bundle_imports.extend(package_imports)
+
+if sys.platform.startswith('linux') and torch.version.cuda:
+    bundle_imports.append('nvidia')
 
 a = Analysis(
     ['run.py'],
@@ -75,7 +81,7 @@ a = Analysis(
     ] + bundle_imports + collect_submodules('rvc_mcp') + collect_submodules('mcp')
       + collect_submodules('audio_separator.separator')
       + collect_submodules('audio_separator.separator.uvr_lib_v5.roformer'),
-    hookspath=[],
+    hookspath=[str(Path(SPEC).resolve().parent / 'tools' / 'pyinstaller_hooks')],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
@@ -117,3 +123,5 @@ coll = COLLECT(
 )
 
 validate_upstream_sources(Path(DISTPATH) / 'AI-RVC' / '_internal')
+if torch.version.cuda:
+    validate_cuda_runtime(Path(DISTPATH) / 'AI-RVC' / '_internal', torch.version.cuda)

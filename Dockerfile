@@ -35,7 +35,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 FROM ${PYTHON_IMAGE} AS runtime
 ARG VARIANT=cuda
-ARG VERSION=1.5.1
+ARG VERSION=1.5.2
 ARG REVISION=local
 LABEL org.opencontainers.image.title="AI-RVC" \
       org.opencontainers.image.description="RVC voice conversion and Leap / MVSep song covers" \
