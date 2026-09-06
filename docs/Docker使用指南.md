@@ -1,6 +1,6 @@
 # Docker 使用指南
 
-当前候选版本：`1.5.0-rc.1`。提供 Linux x86-64 的 CPU、NVIDIA CUDA 两种镜像。当前先本地构建和验收，GHCR 发布尚未执行；不要把文档中的仓库地址当成已经可拉取的镜像。
+版本：`1.5.0`，提供 Linux x86-64 的 CPU、NVIDIA CUDA 两种镜像。根目录 Compose 默认指向 `ghcr.io/mason369/ai-rvc:1.5.0-cuda`，CPU 文件指向 `ghcr.io/mason369/ai-rvc:1.5.0-cpu`。镜像发布与验收状态见 [v1.5.0 Release](https://github.com/mason369/AI-RVC/releases/tag/v1.5.0)。
 
 CPU/CUDA 镜像均已实际完成断网默认翻唱，各通过 335 项回归；网页、登录、NGINX 子路径、下载、持久化、镜像导入及数据恢复的具体结果见[平台验收](平台适配与验收.md)。本机使用 WSL2 Engine，这不等于所有 Docker 宿主机都已实测。
 
@@ -18,7 +18,7 @@ CPU/CUDA 镜像均已实际完成断网默认翻唱，各通过 335 项回归；
 
 ```bash
 # NVIDIA（推荐）
-docker compose build
+docker compose pull
 docker compose run --rm ai-rvc prepare
 docker compose up -d
 docker compose logs -f --tail 100
@@ -27,13 +27,13 @@ docker compose logs -f --tail 100
 CPU 使用下面这一组命令，**不要把两个基础 Compose 文件叠加**：
 
 ```bash
-docker compose -f compose.cpu.yaml build
+docker compose -f compose.cpu.yaml pull
 docker compose -f compose.cpu.yaml run --rm ai-rvc prepare
 docker compose -f compose.cpu.yaml up -d
 docker compose -f compose.cpu.yaml logs -f --tail 100
 ```
 
-看到界面启动后访问 <http://127.0.0.1:7860>。`prepare` 串行下载和校验必需模型及默认分离模型，失败返回非零状态。普通启动也检查并准备缺失模型；预先执行 `prepare` 可以明确区分下载进度与 Web 服务就绪状态。不会自动下载全部 181 个角色，角色在界面按需下载或导入。
+看到界面启动后访问 <http://127.0.0.1:7860>。自行构建时，将上述 `pull` 替换为 `build`；两种方式使用相同 Dockerfile 和完整模型链。`prepare` 串行下载和校验必需模型及默认分离模型，失败返回非零状态。普通启动也检查并准备缺失模型；预先执行 `prepare` 可以明确区分下载进度与 Web 服务就绪状态。不会自动下载全部 181 个角色，角色在界面按需下载或导入。
 
 首次下载耗时由网络决定。默认六模型链的内存、显存需求与本地版本相同，请同时为宿主机和 Docker/WSL 留出资源。CPU 整曲处理较慢；显存不足会明确报错，镜像不会降低精度、模型数量、重叠参数或关闭 Karaoke。
 
@@ -89,7 +89,7 @@ docker compose -f compose.yaml -f compose.auth.yaml up -d
 
 ## 升级与离线使用
 
-发布后优先使用明确版本标签，避免在转换过程中升级。正式 GHCR 标签格式为 `ghcr.io/mason369/ai-rvc:<版本>-cuda` 或 `<版本>-cpu`；仓库维护者完成该次发布后才可拉取。在 `.env` 设置 `AI_RVC_IMAGE` 后执行：
+升级时使用明确版本标签，避免在转换过程中升级。GHCR 标签格式为 `ghcr.io/mason369/ai-rvc:<版本>-cuda` 或 `<版本>-cpu`；默认已经绑定本版镜像，需要其他已发布版本时才在 `.env` 设置 `AI_RVC_IMAGE`。执行：
 
 ```bash
 docker compose stop

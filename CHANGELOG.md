@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — 2026-09-06
+## 1.5.0 — 2026-09-06
 
 ### 中文
 
@@ -10,7 +10,7 @@
 - 配置原子保存保留容器文件软链接，升级镜像继续使用原有配置和模型；本地浏览器启动行为保持，容器可无浏览器启动并设置反向代理子路径。
 - 兼容新版 FastAPI 的懒路由，保留下载鉴权、Range 和中文文件名；容器仅开放实际输出目录供下载。启动配置固定设备时，界面只读且保存接口明确拒绝无效修改。
 - 六个默认分离模型固定到已实测的提交与 SHA-256，已有有效缓存可断网使用；CPU 环境不预加载 CUDA 库，实际依赖或下载错误继续完整报告。
-- 发布工作流默认生成审核产物，上传草稿必须绑定一致的版本标签；完整回归、前端构建、包内文件清单和压缩包校验码进入流程，公开文档和截图随便携包分发。当前为 1.5.0-rc.1 发布准备，尚未发布镜像或新 Release。
+- 发布工作流默认生成审核产物，上传草稿必须绑定一致的版本标签；完整回归、前端构建、包内文件清单和压缩包校验码进入流程，公开文档和截图随便携包分发。源码版本、Compose 默认镜像与 OCI 构建版本统一为 1.5.0。
 
 - 完全移除 PolarFormer 运行封装、混合预设、专用窗口参数及下载入口，新包不再包含遗留权重；旧配置显式报错。纯伴奏统一使用已设为默认的 Leap Instrumental，保留历史对比测量。
 
@@ -25,7 +25,7 @@
 - 分离引擎统一升级到 audio-separator 0.47.0，同步本地 CPU/CUDA/DirectML、HF、Colab、安装检查与打包依赖。打包收集完整分离器模块、模型配置及版本元数据。
 - RoFormer 使用模型 YAML 的重叠参数，保持 FP32 常规推理；接入上游分块与输出修正，移除按轨道类型猜测缺失输出文件的兼容处理。输出、耗时可能随重叠计算修正而变化。
 - 明确拒绝上游 0.47.0 不支持的 MDXC/RoFormer + DirectML 组合，避免选择 DirectML 后自动在 CPU 推理。
-- Windows CUDA 源码的约 241 秒整曲和 5 秒短音频均完成默认翻唱，六模型参数生效、七类 Float WAV 输出完整。此前 Windows CUDA 实际包完成默认短音频与 UVR5 验收；本轮追加共用修正后仍需重建便携包，尚未发布。技术验收不作为主观听感提升证明。
+- Windows CUDA 源码的约 241 秒整曲和 5 秒短音频均完成默认翻唱，六模型参数生效、七类 Float WAV 输出完整。此前 Windows CUDA 实际包完成默认短音频与 UVR5 验收；正式便携包采用本版最终源码构建，逐包验收记录随 Release 提供。技术验收不作为主观听感提升证明。
 
 - 修复参数实际生效问题：UVR5 分离不再被音色转换引擎开关改成 Demucs；默认说话人 ID 按配置初始化并校验。补齐 FCPE 静音门限提取器，保留 PM 无声帧的零值。
 - 固定版官方 RVC 保留音高提取器的无声标记，修复插值使清辅音保护失效的问题。实际权重、固定随机种子验证修正前保护参数输出相同、修正后生效；不修改官方源码目录或模型权重。
@@ -50,7 +50,7 @@
 - 离线官方转换固定常规推理，修正变长整曲反复预热和保留 CUDA Graph 显存的问题；模型及 FP32/FP16 策略不变。
 - Demucs 改用统一浮点解码并汇总全部非人声轨；补齐 FCPE 依赖，移除本地未实现的 DIO 配置；MCP 失败同步设置协议错误标志。
 - 补正冻结程序工作进程调度与打包资源；GPU 构建配置对齐 PyTorch 2.11/CUDA 12.8。Windows CUDA 包已完成默认短音频和 UVR5 实跑，云端部署仍未验收。
-- README、HF README、Colab 和兼容性说明同步更新。本节记录未发布源码修改，不表示已打包或部署到云端。
+- README、HF README、Colab 和兼容性说明同步更新；云端部署与未接入硬件的验收范围单独记录。
 
 - 界面语言即时切换，合并标签与候选项更新，保留手动参数和多轨会话；筛选后清理失效角色选择。
 - 基础模型固定提交并校验大小与 SHA-256，下载采用可验证续传及原子发布；失败不覆盖现有文件，脚本返回真实失败退出码。
@@ -64,7 +64,7 @@
 - Keep configuration symlinks intact during atomic saves. Recreated containers retain settings and models; headless startup and reverse-proxy paths are optional without changing desktop startup defaults.
 - Support lazy routers in newer FastAPI while preserving download authentication, ranges and Unicode filenames. Allow only the actual output directory for container downloads. Make startup-pinned device settings read-only and reject ineffective save requests.
 - Pin all six default separator models to tested revisions and SHA-256 hashes for offline cache reuse. Avoid CUDA library preloading on CPU; retain complete dependency and download errors.
-- Make manual release builds review-only by default. Draft uploads require matching source/version tags; run the full suite, build the player, include public documentation and generate package inventories/checksums. Version 1.5.0-rc.1 is being prepared; no registry image or new Release has been published.
+- Make manual release builds review-only by default. Draft uploads require matching source/version tags; run the full suite, build the player, include public documentation and generate package inventories/checksums. Align the source, Compose image defaults and OCI build version at 1.5.0.
 
 - Remove the PolarFormer runtime, hybrid preset, dedicated window controls, and download entry points; new builds exclude any remaining cached weights. Retired model IDs fail explicitly. Pure accompaniment uses the existing Leap Instrumental default; historical comparison measurements remain available.
 
@@ -79,7 +79,7 @@
 - Upgrade audio-separator to 0.47.0 across local CPU/CUDA/DirectML, HF, Colab, installer checks and packaging. Bundle separator modules, model configuration data and distribution metadata.
 - Honor model-configured RoFormer overlap with FP32 eager inference. Adopt upstream chunk/output fixes and reject missing output paths instead of substituting existing stems. Corrected overlap can change output and runtime.
 - Reject MDXC/RoFormer on DirectML because upstream 0.47.0 substitutes CPU for that unsupported allocator; do not report GPU execution while running on CPU.
-- Windows CUDA source completed default covers of a roughly 241-second song and a 5-second clip, with six effective model configurations and seven Float WAV outputs. The earlier Windows CUDA portable app passed a default short cover and real UVR5 separation; it still needs rebuilding after the latest shared changes. No new installer was published, and listening improvement is not inferred from technical checks.
+- Windows CUDA source completed default covers of a roughly 241-second song and a 5-second clip, with six effective model configurations and seven Float WAV outputs. The earlier Windows CUDA portable app passed a default short cover and real UVR5 separation; final portable builds use this version's tagged source, with package validation recorded in the Release. Listening improvement is not inferred from technical checks.
 
 - Make UVR5 selection independent of the VC engine and initialize the speaker ID from validated configuration. Add the missing FCPE extractor for silence gating and preserve PM unvoiced zeros.
 - Preserve native unvoiced F0 decisions in the pinned RVC adapter so consonant protection works. Fixed-seed, real-weight runs confirm that protection previously produced identical outputs and now changes them. Keep the upstream checkout and model weights intact.
@@ -109,7 +109,7 @@
 - Use eager execution for offline conversion without changing model precision. Avoid repeated CUDA Graph warmup and retained memory pools for variable-length clips.
 - Use float decoding and all non-vocal stems in Demucs, include FCPE dependencies, reject unsupported local DIO settings and propagate MCP protocol errors.
 - Correct frozen worker dispatch and bundled assets; align GPU build definitions with PyTorch 2.11/CUDA 12.8. The Windows CUDA portable app passed a default short cover and real UVR5 separation; cloud E2E remains unverified.
-- These are unreleased source changes; local verification is not a new release or cloud deployment.
+- Cloud deployment and hardware-specific acceptance are recorded separately from source and portable-package validation.
 
 ## v1.4.0 - 2026-07-12
 
