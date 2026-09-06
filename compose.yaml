@@ -1,12 +1,12 @@
 name: ai-rvc
 services:
   ai-rvc:
-    image: ${AI_RVC_IMAGE:-ghcr.io/mason369/ai-rvc:1.5.0-cuda}
+    image: ${AI_RVC_IMAGE:-ghcr.io/mason369/ai-rvc:1.5.1-cuda}
     build:
       context: .
       args:
         VARIANT: cuda
-        VERSION: 1.5.0
+        VERSION: 1.5.1
     ports:
       - "${AI_RVC_BIND:-127.0.0.1}:${AI_RVC_PORT:-7860}:7860"
     environment:

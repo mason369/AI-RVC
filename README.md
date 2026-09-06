@@ -6,7 +6,7 @@ AI-RVC 是一个开源的 [RVC v1/v2](https://github.com/RVC-Project/Retrieval-b
 
 **运行入口：Windows / Linux / WSL2 / Docker / Google Colab / Hugging Face Spaces**；各平台验证范围见下文。
 
-本版为 **1.5.0**。便携包、分卷与校验码以 [v1.5.0 Release](https://github.com/mason369/AI-RVC/releases/tag/v1.5.0) 的实际附件为准；Docker 使用固定的 `1.5.0-cpu` / `1.5.0-cuda` 镜像标签。部署、持久化和登录用法见 [Docker 使用指南](docs/Docker使用指南.md)，发行核对见[发布与验收](docs/发布准备.md)。
+本版为 **1.5.1**。便携包、分卷与校验码以 [v1.5.1 Release](https://github.com/mason369/AI-RVC/releases/tag/v1.5.1) 的实际附件为准；Docker 使用固定的 `1.5.1-cpu` / `1.5.1-cuda` 镜像标签。部署、持久化和登录用法见 [Docker 使用指南](docs/Docker使用指南.md)，发行核对见[发布与验收](docs/发布准备.md)。
 
 ## 界面预览
 

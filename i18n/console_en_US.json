@@ -1,4 +1,8 @@
 {
+  "校验发行包内全部固定版本": "Validate all pinned runtimes in the release package",
+  "固定源码": "pinned source files",
+  "发行资源": "Release resources",
+  "源码校验失败": "source validation failed",
   "字节": "bytes",
   "发行目录为空": "Release directory is empty",
   "生成或核对发行包完整性清单": "Create or verify a release package content inventory",

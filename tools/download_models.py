@@ -383,7 +383,8 @@ def download_required_models() -> bool:
         success = False
 
     try:
-        ensure_upstream_rvc_tree()
+        for capability in upstream_runtime.REVISIONS:
+            ensure_upstream_rvc_tree(capability=capability)
     except Exception as e:
         print(f"[ERROR] 内置官方 RVC 准备失败: {e}")
         success = False
@@ -414,7 +415,8 @@ def download_all_models() -> bool:
         success = False
 
     try:
-        ensure_upstream_rvc_tree()
+        for capability in upstream_runtime.REVISIONS:
+            ensure_upstream_rvc_tree(capability=capability)
     except Exception as e:
         print(f"[ERROR] 内置官方 RVC 准备失败: {e}")
         success = False

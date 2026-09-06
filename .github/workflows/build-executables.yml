@@ -257,6 +257,7 @@ jobs:
       run: |
         echo "=== Download all models, separator defaults, and official RVC source ==="
         python tools/download_models.py --all
+        python tools/package_runtime.py .
 
         echo "=== Verify downloaded models ==="
         find assets/ -name "*.pt" -o -name "*.pth" -o -name "*.ckpt" -o -name "*.onnx" | while read f; do
@@ -342,6 +343,7 @@ jobs:
 
         EXE="dist/${NAME}/${NAME}"
         if [ "${{ matrix.platform }}" = "Windows" ]; then EXE="${EXE}.exe"; fi
+        python tools/package_runtime.py "dist/${NAME}/_internal"
         "${EXE}" --internal-worker vc --help
         "${EXE}" --internal-worker uvr5 --help
 

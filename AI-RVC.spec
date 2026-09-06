@@ -1,6 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules, copy_metadata
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(SPEC).resolve().parent))
+from tools.package_runtime import validate_upstream_sources
+
+validate_upstream_sources(Path(SPEC).resolve().parent)
 
 # Retired assets may remain in an existing installation; never redistribute them.
 separator_datas = [
@@ -109,3 +115,5 @@ coll = COLLECT(
     upx_exclude=[],
     name='AI-RVC',
 )
+
+validate_upstream_sources(Path(DISTPATH) / 'AI-RVC' / '_internal')

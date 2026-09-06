@@ -1,23 +1,24 @@
 # Changelog
 
-## 1.5.0 — 2026-09-06
+## 1.5.1 — 2026-09-06
 
 ### 中文
 
+- 同时准备固定版 VC 与 UVR5 源码，修复干净构建环境只内置 VC、切换 UVR5 时缺少官方源码的问题。Actions 与本地 spec 在打包前后逐文件校验两套源码。1.5.0 草稿在成品验收中被拦截，未公开发布；本版包含以下全部更新。
 - 修正 Windows 英文系统读取中文依赖清单时的编码错误；相关 CI 命令采用遇错即停的 shell，避免前面的安装或测试失败被后续成功命令覆盖。
 - 修正 Apple Silicon 安装器和 CI 引用了不存在的 TorchAudio 2.13：采用官方稳定 ABI 兼容组合 PyTorch 2.13.0 / torchvision 0.28.0 / TorchAudio 2.11.0，依赖清单与版本检查同步约束；增加真实重采样回归。分离模型、推理参数及 Windows/Linux 运行栈保持不变。
-- Windows 全量回归增至 336 项并通过；主分支 Windows、Ubuntu、Apple Silicon 三平台依赖安装及合同测试均通过。CI、便携包和 Docker 工作流的 GitHub/Docker Actions 统一使用已发布的 Node.js 24 版本，消除 Node.js 20 弃用项；应用运行时版本不变。
+- Windows 全量回归增至 338 项并通过；主分支 Windows、Ubuntu、Apple Silicon 三平台依赖安装及合同测试均通过。CI、便携包和 Docker 工作流的 GitHub/Docker Actions 统一使用已发布的 Node.js 24 版本，消除 Node.js 20 弃用项；应用运行时版本不变。
 - 增加 Linux x86-64 CPU/CUDA Docker 镜像和 Compose：固定完整 PyTorch 栈，多阶段构建前端与依赖，非 root 运行，单数据卷、可选密码文件登录、健康检查和显式设备失败；默认六模型、精度和音频输出策略不变。
 - 配置原子保存保留容器文件软链接，升级镜像继续使用原有配置和模型；本地浏览器启动行为保持，容器可无浏览器启动并设置反向代理子路径。
 - 兼容新版 FastAPI 的懒路由，保留下载鉴权、Range 和中文文件名；容器仅开放实际输出目录供下载。启动配置固定设备时，界面只读且保存接口明确拒绝无效修改。
 - 六个默认分离模型固定到已实测的提交与 SHA-256，已有有效缓存可断网使用；CPU 环境不预加载 CUDA 库，实际依赖或下载错误继续完整报告。
-- 发布工作流默认生成审核产物，上传草稿必须绑定一致的版本标签；完整回归、前端构建、包内文件清单和压缩包校验码进入流程，公开文档和截图随便携包分发。源码版本、Compose 默认镜像与 OCI 构建版本统一为 1.5.0。
+- 发布工作流默认生成审核产物，上传草稿必须绑定一致的版本标签；完整回归、前端构建、包内文件清单和压缩包校验码进入流程，公开文档和截图随便携包分发。源码版本、Compose 默认镜像与 OCI 构建版本统一为 1.5.1。
 
 - 完全移除 PolarFormer 运行封装、混合预设、专用窗口参数及下载入口，新包不再包含遗留权重；旧配置显式报错。纯伴奏统一使用已设为默认的 Leap Instrumental，保留历史对比测量。
 
 - 跨平台安装改为一次解析完整项目依赖，并保留所选 PyTorch 构建；补齐 Apple Silicon 的 PyTorch 2.13 与 ARM 音频库要求、Blackwell CUDA 12.8 选择，明确拒绝不兼容组合。MCP 1.x 与 Gradio 5.49.1 保持兼容。
 - 修复同长度、同修改时间的权重或索引覆盖可能复用旧校验结果的问题；模型校验依据内容哈希。便携包对固定官方源码逐文件校验，不再依赖用户机器安装 Git；本地 spec 与发行流程统一使用目录包；补齐 safehttpx/groovy 资源，VC/UVR5 隔离导入保留冻结程序的依赖搜索路径。
-- 最终 Windows 源码、Docker CPU 与 CUDA 运行时各 335 项回归通过；两个镜像均完成断网默认六模型、RVC 与七类 Float WAV 输出。登录、子路径代理、上传下载、数据持久化和备份恢复均已实测。Colab 安装成功后被平台使用限制断开，HF 新建 CPU Space 返回 402；不把受阻云端及未接入硬件计为验收通过。
+- 前期候选 Windows 源码、Docker CPU 与 CUDA 运行时各 335 项回归通过；两个镜像均完成断网默认六模型、RVC 与七类 Float WAV 输出。登录、子路径代理、上传下载、数据持久化和备份恢复均已实测。Colab 安装成功后被平台使用限制断开，HF 新建 CPU Space 返回 402；不把受阻云端及未接入硬件计为验收通过。
 
 - README 更新真实多轨波形、翻唱设置与可下载角色目录截图；区分伴奏受控实测、公开榜单与去混响权重名称指标，补充逐平台验收范围。
 - 本地、Colab、Space 与打包共用固定版 pip/setuptools 安装工具；补齐 CPU Space 功能依赖与完整 PyTorch 栈，正常解析依赖并执行检查。
@@ -59,20 +60,21 @@
 
 ### English
 
+- Prepare both pinned VC and UVR5 source trees. Fix clean portable builds that included only VC and failed when selecting UVR5. Actions and the local spec validate every pinned source file before and after bundling. The 1.5.0 draft was rejected during artifact acceptance and was never published; this release includes all changes below.
 - Declare UTF-8 for dependency files on non-UTF-8 Windows systems. CI shell steps now stop at the first failed command so later commands cannot hide installation or test failures.
 - Fix the nonexistent TorchAudio 2.13 pin in the Apple Silicon installer and CI. Use the officially compatible stable-ABI stack PyTorch 2.13.0 / torchvision 0.28.0 / TorchAudio 2.11.0, align dependency checks and add a real resampling regression. Preserve separation models, inference settings and the Windows/Linux runtime stack.
-- Pass all 336 Windows regression tests and the Windows, Ubuntu and Apple Silicon dependency/contract CI jobs. Update GitHub/Docker Actions in CI and package/image workflows to released Node.js 24 versions, removing deprecated Node.js 20 references without changing application runtimes.
+- Pass all 338 Windows regression tests and the Windows, Ubuntu and Apple Silicon dependency/contract CI jobs. Update GitHub/Docker Actions in CI and package/image workflows to released Node.js 24 versions, removing deprecated Node.js 20 references without changing application runtimes.
 - Add Linux x86-64 CPU/CUDA Docker images and Compose with a pinned PyTorch stack, multistage frontend/dependency builds, non-root execution, one persistent data volume, optional secret-file login, health checks and explicit device errors. Preserve the complete model chain, precision and output policy.
 - Keep configuration symlinks intact during atomic saves. Recreated containers retain settings and models; headless startup and reverse-proxy paths are optional without changing desktop startup defaults.
 - Support lazy routers in newer FastAPI while preserving download authentication, ranges and Unicode filenames. Allow only the actual output directory for container downloads. Make startup-pinned device settings read-only and reject ineffective save requests.
 - Pin all six default separator models to tested revisions and SHA-256 hashes for offline cache reuse. Avoid CUDA library preloading on CPU; retain complete dependency and download errors.
-- Make manual release builds review-only by default. Draft uploads require matching source/version tags; run the full suite, build the player, include public documentation and generate package inventories/checksums. Align the source, Compose image defaults and OCI build version at 1.5.0.
+- Make manual release builds review-only by default. Draft uploads require matching source/version tags; run the full suite, build the player, include public documentation and generate package inventories/checksums. Align the source, Compose image defaults and OCI build version at 1.5.1.
 
 - Remove the PolarFormer runtime, hybrid preset, dedicated window controls, and download entry points; new builds exclude any remaining cached weights. Retired model IDs fail explicitly. Pure accompaniment uses the existing Leap Instrumental default; historical comparison measurements remain available.
 
 - Resolve the full project dependency set in one transaction while preserving the selected PyTorch build. Add Apple Silicon runtime/library requirements and Blackwell cu128 selection; keep MCP 1.x compatible with Gradio 5.49.1.
 - Validate model and index contents despite unchanged file size and timestamps. Portable builds verify all pinned upstream source files without requiring system Git and use directory bundles consistently.
-- Final Windows source and both Docker runtimes passed 335 tests each. Both images completed network-disabled default six-model/RVC covers with seven Float WAV outputs. Authentication, subpath proxying, uploads/downloads, persistence and backup/restore were verified. Colab was terminated by platform restrictions after installation; new HF CPU Space creation returned HTTP 402. These cloud routes and unavailable hardware remain unverified.
+- Earlier candidate Windows source and both Docker runtimes passed 335 tests each. Both images completed network-disabled default six-model/RVC covers with seven Float WAV outputs. Authentication, subpath proxying, uploads/downloads, persistence and backup/restore were verified. Colab was terminated by platform restrictions after installation; new HF CPU Space creation returned HTTP 402. These cloud routes and unavailable hardware remain unverified.
 
 - Refresh README with actual multitrack waveforms, cover controls and the downloadable character catalog. Separate controlled accompaniment scores from public leaderboard and checkpoint-name metrics; document platform-specific evidence.
 - Share pinned pip/setuptools bootstrap across local, Colab, Space and package builds. Include all CPU Space feature dependencies, install the complete PyTorch stack and validate dependency resolution instead of bypassing it.
