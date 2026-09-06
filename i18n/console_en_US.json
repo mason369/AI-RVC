@@ -1905,5 +1905,7 @@
   "彻底的音色转换，适合音色特征明显的角色，可能有轻微口齿模糊": "Emphasizes the target timbre; may slightly reduce articulation",
   "依赖安装已停止": "Dependency installation has stopped",
   "无法读取": "Cannot read",
-  "开始解析并安装完整项目依赖": "Resolving and installing the complete project dependencies"
+  "开始解析并安装完整项目依赖": "Resolving and installing the complete project dependencies",
+  "官方 UVR5 频谱接口发生变化；已停止分离": "The pinned UVR5 spectrum interface changed; separation has stopped",
+  "频谱接口发生变化": "The spectrum interface changed"
 }

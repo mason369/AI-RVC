@@ -4,6 +4,7 @@
 
 ### 中文
 
+- 修复 UVR5 重建频谱时读取未初始化频点、偶发产生 NaN 的上游缺陷：内置实现与独立固定官方运行时均先清零缓冲区，保留复杂数精度、模型及重采样参数。含 NaN 旧内存的确定性回归和 Windows/Linux 真实权重分离均通过，全量回归为 343 项。
 - 修复 PyTorch 2.11 经由 cuda-toolkit 间接引入的 NVIDIA 动态库漏装：激活官方收集钩子并补齐带版本号的动态库和插件；本地 spec 与 Actions 同步，GPU 成品必须通过 NVRTC 实际编译检查。1.5.1 草稿因 Linux GPU 真实翻唱发现缺库而未发布，不关闭源约束或降低质量参数规避错误。
 - 同时准备固定版 VC 与 UVR5 源码，修复干净构建环境只内置 VC、切换 UVR5 时缺少官方源码的问题。Actions 与本地 spec 在打包前后逐文件校验两套源码。1.5.0 草稿在成品验收中被拦截，未公开发布；本版包含以下全部更新。
 - 修正 Windows 英文系统读取中文依赖清单时的编码错误；相关 CI 命令采用遇错即停的 shell，避免前面的安装或测试失败被后续成功命令覆盖。
@@ -61,6 +62,7 @@
 
 ### English
 
+- Initialize unused UVR5 spectrum bins in both the bundled implementation and pinned upstream runtime, fixing intermittent NaN audio caused by uninitialized memory. Preserve complex precision, models and resampling parameters. Deterministic dirty-memory regression, real Windows/Linux weight inference and all 343 tests passed.
 - Prepare both pinned VC and UVR5 source trees. Fix clean portable builds that included only VC and failed when selecting UVR5. Actions and the local spec validate every pinned source file before and after bundling. The 1.5.0 draft was rejected during artifact acceptance and was never published; this release includes all changes below.
 - Declare UTF-8 for dependency files on non-UTF-8 Windows systems. CI shell steps now stop at the first failed command so later commands cannot hide installation or test failures.
 - Fix the nonexistent TorchAudio 2.13 pin in the Apple Silicon installer and CI. Use the officially compatible stable-ABI stack PyTorch 2.13.0 / torchvision 0.28.0 / TorchAudio 2.11.0, align dependency checks and add a real resampling regression. Preserve separation models, inference settings and the Windows/Linux runtime stack.

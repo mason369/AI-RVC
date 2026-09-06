@@ -357,7 +357,8 @@ def cmb_spectrogram_to_wave(spec_m, mp, extra_bins_h=None, extra_bins=None):
 
     for d in range(1, bands_n + 1):
         bp = mp.param["band"][d]
-        spec_s = np.ndarray(
+        # Cropped-out bins must be silent; uninitialized memory can contain NaN.
+        spec_s = np.zeros(
             shape=(2, bp["n_fft"] // 2 + 1, spec_m.shape[2]), dtype=complex
         )
         h = bp["crop_stop"] - bp["crop_start"]

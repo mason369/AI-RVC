@@ -80,10 +80,24 @@ def preserve_float_vc_output(pipeline, *, index_loader=None, index_retriever=Non
     pipeline.pipeline = MethodType(namespace[original.__name__], pipeline)
 
 
+def initialize_uvr_spectrum(spec_utils_module) -> None:
+    """Initialize cropped-out bins, matching the upstream UVR buffer fix."""
+    original = spec_utils_module.cmb_spectrogram_to_wave
+    source = textwrap.dedent(inspect.getsource(original))
+    before = "spec_s = np.ndarray("
+    if source.count(before) != 1:
+        raise RuntimeError("官方 UVR5 频谱接口发生变化；已停止分离")
+    source = source.replace(before, "spec_s = np.zeros(", 1)
+    namespace = dict(original.__globals__)
+    exec(compile(source, inspect.getfile(original), "exec"), namespace)
+    spec_utils_module.cmb_spectrogram_to_wave = namespace[original.__name__]
+
+
 def preserve_float_uvr_output(vr_module) -> None:
-    """Replace only the checked integer encoders in pinned UVR5 VR classes."""
+    """Initialize legacy spectrum buffers and replace checked integer encoders."""
     import numpy as np
 
+    initialize_uvr_spectrum(vr_module.spec_utils)
     writer = vr_module.sf.write
 
     def write_float_wav(path, data, sample_rate, **kwargs):
