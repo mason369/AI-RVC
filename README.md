@@ -6,7 +6,7 @@ AI-RVC 是一个开源的 [RVC v1/v2](https://github.com/RVC-Project/Retrieval-b
 
 **运行入口：Windows / Linux / WSL2 / Docker / Google Colab / Hugging Face Spaces**；各平台验证范围见下文。
 
-本版为 **1.5.1**。便携包、分卷与校验码以 [v1.5.1 Release](https://github.com/mason369/AI-RVC/releases/tag/v1.5.1) 的实际附件为准；Docker 使用固定的 `1.5.1-cpu` / `1.5.1-cuda` 镜像标签。部署、持久化和登录用法见 [Docker 使用指南](docs/Docker使用指南.md)，发行核对见[发布与验收](docs/发布准备.md)。
+**[1.5.1 已发布](https://github.com/mason369/AI-RVC/releases/tag/v1.5.1)**。Windows/Linux CPU/CUDA 四种便携包均完成逐文件校验及默认、官方两条真实翻唱路线，共验证 44 个 Float32 输出；各构建均通过 343 项回归。Release 提供完整分卷、SHA-256、实际运行记录和与 v1.4.1 的全量文件对照。公开 Docker 镜像 `1.5.1-cpu` / `1.5.1-cuda` 均已匿名拉取并完成两条真实路线，另验证 22 个 Float32 输出，见[平台验收](docs/平台适配与验收.md)。部署、持久化和登录用法见 [Docker 使用指南](docs/Docker使用指南.md)，发行核对见[发布与验收](docs/发布准备.md)。
 
 ## 界面预览
 
@@ -92,14 +92,14 @@ Leap 在这一个受控样本中高 **0.8280 dB**，三个连续分段也都领�
 
 ## 平台入口
 
-下表列出源码和打包配置提供的入口。已有完整翻唱运行记录来自本地 Windows CPU/CUDA；本轮额外检查 Linux/WSL2 的干净依赖安装。各项证据和未验收环境见[平台适配与验收](docs/平台适配与验收.md)，入口存在不等同于全部硬件已通过真实推理。
+下表列出源码和成品提供的入口。本版 Windows/Linux CPU/CUDA 四种便携包均已实际完成默认与官方翻唱；Linux 成品在 WSL2 Ubuntu 22.04 中运行，GPU 实测为 RTX 4070 Ti SUPER。各项证据和未验收环境见[平台适配与验收](docs/平台适配与验收.md)，这些结果不能推广为所有宿主机或显卡都已通过。
 
 | 平台 | 入口状态 | 安装方式 | 说明 |
 |------|------|---------|------|
 | Windows 10/11 (x64) | 已提供 | 可执行文件 / 本地安装 | 便携包提供 CPU 与 NVIDIA CUDA 两种；本地安装另支持 DirectML |
 | Linux (Ubuntu/Debian) | 已提供 | 可执行文件 / 本地安装 | 便携包提供 CPU 与 NVIDIA CUDA 两种；ROCm/XPU 需本地安装专用 PyTorch 栈 |
 | WSL2 | 已提供 | 本地安装 | CPU、NVIDIA CUDA；WebUI 默认地址为 `http://127.0.0.1:7860` |
-| Docker（Linux x86-64） | 候选版 | Docker Compose | CPU / NVIDIA CUDA 两种镜像，单数据卷、可选登录；[使用指南](docs/Docker使用指南.md) |
+| Docker（Linux x86-64） | 已发布并实测 | Docker Compose | CPU / NVIDIA CUDA 两种公开镜像，匿名拉取及双路线翻唱通过；[使用指南](docs/Docker使用指南.md) |
 | Google Colab | 已提供 | Notebook | Notebook 创建独立 Python 3.10 CUDA 环境，并显式检查 CUDA Provider |
 | Hugging Face Spaces | 已提供 | Space | 默认 CPU；付费 GPU Space 需改用对应后端依赖 |
 | macOS / Apple Silicon | 实验性 | 本地安装 | 安装器支持 MPS；默认分离模型组合仍缺少真机完整翻唱验证 |
@@ -131,15 +131,15 @@ Leap 在这一个受控样本中高 **0.8280 dB**，三个连续分段也都领�
 
 #### Windows
 
-1. 从 [Releases](https://github.com/mason369/AI-RVC/releases/latest) 下载 `AI-RVC-Windows-CPU-Portable.zip` 或 `AI-RVC-Windows-GPU-Portable.zip`；超大包可能改为 `.7z` 或分卷
-2. 解压到任意目录
+1. 从 [v1.5.1 Release](https://github.com/mason369/AI-RVC/releases/tag/v1.5.1) 下载所选 CPU/GPU 包的全部 `AI-RVC-Windows-CPU-Portable.7z.*` 或 `AI-RVC-Windows-GPU-Portable.7z.*` 分卷及对应 `SHA256SUMS`
+2. 将同一包的全部分卷放在同一目录，用 7-Zip 打开 `.7z.001`，解压到新目录
 3. 双击所选包内的 `AI-RVC-Windows-CPU.exe` 或 `AI-RVC-Windows-GPU.exe` 启动
 4. 浏览器自动打开 http://127.0.0.1:7860
 
 #### Linux
 
-1. 从 [Releases](https://github.com/mason369/AI-RVC/releases/latest) 下载 `AI-RVC-Linux-CPU-Portable.tar.gz` 或 `AI-RVC-Linux-GPU-Portable.tar.gz`
-2. 解压下载的 `.tar.gz`；如果 Release 提供分卷，先按 Release 说明合并
+1. 从 [v1.5.1 Release](https://github.com/mason369/AI-RVC/releases/tag/v1.5.1) 下载所选 CPU/GPU 包的全部 `AI-RVC-Linux-CPU-Portable.tar.gz.part*` 或 `AI-RVC-Linux-GPU-Portable.tar.gz.part*` 分卷及对应 `SHA256SUMS`
+2. 校验后按文件名顺序合并分卷并解压，例如 GPU 包：`cat AI-RVC-Linux-GPU-Portable.tar.gz.part* | tar -xzf -`
 3. 为所选包内的 `AI-RVC-Linux-CPU` 或 `AI-RVC-Linux-GPU` 添加执行权限
 4. 运行对应的可执行文件
 5. 浏览器访问 http://127.0.0.1:7860
@@ -156,12 +156,12 @@ Leap 在这一个受控样本中高 **0.8280 dB**，三个连续分段也都领�
 
 ```bash
 # NVIDIA CUDA
-docker compose build
+docker compose pull
 docker compose run --rm ai-rvc prepare
 docker compose up -d
 ```
 
-CPU 将每条命令的 `docker compose` 换为 `docker compose -f compose.cpu.yaml`。访问 <http://127.0.0.1:7860>，日志用 `docker compose logs -f` 查看。配置、模型与结果保存在 `/data` 命名卷，重建容器保留数据；不要用 `down -v` 升级。完整的权限、备份、登录、反向代理、离线和发布后拉取方式见 [Docker 使用指南](docs/Docker使用指南.md)。
+CPU 将每条命令的 `docker compose` 换为 `docker compose -f compose.cpu.yaml`。需要自行构建时，将 `pull` 换为 `build`。访问 <http://127.0.0.1:7860>，日志用 `docker compose logs -f` 查看。配置、模型与结果保存在 `/data` 命名卷，重建容器保留数据；不要用 `down -v` 升级。完整的权限、备份、登录、反向代理和离线迁移方式见 [Docker 使用指南](docs/Docker使用指南.md)。
 
 ### 方式 2：Google Colab
 
@@ -339,7 +339,7 @@ python run.py
   3. **安装或检查 PyTorch**：CPU、CUDA、MPS 可自动准备；ROCm、XPU、DirectML 检查预装专用运行栈
   4. **安装项目依赖**：根据后端安装 `audio-separator[cpu/gpu/dml]` 和唯一匹配的 ONNX Runtime 发行包
   5. **启动应用**：自动运行 `run.py` 启动 Web 界面（除非使用 `--no-run`）
-- 默认模型和官方 VC 源码会在首次运行或 `python tools/download_models.py` 时准备；源码固定为 `81eed5e8f68b6bed1789f682fe78cdd324495afc`，放在 `_official_rvc_runtime/<commit>/`。旧 `_official_rvc/` 及其中用户修改保留不动。可选 UVR5 使用独立固定旧提交 `7ef19867780cf703841ebafb565a4e47d1ea86ff`，按需准备。缺少 Git、源码版本/API 不符、下载失败或资源校验失败均显式停止。
+- 默认模型会在首次运行或 `python tools/download_models.py` 时准备；后者同时准备 VC 和 UVR5 两套固定源码。VC 固定为 `81eed5e8f68b6bed1789f682fe78cdd324495afc`，UVR5 固定为 `7ef19867780cf703841ebafb565a4e47d1ea86ff`，分别放在 `_official_rvc_runtime/<commit>/`；便携包和 Docker 镜像均已内置两套源码。旧 `_official_rvc/` 及其中用户修改保留不动。缺少 Git、源码版本/API 不符、下载失败或资源校验失败均显式停止。
 - 支持参数：`--check`、`--cpu`、`--backend auto|cpu|cuda|rocm|xpu|directml|mps`、`--no-run`
 - 如果虚拟环境已存在，会跳过创建步骤，直接检查依赖
 
@@ -348,8 +348,8 @@ python run.py
 | 依赖 | 版本要求 | 说明 |
 |------|----------|------|
 | Python | 3.10 | 安装脚本和 Colab 固定使用 3.10 |
-| PyTorch | >= 2.0.0 | 语音转换 + 人声分离 |
-| torchaudio | >= 2.0.0 | 与 PyTorch 版本对应 |
+| PyTorch | CPU/CUDA 发行栈 2.11.0；Apple Silicon 2.13–2.x | ROCm/XPU/DirectML 专用栈按安装器检查；设备和模型算子仍需实测 |
+| torchaudio | CPU/CUDA 发行栈与 Apple Silicon 安装项均为 2.11.0 | TorchAudio 2.11 的稳定 ABI 支持 PyTorch 2.11 及后续版本；完整组合以安装器和平台记录为准 |
 | CUDA / ROCm | 与 PyTorch wheel 和本机驱动匹配 | 可选 |
 | fairseq | 0.12.2 | HuBERT 特征提取 |
 | [audio-separator](https://github.com/nomadkaraoke/python-audio-separator) | 0.47.0（requirements 锁定） | 加载 RoFormer/BS-RoFormer `.ckpt`，用于 MVSep 9205 主唱 / `Back+Instrumental` ensemble、DeEcho 和旧预设对照 |

@@ -4,12 +4,13 @@
 
 ### 中文
 
-- 修复 UVR5 重建频谱时读取未初始化频点、偶发产生 NaN 的上游缺陷：内置实现与独立固定官方运行时均先清零缓冲区，保留复杂数精度、模型及重采样参数。含 NaN 旧内存的确定性回归和 Windows/Linux 真实权重分离均通过，全量回归为 343 项。
+- 修复 UVR5 重建频谱时读取未初始化频点、偶发产生 NaN 的上游缺陷：内置实现与独立固定官方运行时均先清零缓冲区，保留复数精度、模型及重采样参数。含 NaN 旧内存的确定性回归和 Windows/Linux 真实权重分离均通过，全量回归为 343 项。
 - 修复 PyTorch 2.11 经由 cuda-toolkit 间接引入的 NVIDIA 动态库漏装：激活官方收集钩子并补齐带版本号的动态库和插件；本地 spec 与 Actions 同步，GPU 成品必须通过 NVRTC 实际编译检查。1.5.1 草稿因 Linux GPU 真实翻唱发现缺库而未发布，不关闭源约束或降低质量参数规避错误。
 - 同时准备固定版 VC 与 UVR5 源码，修复干净构建环境只内置 VC、切换 UVR5 时缺少官方源码的问题。Actions 与本地 spec 在打包前后逐文件校验两套源码。1.5.0 草稿在成品验收中被拦截，未公开发布；本版包含以下全部更新。
 - 修正 Windows 英文系统读取中文依赖清单时的编码错误；相关 CI 命令采用遇错即停的 shell，避免前面的安装或测试失败被后续成功命令覆盖。
 - 修正 Apple Silicon 安装器和 CI 引用了不存在的 TorchAudio 2.13：采用官方稳定 ABI 兼容组合 PyTorch 2.13.0 / torchvision 0.28.0 / TorchAudio 2.11.0，依赖清单与版本检查同步约束；增加真实重采样回归。分离模型、推理参数及 Windows/Linux 运行栈保持不变。
-- Windows 全量回归增至 338 项并通过；主分支 Windows、Ubuntu、Apple Silicon 三平台依赖安装及合同测试均通过。CI、便携包和 Docker 工作流的 GitHub/Docker Actions 统一使用已发布的 Node.js 24 版本，消除 Node.js 20 弃用项；应用运行时版本不变。
+- Windows 全量回归增至 343 项并通过；主分支 Windows、Ubuntu、Apple Silicon 三平台依赖安装及合同测试均通过。CI、便携包和 Docker 工作流的 GitHub/Docker Actions 统一使用已发布的 Node.js 24 版本，消除 Node.js 20 弃用项；应用运行时版本不变。
+- 四种正式便携包均完成默认与官方路线的真实翻唱，共校验 44 个 Float32 输出；两种正式 GHCR 镜像均匿名拉取并断网运行两条路线，另校验 22 个输出。发行分卷、逐文件清单、镜像摘要与上一版全量对照随 Release 提供。
 - 增加 Linux x86-64 CPU/CUDA Docker 镜像和 Compose：固定完整 PyTorch 栈，多阶段构建前端与依赖，非 root 运行，单数据卷、可选密码文件登录、健康检查和显式设备失败；默认六模型、精度和音频输出策略不变。
 - 配置原子保存保留容器文件软链接，升级镜像继续使用原有配置和模型；本地浏览器启动行为保持，容器可无浏览器启动并设置反向代理子路径。
 - 兼容新版 FastAPI 的懒路由，保留下载鉴权、Range 和中文文件名；容器仅开放实际输出目录供下载。启动配置固定设备时，界面只读且保存接口明确拒绝无效修改。
@@ -66,7 +67,8 @@
 - Prepare both pinned VC and UVR5 source trees. Fix clean portable builds that included only VC and failed when selecting UVR5. Actions and the local spec validate every pinned source file before and after bundling. The 1.5.0 draft was rejected during artifact acceptance and was never published; this release includes all changes below.
 - Declare UTF-8 for dependency files on non-UTF-8 Windows systems. CI shell steps now stop at the first failed command so later commands cannot hide installation or test failures.
 - Fix the nonexistent TorchAudio 2.13 pin in the Apple Silicon installer and CI. Use the officially compatible stable-ABI stack PyTorch 2.13.0 / torchvision 0.28.0 / TorchAudio 2.11.0, align dependency checks and add a real resampling regression. Preserve separation models, inference settings and the Windows/Linux runtime stack.
-- Pass all 338 Windows regression tests and the Windows, Ubuntu and Apple Silicon dependency/contract CI jobs. Update GitHub/Docker Actions in CI and package/image workflows to released Node.js 24 versions, removing deprecated Node.js 20 references without changing application runtimes.
+- Pass all 343 Windows regression tests and the Windows, Ubuntu and Apple Silicon dependency/contract CI jobs. Update GitHub/Docker Actions in CI and package/image workflows to released Node.js 24 versions, removing deprecated Node.js 20 references without changing application runtimes.
+- Validate both real cover routes in all four distributed portable apps, producing 44 Float32 outputs. Anonymously pull both public GHCR images and run both routes without network access, validating another 22 outputs. Publish volume checksums, file inventories, image digests and the complete previous-release comparison with the Release.
 - Add Linux x86-64 CPU/CUDA Docker images and Compose with a pinned PyTorch stack, multistage frontend/dependency builds, non-root execution, one persistent data volume, optional secret-file login, health checks and explicit device errors. Preserve the complete model chain, precision and output policy.
 - Keep configuration symlinks intact during atomic saves. Recreated containers retain settings and models; headless startup and reverse-proxy paths are optional without changing desktop startup defaults.
 - Support lazy routers in newer FastAPI while preserving download authentication, ranges and Unicode filenames. Allow only the actual output directory for container downloads. Make startup-pinned device settings read-only and reject ineffective save requests.

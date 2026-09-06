@@ -2,7 +2,9 @@
 
 版本：`1.5.1`，提供 Linux x86-64 的 CPU、NVIDIA CUDA 两种镜像。根目录 Compose 默认指向 `ghcr.io/mason369/ai-rvc:1.5.1-cuda`，CPU 文件指向 `ghcr.io/mason369/ai-rvc:1.5.1-cpu`。镜像发布与验收状态见 [v1.5.1 Release](https://github.com/mason369/AI-RVC/releases/tag/v1.5.1)。
 
-CPU/CUDA 镜像均已实际完成断网默认翻唱，各通过 335 项回归；网页、登录、NGINX 子路径、下载、持久化、镜像导入及数据恢复的具体结果见[平台验收](平台适配与验收.md)。本机使用 WSL2 Engine，这不等于所有 Docker 宿主机都已实测。
+两种正式 GHCR 镜像已经公开，[发布工作流](https://github.com/mason369/AI-RVC/actions/runs/34028914300)中的 CPU/CUDA 作业各通过 **343 项回归**。两种公开成品均已使用空登录配置匿名拉取，核对版本、源码提交和镜像摘要，再以 UID 1000 断网完成默认六模型和官方 UVR5＋RVC 两条完整翻唱路线，共验证 **22 个 Float32 输出**。同标签本地构建另有各 343 项回归和 22 个输出记录，详情见[平台验收](平台适配与验收.md)。网页、登录、NGINX 子路径、下载、持久化、镜像导入和数据恢复另有候选阶段的实际记录。本机使用 WSL2 Engine，这不等于所有 Docker 宿主机都已实测。
+
+首次 CUDA 拉取曾因 WSL 对 `ghcr.io` 的 DNS 查询超时而失败，尚未启动应用；检查 DNS 和 HTTPS 可达性后重新拉取成功。没有修改 DNS、代理、模型或推理参数；该记录不表示所有网络环境均无问题。完整镜像摘要和验收结果随 Release 提供。镜像索引附带 SBOM 与构建来源记录，实际运行平台只有 `linux/amd64`，附加的证明记录不是 ARM64 镜像。
 
 ## 推荐部署
 
@@ -101,7 +103,7 @@ docker compose run --rm ai-rvc check
 
 源码构建用户更新到确定的源码版本后执行 `docker compose build`，再 `up -d`。新镜像只初始化不存在的配置，不覆盖用户参数；旧配置若含已删除的参数会明确报错，应对照默认配置和[参数说明](有效性与模型兼容性.md)修正，不能自动替换用户配置。
 
-镜像导出包使用 `docker load -i AI-RVC-版本-cuda.tar.gz` 导入，随后按随包 Compose 文件启动。镜像不含用户角色权重，也不捆绑大体积默认分离权重；完全离线时需同时携带已经运行过 `prepare` 的 `/data` 备份，再导入角色模型。六个默认分离模型均固定提交号和 SHA-256；已校验的本地文件直接使用，损坏文件报错，不查询远端 `main`。两个固定版本官方 RVC 源码已随镜像提供。
+本版正式镜像通过 GHCR 分发，Release 不附离线镜像归档。自行导出的镜像归档可用 `docker load -i AI-RVC-版本-cuda.tar.gz` 导入，随后按对应版本的 Compose 文件启动。镜像不含用户角色权重，也不捆绑大体积默认分离权重；完全离线时需同时携带已经运行过 `prepare` 的 `/data` 备份，再导入角色模型。六个默认分离模型均固定提交号和 SHA-256；已校验的本地文件直接使用，损坏文件报错，不查询远端 `main`。两个固定版本官方 RVC 源码已随镜像提供。
 
 Windows 已安装 Docker Desktop/CLI 时，也可运行 `powershell -ExecutionPolicy Bypass -File tools/Start-Docker.ps1`，CPU 使用 `-Variant cpu`。脚本优先校验并导入同目录随包镜像；源码目录没有镜像归档时执行构建，然后准备模型、启动并等待健康检查。需要登录时，先按上文设置用户名和密码文件，再附加 `-WithAuth`。
 
