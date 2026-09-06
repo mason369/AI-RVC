@@ -39,6 +39,14 @@ on:
 permissions:
   contents: write
 
+defaults:
+  run:
+    shell: bash
+
+env:
+  PYTHONUTF8: '1'
+  PYTHONIOENCODING: utf-8
+
 jobs:
   build:
     strategy:
@@ -146,15 +154,15 @@ jobs:
       if: steps.selection.outputs.should_run == 'true'
       run: |
         python -m pip install -r pre-requirements.txt
-        pip install pyinstaller
-        pip install ${{ matrix.torch_stack }} --index-url ${{ matrix.pytorch_url }}
-        pip install -r requirements.txt
+        python -m pip install pyinstaller
+        python -m pip install ${{ matrix.torch_stack }} --index-url ${{ matrix.pytorch_url }}
+        python -m pip install -r requirements.txt
         python -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}')"
 
     - name: Install audio-separator
       if: steps.selection.outputs.should_run == 'true'
       run: |
-        pip install "audio-separator[${{ matrix.audio_separator_extra }}]==0.47.0"
+        python -m pip install "audio-separator[${{ matrix.audio_separator_extra }}]==0.47.0"
         python -m pip check
         python -c "import torch, torchvision, torchaudio; expected='${{ matrix.torch_stack }}'; actual='torch=={} torchvision=={} torchaudio=={}'.format(torch.__version__.split('+')[0], torchvision.__version__.split('+')[0], torchaudio.__version__.split('+')[0]); assert actual == expected, 'PyTorch stack changed after audio-separator install: expected {}, got {}'.format(expected, actual); print(actual)"
 

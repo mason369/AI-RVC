@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # RVC AI 翻唱依赖 (Hugging Face Space - CPU 完整功能)
 # 注意：此文件用于 HF Space 部署，同步到 Space 时需重命名为 requirements.txt
 # 同时保留根目录 pre-requirements.txt 和 packages.txt。

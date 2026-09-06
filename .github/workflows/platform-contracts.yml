@@ -9,6 +9,14 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
+env:
+  PYTHONUTF8: '1'
+  PYTHONIOENCODING: utf-8
+
 jobs:
   platform-contracts:
     name: ${{ matrix.os }} / Python 3.10

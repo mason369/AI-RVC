@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # RVC AI 翻唱依赖
 
 # PyTorch (根据 CUDA 版本选择)
