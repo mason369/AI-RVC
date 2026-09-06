@@ -77,6 +77,7 @@ jobs:
       - name: Run full source regression suite in the built runtime
         shell: bash
         run: |
+          mkdir -p temp
           docker run --rm --network none --no-healthcheck --entrypoint python -e AI_RVC_DEVICE=cpu \
             --mount type=bind,src="$PWD",dst=/validation,readonly \
             --tmpfs /validation/temp:rw,uid=1000,gid=1000,mode=1777 --workdir /validation \
