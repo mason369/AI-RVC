@@ -230,7 +230,7 @@ python3.10 install.py --cpu
 
 **macOS / Apple Silicon（实验性）**
 
-audio-separator 0.47.0 要求 Apple Silicon 使用 macOS 14+ 和 PyTorch 2.13–2.x。安装器使用 PyTorch 2.13.0、torchvision 0.28.0、TorchAudio 2.11.0；TorchAudio 2.11 的稳定 ABI 支持 PyTorch 2.11 及后续版本，不需要不存在的 TorchAudio 2.13。参见 [TorchAudio 官方兼容说明](https://docs.pytorch.org/audio/main/installation.html)。先安装系统的 ARM 音频库；`samplerate==0.1.0` 内置的旧 macOS 库不能作为 Apple Silicon 的运行库。
+audio-separator 0.47.0 要求 Apple Silicon 使用 macOS 14+ 和 PyTorch 2.13–2.x。安装器使用 PyTorch 2.13.0、torchvision 0.28.0、TorchAudio 2.11.0；TorchAudio 2.11 的稳定 ABI 支持 PyTorch 2.11 及后续版本，参见 [官方兼容说明](https://docs.pytorch.org/audio/main/installation.html)。先安装系统的 ARM 音频库；`samplerate==0.1.0` 内置的旧 macOS 库不能作为 Apple Silicon 的运行库。
 
 ```bash
 brew install libsamplerate ffmpeg
