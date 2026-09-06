@@ -1,6 +1,6 @@
 # Docker 使用指南
 
-版本：`1.5.2`，提供 Linux x86-64 的 CPU、NVIDIA CUDA 两种镜像。根目录 Compose 默认指向 `ghcr.io/mason369/ai-rvc:1.5.2-cuda`，CPU 文件指向 `ghcr.io/mason369/ai-rvc:1.5.2-cpu`。镜像发布与验收状态见 [v1.5.2 Release](https://github.com/mason369/AI-RVC/releases/tag/v1.5.2)。
+版本：`1.5.1`，提供 Linux x86-64 的 CPU、NVIDIA CUDA 两种镜像。根目录 Compose 默认指向 `ghcr.io/mason369/ai-rvc:1.5.1-cuda`，CPU 文件指向 `ghcr.io/mason369/ai-rvc:1.5.1-cpu`。镜像发布与验收状态见 [v1.5.1 Release](https://github.com/mason369/AI-RVC/releases/tag/v1.5.1)。
 
 CPU/CUDA 镜像均已实际完成断网默认翻唱，各通过 335 项回归；网页、登录、NGINX 子路径、下载、持久化、镜像导入及数据恢复的具体结果见[平台验收](平台适配与验收.md)。本机使用 WSL2 Engine，这不等于所有 Docker 宿主机都已实测。
 
