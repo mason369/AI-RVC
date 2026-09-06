@@ -153,7 +153,8 @@ def main():
     # 仅下载模型
     if args.download_models:
         from tools.download_models import download_all_models
-        download_all_models()
+        if not download_all_models():
+            sys.exit(1)
         return
 
     # 环境检查
@@ -163,7 +164,7 @@ def main():
 
     # 模型检查
     if not check_models():
-        log.info("提示: 可以使用 --skip-check 跳过检查")
+        log.error("模型检查失败；请先准备必需模型")
         sys.exit(1)
 
     # 启动界面
@@ -173,4 +174,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import multiprocessing
+    multiprocessing.freeze_support()
+    if len(sys.argv) >= 3 and sys.argv[1] == "--internal-worker":
+        from lib.worker_launch import dispatch_worker
+        dispatch_worker(sys.argv[2], sys.argv[3:])
+    else:
+        main()

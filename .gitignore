@@ -71,6 +71,9 @@ flagged/
 
 # 上游参考代码 (vendored, 独立 git repo)
 _official_rvc/
+_official_rvc_runtime/
+assets/hubert_base/
+assets/tools/
 
 # 输出文件
 output/
@@ -85,6 +88,13 @@ outputs/
 /docs/reports/
 /docs/superpowers/plans/
 /docs/superpowers/specs/
-# Repository documentation is maintained outside Git.
+# Keep private notes out of Git; allow documentation linked from README.
 /docs/*.md
 /docs/**/*.md
+!/docs/有效性与模型兼容性.md
+!/docs/伴奏模型实测.md
+!/docs/平台适配与验收.md
+!/docs/Docker使用指南.md
+!/docs/发布准备.md
+/docker/secrets/
+/docker/data/

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-人声分离模块 - 支持 BS PolarFormer、RoFormer/BS-RoFormer 和 Demucs
+人声分离模块 - 支持 Leap、RoFormer/BS-RoFormer 和 Demucs
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ except ImportError:
 
 # audio-separator 导入 (RoFormer/BS-RoFormer、De-Reverb 等)
 try:
-    from audio_separator.separator import Separator
+    from lib.separator_runtime import Separator
     AUDIO_SEPARATOR_AVAILABLE = True
     AUDIO_SEPARATOR_IMPORT_ERROR = None
     # 抑制 audio-separator 的英文日志，我们有自己的中文日志
@@ -75,28 +75,20 @@ LEAP_XE_VOCALS_DISPLAY_NAME = "BS-RoFormer Leap XE 90 bands (pcunwa)"
 LEAP_XE_VOCALS_UPSTREAM_MODEL_FILENAME = "Xe/bs_leap_xe_voc.ckpt"
 LEAP_XE_VOCALS_CONFIG_FILENAME = "Xe/leap_xe_config_voc.yaml"
 LEAP_XE_VOCALS_RUNTIME_CONFIG_FILENAME = "Xe/bs_roformer_leap_xe_config_voc.yaml"
-BS_POLARFORMER_MODEL = "bs_polarformer_public_onnx_62bands"
-BS_POLARFORMER_HF_REPO = "bgkb/bs_polarformer"
-BS_POLARFORMER_ONNX_FILENAME = "bs_polarformer.onnx"
-BS_POLARFORMER_CONFIG_FILENAME = "model_bs_polarformer_float16.yaml"
-BS_POLARFORMER_DISPLAY_NAME = (
-    "BS PolarFormer public ONNX 62 bands (bgkb/ZFTurbo)"
-)
-DEFAULT_POLARFORMER_MAX_CHUNK_SIZE = 441000
-_SATURATION_FRAME_SECONDS = 0.25
-_SATURATION_HOP_SECONDS = 0.125
-_SATURATION_FADE_SECONDS = 0.05
-HYBRID_LEAP_XE_POLARFORMER_PRESET = "leap_xe90_vocals+polarformer62_instrumental"
+LEAP_INSTRUMENTAL_MODEL = "bs_roformer_leap_inst.ckpt"
+LEAP_INSTRUMENTAL_DISPLAY_NAME = "BS-RoFormer Leap Instrumental 62 bands (pcunwa)"
+HYBRID_LEAP_XE_LEAP_INSTRUMENTAL_PRESET = "leap_xe90_vocals+leap62_instrumental"
 HYBRID_SEPARATOR_PREFIX = "hybrid:"
-ROFORMER_SOTA_PRESET = HYBRID_LEAP_XE_POLARFORMER_PRESET
+ROFORMER_SOTA_PRESET = HYBRID_LEAP_XE_LEAP_INSTRUMENTAL_PRESET
 ROFORMER_DEFAULT_MODEL = f"{HYBRID_SEPARATOR_PREFIX}{ROFORMER_SOTA_PRESET}"
 ROFORMER_SOTA_MODEL = ROFORMER_DEFAULT_MODEL
 ROFORMER_SOTA_MODELS = [
     LEAP_XE_VOCALS_MODEL,
     LEAP_XE_VOCALS_CONFIG_FILENAME,
     LEAP_XE_VOCALS_RUNTIME_CONFIG_FILENAME,
-    BS_POLARFORMER_ONNX_FILENAME,
-    BS_POLARFORMER_CONFIG_FILENAME,
+    "leap_instrumental/bs_roformer_leap_inst.ckpt",
+    "leap_instrumental/bs_leap_inst_conf.yaml",
+    "leap_instrumental/bs_roformer_leap_inst_runtime.yaml",
 ]
 
 KARAOKE_LEGACY_SINGLE_MODEL = "mel_band_roformer_karaoke_gabox.ckpt"
@@ -118,32 +110,66 @@ KARAOKE_EXPERIMENTAL_MODELS = [
     "mel_band_roformer_karaoke_becruily.ckpt",
 ]
 
-ROFORMER_DEREVERB_DEFAULT_MODEL = "dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt"
+ROFORMER_DEREVERB_DEFAULT_MODEL = "dereverb_bs_roformer_anvuew_sdr_22.5050.ckpt"
 
 _CUSTOM_AUDIO_SEPARATOR_MODELS: dict[str, dict[str, str]] = {
+    LEAP_INSTRUMENTAL_MODEL: {
+        "repo_id": "pcunwa/BS-Roformer-Leap",
+        "revision": "4e47d6662ae82eaa8b4ac4329fe66099a843b48e",
+        "local_subdir": "leap_instrumental",
+        "model_filename": LEAP_INSTRUMENTAL_MODEL,
+        "model_sha256": "1459b5eb70d7e1a805d8d080cb0d1abfcd06dc3931daedecad59944a8f7a0a57",
+        "config_filename": "bs_leap_inst_conf.yaml",
+        "config_sha256": "2004e01f7019e9dd7bad44dd213b337dd055806811266f0f0ac925b3da33cb29",
+        "runtime_config_filename": "bs_roformer_leap_inst_runtime.yaml",
+        "friendly_name": "Roformer Model: BS-RoFormer Leap Instrumental by pcunwa",
+    },
+    ROFORMER_DEREVERB_DEFAULT_MODEL: {
+        "repo_id": "anvuew/dereverb_bs_roformer",
+        "revision": "bd5c6b55a429b4b74ce85fe5dcb690cfe36d91ec",
+        "local_subdir": "dereverb_stereo",
+        "model_filename": ROFORMER_DEREVERB_DEFAULT_MODEL,
+        "model_sha256": "b4dfa4c4aa251c0afc303e5d512d904a1c2255e51d8d0dbfbddb18d740563d42",
+        "config_filename": "config.yaml",
+        "config_sha256": "5022524393c946974ec160df81b82299cd0055fb1f1b51058cb251098d9a01b7",
+        "runtime_config_filename": "bs_roformer_dereverb_stereo.yaml",
+        "friendly_name": "Roformer Model: BS-RoFormer De-Reverb Stereo by Anvuew",
+    },
     LEAP_XE_VOCALS_MODEL: {
         "repo_id": "pcunwa/BS-Roformer-Leap",
+        "revision": "4e47d6662ae82eaa8b4ac4329fe66099a843b48e",
         "model_filename": LEAP_XE_VOCALS_UPSTREAM_MODEL_FILENAME,
+        "model_sha256": "b739c1d2d87a81cd3dd3844ed9ad0bd678708c7a0a761a03a1aaff9af79a096d",
         "config_filename": LEAP_XE_VOCALS_CONFIG_FILENAME,
+        "config_sha256": "d3cb8c84be2e9bcbc64c1086e2256dc097ab5addebc5ce507818e90ff8cbdc25",
         "runtime_config_filename": LEAP_XE_VOCALS_RUNTIME_CONFIG_FILENAME,
         "friendly_name": "Roformer Model: BS-RoFormer Leap XE Vocals by pcunwa",
     },
     "bs_karaoke_gabox_IS.ckpt": {
         "repo_id": "GaboxR67/MelBandRoformers",
+        "revision": "7860d31d8cc1c73b46c1cbdc2b497210c97478ae",
         "model_filename": "bsroformers/bs_karaoke_gabox_IS.ckpt",
+        "model_sha256": "db8357825398d4231031ad1ab4aa12a94bcaad8d67e8ce5e4b3c5b48fdee1d4f",
         "config_filename": "bsroformers/karaoke_bs_roformer.yaml",
+        "config_sha256": "ee6ce776404db78dc115179a9f5ca67c06dd379fbd2611890f3637a3caa14b7c",
         "friendly_name": "Roformer Model: BS-Karaoke Gabox IS",
     },
     "bs_roformer_karaoke_frazer_becruily.ckpt": {
         "repo_id": "becruily/bs-roformer-karaoke",
+        "revision": "f7849ae934209184dc288d1018cd8a76a7fc8b3c",
         "model_filename": "bs_roformer_karaoke_frazer_becruily.ckpt",
+        "model_sha256": "eb90ee24c1154d83fbcfd27e96182f19e061557cc6e4746953125e08c29389f9",
         "config_filename": "config_karaoke_frazer_becruily.yaml",
+        "config_sha256": "1d3b58b473025183d0d3c91e7a444cb5f1418d9f34e8f46b8d2fb10d2cc8ab34",
         "friendly_name": "Roformer Model: BS-Karaoke Frazer & Becruily",
     },
     "karaoke_bs_roformer_anvuew.ckpt": {
         "repo_id": "anvuew/karaoke_bs_roformer",
+        "revision": "0d4423d42e12cf2ba39ae09171028507b8a2a7be",
         "model_filename": "karaoke_bs_roformer_anvuew.ckpt",
+        "model_sha256": "206d04757cb5f75ca3b55f8a0a48f5c26aa2351d4ff3c7adbfc9affa30ea3ae4",
         "config_filename": "karaoke_bs_roformer_anvuew.yaml",
+        "config_sha256": "5cb3f127ecbc6a8e37f31ea7e05f60f360a44da43e857bde805b7b68558f6338",
         "friendly_name": "Roformer Model: BS-Karaoke Anvuew",
     },
 }
@@ -168,7 +194,7 @@ def _model_spec_label(model_spec: ModelSpec) -> str:
     if isinstance(model_spec, (list, tuple)):
         return "ensemble[" + ", ".join(str(item) for item in model_spec) + "]"
     if str(model_spec).strip().lower() == ROFORMER_DEFAULT_MODEL.lower():
-        return f"{LEAP_XE_VOCALS_DISPLAY_NAME} + {BS_POLARFORMER_DISPLAY_NAME}"
+        return f"{LEAP_XE_VOCALS_DISPLAY_NAME} + {LEAP_INSTRUMENTAL_DISPLAY_NAME}"
     if str(model_spec).strip().lower() == KARAOKE_DEFAULT_MODEL.lower():
         return KARAOKE_SOTA_DISPLAY_NAME
     return str(model_spec)
@@ -194,19 +220,9 @@ def _parse_hybrid_preset(model_spec: ModelSpec) -> Optional[str]:
     return preset or None
 
 
-def _is_hybrid_leap_xe_polarformer_model_spec(model_spec: ModelSpec) -> bool:
+def _is_hybrid_leap_instrumental_model_spec(model_spec: ModelSpec) -> bool:
     preset = _parse_hybrid_preset(model_spec)
-    return (preset or "").lower() == HYBRID_LEAP_XE_POLARFORMER_PRESET.lower()
-
-
-def _is_bs_polarformer_model_spec(model_spec: ModelSpec) -> bool:
-    if not isinstance(model_spec, str):
-        return False
-    spec = model_spec.strip().lower()
-    return spec in {
-        BS_POLARFORMER_MODEL.lower(),
-        BS_POLARFORMER_ONNX_FILENAME.lower(),
-    }
+    return (preset or "").lower() == HYBRID_LEAP_XE_LEAP_INSTRUMENTAL_PRESET.lower()
 
 
 def get_separator_chain_labels(
@@ -220,14 +236,12 @@ def get_separator_chain_labels(
     normalized_separator = str(separator_name).strip().lower()
 
     if normalized_separator == "roformer":
-        if _is_hybrid_leap_xe_polarformer_model_spec(roformer_model):
-            labels.extend(
-                [
-                    "输入: Leap XE 与 PolarFormer 共用 44.1kHz 双声道 PCM（非WAV预解码）",
-                    f"人声: {LEAP_XE_VOCALS_DISPLAY_NAME}",
-                    f"纯伴奏: {BS_POLARFORMER_DISPLAY_NAME}（含孤立声道饱和保护）",
-                ]
-            )
+        if _is_hybrid_leap_instrumental_model_spec(roformer_model):
+            labels.extend([
+                "输入: 两路 Leap 共用 44.1kHz 双声道 PCM（非WAV预解码）",
+                f"人声: {LEAP_XE_VOCALS_DISPLAY_NAME}",
+                f"纯伴奏: {LEAP_INSTRUMENTAL_DISPLAY_NAME}",
+            ])
         else:
             labels.append(f"人声/伴奏: {_model_spec_label(roformer_model)}")
 
@@ -249,7 +263,6 @@ def _download_hf_file(repo_id: str, filename: str, model_dir: str) -> str:
             repo_id=repo_id,
             filename=filename,
             local_dir=model_dir,
-            local_dir_use_symlinks=False,
         )
     except Exception as exc:
         raise RuntimeError(
@@ -257,34 +270,14 @@ def _download_hf_file(repo_id: str, filename: str, model_dir: str) -> str:
         ) from exc
 
 
-def _resolve_polarformer_chunk_size(configured_chunk_size: int) -> int:
-    """Apply TelkNet's bounded PolarFormer inference window."""
-    if configured_chunk_size <= 0:
-        raise RuntimeError(
-            f"BS PolarFormer chunk_size 无效: {configured_chunk_size}"
-        )
-
-    raw_override = os.environ.get("POLARFORMER_MAX_CHUNK_SIZE", "").strip()
-    if raw_override:
-        try:
-            max_chunk_size = int(raw_override)
-        except ValueError as exc:
-            raise RuntimeError(
-                f"POLARFORMER_MAX_CHUNK_SIZE 无效: {raw_override!r}"
-            ) from exc
-    else:
-        max_chunk_size = DEFAULT_POLARFORMER_MAX_CHUNK_SIZE
-
-    if max_chunk_size <= 0:
-        return configured_chunk_size
-    return max(1, min(configured_chunk_size, max_chunk_size))
-
-
 def _ensure_separator_pcm_wav(audio_path: str, work_dir: Path) -> str:
-    """Match TelkNet by decoding non-WAV input once before both separators."""
+    """Prepare shared 44.1 kHz stereo float PCM without integer quantization."""
     source_path = Path(audio_path)
     if source_path.suffix.lower() == ".wav":
-        return str(source_path)
+        import soundfile as sf
+        info = sf.info(source_path)
+        if info.subtype == "FLOAT" and info.samplerate == 44100 and info.channels == 2:
+            return str(source_path)
 
     ffmpeg_bin_dir = get_ffmpeg_bin_dir()
     if ffmpeg_bin_dir is None:
@@ -307,8 +300,8 @@ def _ensure_separator_pcm_wav(audio_path: str, work_dir: Path) -> str:
         "44100",
         "-ac",
         "2",
-        "-sample_fmt",
-        "s16",
+        "-c:a",
+        "pcm_f32le",
         str(wav_path),
     ]
     try:
@@ -338,120 +331,14 @@ def _ensure_separator_pcm_wav(audio_path: str, work_dir: Path) -> str:
     return str(wav_path)
 
 
-def _suppress_isolated_channel_saturation(
-    estimate: np.ndarray,
-    mixture: np.ndarray,
-    sample_rate: int,
-) -> np.ndarray:
-    """抑制 PolarFormer 偶发的单声道持续满幅异常。"""
-    if (
-        estimate.ndim != 2
-        or mixture.ndim != 2
-        or estimate.shape[0] < 2
-        or mixture.shape[0] < 2
-    ):
-        return estimate
-
-    total = min(estimate.shape[1], mixture.shape[1])
-    if total <= 0 or sample_rate <= 0:
-        return estimate
-
-    cleaned = np.array(estimate[:, :total], dtype=np.float32, copy=True)
-    source_mix = np.asarray(mixture[:, :total], dtype=np.float32)
-    frame = max(1, int(round(_SATURATION_FRAME_SECONDS * sample_rate)))
-    hop = max(1, int(round(_SATURATION_HOP_SECONDS * sample_rate)))
-    fade = max(1, int(round(_SATURATION_FADE_SECONDS * sample_rate)))
-    affected: list[tuple[int, float, float]] = []
-
-    for channel in range(2):
-        other = 1 - channel
-        mask = np.zeros(total, dtype=bool)
-        for start in range(0, max(1, total - frame + 1), hop):
-            end = min(total, start + frame)
-            estimated = cleaned[channel, start:end]
-            estimated_other = cleaned[other, start:end]
-            source = source_mix[channel, start:end]
-            if estimated.size == 0:
-                continue
-            estimated_rms = float(
-                np.sqrt(np.mean(np.square(estimated), dtype=np.float64) + 1e-12)
-            )
-            other_rms = float(
-                np.sqrt(np.mean(np.square(estimated_other), dtype=np.float64) + 1e-12)
-            )
-            source_rms = float(
-                np.sqrt(np.mean(np.square(source), dtype=np.float64) + 1e-12)
-            )
-            estimated_peak = float(np.max(np.abs(estimated)))
-            if (
-                estimated_peak >= 0.98
-                and estimated_rms >= 0.80
-                and other_rms <= 0.02
-                and estimated_rms >= max(0.35, source_rms * 2.5)
-            ):
-                mask[start:end] = True
-
-        if not np.any(mask):
-            continue
-
-        padded = np.pad(mask.astype(np.int8), (1, 1), mode="constant")
-        edges = np.diff(padded)
-        starts = np.where(edges == 1)[0]
-        ends = np.where(edges == -1)[0]
-        for start, end in zip(starts, ends):
-            if end - start < max(frame, int(round(0.5 * sample_rate))):
-                mask[start:end] = False
-
-        padded = np.pad(mask.astype(np.int8), (1, 1), mode="constant")
-        edges = np.diff(padded)
-        starts = np.where(edges == 1)[0]
-        ends = np.where(edges == -1)[0]
-        for start, end in zip(starts, ends):
-            affected.append(
-                (channel, float(start) / sample_rate, float(end) / sample_rate)
-            )
-            left = max(0, start - fade)
-            right = min(total, end + fade)
-            gain = np.ones(right - left, dtype=np.float32)
-            inner_start = start - left
-            inner_end = end - left
-            gain[inner_start:inner_end] = 0.0
-            if inner_start > 0:
-                gain[:inner_start] = np.linspace(
-                    1.0,
-                    0.0,
-                    inner_start,
-                    endpoint=False,
-                    dtype=np.float32,
-                )
-            if inner_end < gain.size:
-                gain[inner_end:] = np.linspace(
-                    0.0,
-                    1.0,
-                    gain.size - inner_end,
-                    endpoint=True,
-                    dtype=np.float32,
-                )
-            cleaned[channel, left:right] *= gain
-
-    if affected:
-        log.warning(
-            "已抑制 PolarFormer 单声道持续饱和异常: "
-            + str(
-                [
-                    {
-                        "channel": channel,
-                        "start": round(start, 3),
-                        "end": round(end, 3),
-                    }
-                    for channel, start, end in affected
-                ]
-            )
+def _require_separator_model_backend(separator: Separator, model_type: str) -> None:
+    """Reject the upstream MDXC DirectML-to-CPU substitution before loading."""
+    device = str(getattr(separator, "torch_device", "")).lower()
+    if model_type == "MDXC" and device.startswith(("privateuseone", "dml")):
+        raise RuntimeError(
+            "audio-separator 0.47.0 的 MDXC/RoFormer 无法可靠使用 DirectML "
+            "分配器，已停止加载；请显式选择受支持的计算后端。不会自动改用 CPU。"
         )
-
-    result = np.array(estimate, dtype=np.float32, copy=True)
-    result[:, :total] = cleaned
-    return result
 
 
 def _install_custom_audio_separator_models(separator: Separator) -> None:
@@ -463,28 +350,41 @@ def _install_custom_audio_separator_models(separator: Separator) -> None:
     def download_model_files(model_filename):
         model_spec = _CUSTOM_AUDIO_SEPARATOR_MODELS.get(str(model_filename))
         if model_spec is None:
-            return original_download_model_files(model_filename)
+            model_details = original_download_model_files(model_filename)
+            _require_separator_model_backend(separator, model_details[1])
+            return model_details
 
-        model_path = _download_hf_file(
-            model_spec["repo_id"],
-            model_spec["model_filename"],
-            separator.model_file_dir,
-        )
-        config_path = _download_hf_file(
-            model_spec["repo_id"],
-            model_spec["config_filename"],
-            separator.model_file_dir,
-        )
+        _require_separator_model_backend(separator, "MDXC")
+
+        asset_dir = Path(separator.model_file_dir) / model_spec.get("local_subdir", "")
+        if "revision" in model_spec:
+            from tools.model_assets import download_pinned_asset
+
+            model_path = str(download_pinned_asset(
+                model_spec["repo_id"], model_spec["model_filename"], asset_dir,
+                model_spec["revision"], model_spec["model_sha256"],
+            ))
+            config_path = str(download_pinned_asset(
+                model_spec["repo_id"], model_spec["config_filename"], asset_dir,
+                model_spec["revision"], model_spec["config_sha256"],
+            ))
+        else:
+            model_path = _download_hf_file(
+                model_spec["repo_id"], model_spec["model_filename"], str(asset_dir),
+            )
+            config_path = _download_hf_file(
+                model_spec["repo_id"], model_spec["config_filename"], str(asset_dir),
+            )
         runtime_config_filename = model_spec.get("runtime_config_filename")
         if runtime_config_filename:
             import yaml
 
-            runtime_config_path = Path(separator.model_file_dir) / runtime_config_filename
+            runtime_config_path = asset_dir / runtime_config_filename
             runtime_config_path.parent.mkdir(parents=True, exist_ok=True)
             with open(config_path, "r", encoding="utf-8") as config_handle:
                 runtime_config = yaml.load(config_handle, Loader=yaml.FullLoader)
             if not isinstance(runtime_config, dict):
-                raise RuntimeError(f"Leap XE 配置格式无效: {config_path}")
+                raise RuntimeError(f"RoFormer 配置格式无效: {config_path}")
             runtime_config["model_type"] = "bs_roformer"
             with open(runtime_config_path, "w", encoding="utf-8") as config_handle:
                 yaml.dump(
@@ -566,10 +466,25 @@ def _load_audio_separator_model(
     model_dir: str,
     device: str,
 ) -> Separator:
+    if any("polarformer" in item.lower() for item in _model_spec_key(model_spec)):
+        raise ValueError("PolarFormer 已移除，旧模型配置不可使用；请将 roformer_model 设置为 " + ROFORMER_DEFAULT_MODEL)
     preset_name = _parse_ensemble_preset(model_spec)
     custom_preset = _CUSTOM_ENSEMBLE_PRESETS.get(preset_name or "")
     separator_kwargs = {
         "log_level": _logging.WARNING,
+        "use_soundfile": True,
+        # Keep full precision; performance modes are separate, unvalidated changes.
+        "use_autocast": False,
+        "use_native_fp16": False,
+        "use_torch_compile": False,
+        # 0.47 follows each model's YAML overlap divisor and batch size.
+        "mdxc_params": {
+            "segment_size": 256,
+            "override_model_segment_size": False,
+            "batch_size": None,
+            "overlap": None,
+            "pitch_shift": 0,
+        },
         "output_dir": output_dir,
         "model_file_dir": model_dir,
         "use_directml": str(device).lower().startswith(("dml", "privateuseone")),
@@ -593,27 +508,19 @@ def _load_audio_separator_model(
 
 
 def _resolve_output_files(output_files, output_dir: Path) -> list[str]:
-    """Resolve relative output filenames returned by audio-separator."""
+    """Require the exact files guaranteed by audio-separator 0.47."""
     resolved_files = []
+    seen = set()
     for file_name in output_files:
         file_path = Path(file_name)
         if not file_path.is_absolute():
             file_path = output_dir / file_path
-        if file_path.exists():
-            resolved_files.append(str(file_path))
-            continue
-
-        role = _classify_common_stem_role(file_path.name)
-        if role:
-            candidates = [
-                candidate
-                for candidate in output_dir.glob("*.wav")
-                if _classify_common_stem_role(candidate.name) == role
-            ]
-            if len(candidates) == 1:
-                resolved_files.append(str(candidates[0]))
-                continue
-
+        if not file_path.is_file() or file_path.stat().st_size == 0:
+            raise RuntimeError(f"分离器返回的输出文件不存在或为空: {file_path}")
+        identity = os.path.normcase(str(file_path.resolve()))
+        if identity in seen:
+            raise RuntimeError(f"分离器返回了重复的输出文件: {file_path}")
+        seen.add(identity)
         resolved_files.append(str(file_path))
     return resolved_files
 
@@ -654,264 +561,6 @@ def _get_audio_activity_stats(audio_path: str) -> tuple[float, float, int]:
     return rms, peak, nonzero
 
 
-class _BSPolarFormerRuntime:
-    def __init__(self, model_dir: str, output_dir: str, device: str):
-        self.model_dir = Path(model_dir) / "bs_polarformer"
-        self.output_dir = output_dir
-        self.device = str(device).lower()
-        self._session = None
-        self._config = None
-        self._onnx_path = None
-
-    def _ensure_assets(self) -> tuple[Path, Path]:
-        self.model_dir.mkdir(parents=True, exist_ok=True)
-        onnx_path = Path(
-            _download_hf_file(
-                BS_POLARFORMER_HF_REPO,
-                BS_POLARFORMER_ONNX_FILENAME,
-                str(self.model_dir),
-            )
-        )
-        config_path = Path(
-            _download_hf_file(
-                BS_POLARFORMER_HF_REPO,
-                BS_POLARFORMER_CONFIG_FILENAME,
-                str(self.model_dir),
-            )
-        )
-        return onnx_path, config_path
-
-    @staticmethod
-    def _onnx_provider_kind(device: str) -> str:
-        """Map each compute backend to the explicitly supported PolarFormer provider."""
-        normalized = str(device).strip().lower()
-        if normalized.startswith("cuda"):
-            if getattr(torch.version, "hip", None) is not None:
-                return "cpu"
-            return "cuda"
-        if normalized.startswith("dml") or normalized.startswith("privateuseone"):
-            return "directml"
-        if normalized == "cpu" or normalized.startswith("xpu") or normalized == "mps":
-            return "cpu"
-        raise RuntimeError(
-            "BS PolarFormer ONNX 不支持当前计算设备；"
-            f"当前设备为 {device}"
-        )
-
-    @staticmethod
-    def _select_onnx_providers(ort_module, device: str) -> list:
-        available = ort_module.get_available_providers()
-        provider_kind = _BSPolarFormerRuntime._onnx_provider_kind(device)
-        if provider_kind == "cuda":
-            if "CUDAExecutionProvider" not in available:
-                raise RuntimeError(
-                    "已选择 CUDA，但 onnxruntime 未提供 CUDAExecutionProvider；"
-                    "请安装支持 CUDA 的 ONNX Runtime，或显式把设备改为 CPU"
-                )
-            device_id = 0
-            if device.startswith("cuda:"):
-                raw_device_id = device.split(":", 1)[1]
-                if raw_device_id.isdigit():
-                    device_id = int(raw_device_id)
-            return [
-                ("CUDAExecutionProvider", {"device_id": device_id}),
-                "CPUExecutionProvider",
-            ]
-
-        if provider_kind == "directml":
-            if "DmlExecutionProvider" not in available:
-                raise RuntimeError(
-                    "已选择 DirectML，但 onnxruntime 未提供 DmlExecutionProvider；"
-                    "请安装支持 DirectML 的 ONNX Runtime，或显式把设备改为 CPU"
-                )
-            return ["DmlExecutionProvider", "CPUExecutionProvider"]
-
-        if "CPUExecutionProvider" not in available:
-            raise RuntimeError("onnxruntime 未提供 CPUExecutionProvider")
-        return ["CPUExecutionProvider"]
-
-    def load_model(self, output_dir: str = ""):
-        import onnxruntime as ort
-        import yaml
-
-        if output_dir:
-            self.output_dir = output_dir
-
-        onnx_path, config_path = self._ensure_assets()
-        with open(config_path, "r", encoding="utf-8") as handle:
-            config = yaml.full_load(handle)
-
-        providers = self._select_onnx_providers(ort, self.device)
-        provider_kind = self._onnx_provider_kind(self.device)
-        log.info(
-            f"正在加载 {BS_POLARFORMER_DISPLAY_NAME}: "
-            f"{onnx_path.name}, providers={providers}"
-        )
-        self._session = ort.InferenceSession(str(onnx_path), providers=providers)
-        active_providers = self._session.get_providers()
-        expected_provider = {
-            "cuda": "CUDAExecutionProvider",
-            "directml": "DmlExecutionProvider",
-            "cpu": "CPUExecutionProvider",
-        }[provider_kind]
-        if not active_providers or active_providers[0] != expected_provider:
-            raise RuntimeError(
-                f"BS PolarFormer 请求 {expected_provider}，但 ONNX Runtime 未启用该 provider；"
-                f"active_providers={active_providers}"
-            )
-        log.info(f"BS PolarFormer 实际 ONNX providers: {active_providers}")
-        self._config = config
-        self._onnx_path = onnx_path
-
-    @staticmethod
-    def _prepare_stft(audio, stft_kwargs, stft_win_length):
-        import torch
-        from einops import rearrange, pack, unpack
-
-        audio_t = torch.from_numpy(audio).float().unsqueeze(0)
-        raw_audio, packed_shape = pack([audio_t], "* t")
-        stft_window = torch.hann_window(stft_win_length)
-        stft_repr = torch.stft(
-            raw_audio,
-            **stft_kwargs,
-            window=stft_window,
-            return_complex=True,
-        )
-        stft_repr = torch.view_as_real(stft_repr)
-        stft_repr = unpack(stft_repr, packed_shape, "* f t c")[0]
-        stft_repr = rearrange(stft_repr, "b s f t c -> b (f s) t c")
-        features = rearrange(stft_repr, "b f t c -> b t (f c)")
-        return features, stft_repr, stft_window, raw_audio
-
-    @staticmethod
-    def _reconstruct_audio(
-        stft_repr,
-        mask,
-        stft_kwargs,
-        stft_window,
-        audio_channels,
-        raw_audio_len,
-    ):
-        import torch
-        from einops import rearrange
-
-        mask = torch.from_numpy(mask)
-        stft_repr = stft_repr.unsqueeze(1)
-        stft_complex = torch.view_as_complex(stft_repr.contiguous())
-        mask_complex = torch.view_as_complex(mask.contiguous())
-        masked = stft_complex * mask_complex
-        masked = rearrange(masked, "b n (f s) t -> (b n s) f t", s=audio_channels)
-        masked = masked.index_fill(1, torch.tensor(0), 0.0)
-        reconstructed = torch.istft(
-            masked,
-            **stft_kwargs,
-            window=stft_window,
-            return_complex=False,
-            length=raw_audio_len,
-        )
-        return rearrange(reconstructed, "(b n s) t -> b n s t", s=audio_channels, n=1)
-
-    def separate(self, audio_path: str) -> list[str]:
-        import librosa
-
-        if self._session is None or self._config is None:
-            self.load_model(self.output_dir)
-
-        config = self._config
-        sample_rate = int(config["audio"]["sample_rate"])
-        stft_kwargs = {
-            "n_fft": int(config["model"]["stft_n_fft"]),
-            "hop_length": int(config["model"]["stft_hop_length"]),
-            "win_length": int(config["model"]["stft_win_length"]),
-            "normalized": bool(config["model"].get("stft_normalized", False)),
-        }
-        audio_channels = 2 if config["model"].get("stereo", False) else 1
-        chunk_size = _resolve_polarformer_chunk_size(
-            int(config["inference"].get("chunk_size", 882000))
-        )
-        num_overlap = int(config["inference"].get("num_overlap", 2))
-        batch_size = int(config["inference"].get("batch_size", 4))
-        if chunk_size <= 0 or num_overlap <= 0 or batch_size <= 0:
-            raise ValueError("BS PolarFormer 配置中的 chunk_size/num_overlap/batch_size 必须为正数")
-
-        audio, _ = librosa.load(audio_path, sr=sample_rate, mono=False)
-        input_was_mono = audio.ndim == 1
-        if input_was_mono:
-            audio = np.stack([audio, audio])
-        if audio.shape[0] > 2:
-            audio = audio[:2]
-
-        total_samples = int(audio.shape[1])
-        if total_samples <= 0:
-            raise ValueError(f"BS PolarFormer 收到空音频: {audio_path}")
-
-        step = max(1, chunk_size // num_overlap)
-        result = np.zeros((2, total_samples), dtype=np.float32)
-        count = np.zeros(total_samples, dtype=np.float32)
-
-        chunks = []
-        positions = []
-        for start in range(0, total_samples, step):
-            end = min(start + chunk_size, total_samples)
-            chunk = audio[:, start:end]
-            if chunk.shape[1] < chunk_size:
-                pad = np.zeros((2, chunk_size - chunk.shape[1]), dtype=np.float32)
-                chunk = np.concatenate([chunk, pad], axis=1)
-            chunks.append(chunk.astype(np.float32, copy=False))
-            positions.append((start, end))
-
-        input_name = self._session.get_inputs()[0].name
-        for batch_start in range(0, len(chunks), batch_size):
-            batch_chunks = chunks[batch_start:batch_start + batch_size]
-            batch_positions = positions[batch_start:batch_start + batch_size]
-            for batch_offset, (chunk, (start, end)) in enumerate(
-                zip(batch_chunks, batch_positions)
-            ):
-                chunk_index = batch_start + batch_offset + 1
-                log.info(
-                    f"BS PolarFormer 正在处理分块 {chunk_index}/{len(positions)}"
-                )
-                features, stft_repr, stft_window, raw_audio = self._prepare_stft(
-                    chunk,
-                    stft_kwargs,
-                    stft_kwargs["win_length"],
-                )
-                mask = self._session.run(None, {input_name: features.numpy()})[0]
-                reconstructed = self._reconstruct_audio(
-                    stft_repr,
-                    mask,
-                    stft_kwargs,
-                    stft_window,
-                    audio_channels,
-                    raw_audio.shape[-1],
-                )
-                reconstructed = reconstructed[0, 0].numpy()
-                actual_len = end - start
-                result[:, start:end] += reconstructed[:, :actual_len]
-                count[start:end] += 1.0
-
-        result = result / np.maximum(count, 1.0)[np.newaxis, :]
-        result = _suppress_isolated_channel_saturation(
-            result,
-            audio[:, :total_samples],
-            sample_rate,
-        )
-        instrumental = audio[:, :total_samples] - result
-
-        if input_was_mono:
-            result = result[:1]
-            instrumental = instrumental[:1]
-
-        output_path = Path(self.output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
-        base_name = Path(audio_path).stem
-        vocals_path = output_path / f"{base_name}_(Vocals)_bs_polarformer.wav"
-        instrumental_path = output_path / f"{base_name}_(Instrumental)_bs_polarformer.wav"
-        sf.write(vocals_path, result.T, sample_rate)
-        sf.write(instrumental_path, instrumental.T, sample_rate)
-        return [str(vocals_path), str(instrumental_path)]
-
-
 def _select_separator_output_by_role(
     output_files,
     output_dir: Path,
@@ -931,31 +580,6 @@ def _select_separator_output_by_role(
             f"role={role}, files={resolved_files}, output_dir={output_dir}"
         )
     return matches[0]
-
-
-def _get_leap_xe_min_duration_seconds(model_dir: str) -> float:
-    try:
-        import yaml
-    except ImportError as exc:
-        raise RuntimeError("读取 Leap XE 配置需要安装 PyYAML") from exc
-
-    config_path = Path(model_dir) / LEAP_XE_VOCALS_RUNTIME_CONFIG_FILENAME
-    if not config_path.exists():
-        config_path = Path(model_dir) / LEAP_XE_VOCALS_CONFIG_FILENAME
-    if not config_path.exists():
-        raise FileNotFoundError(f"Leap XE 配置文件不存在: {config_path}")
-
-    with open(config_path, "r", encoding="utf-8") as f:
-        config = yaml.load(f, Loader=yaml.FullLoader)
-
-    model_cfg = config.get("model", {})
-    audio_cfg = config.get("audio", {})
-    inference_cfg = config.get("inference", {})
-    stft_hop_length = int(model_cfg["stft_hop_length"])
-    dim_t = int(inference_cfg["dim_t"])
-    sample_rate = int(audio_cfg.get("sample_rate", 44100))
-    chunk_size = stft_hop_length * (dim_t - 1)
-    return chunk_size / float(sample_rate)
 
 
 def _get_karaoke_min_duration_seconds(
@@ -1038,7 +662,7 @@ def _pad_audio_to_min_duration(
     pad_dir = output_dir / "_hybrid_padded_inputs"
     pad_dir.mkdir(parents=True, exist_ok=True)
     padded_path = pad_dir / f"{Path(audio_path).stem}_leap_xe_padded.wav"
-    sf.write(padded_path, padded, sample_rate)
+    sf.write(padded_path, padded, sample_rate, subtype="FLOAT")
     return str(padded_path), original_duration
 
 
@@ -1059,111 +683,69 @@ def _trim_audio_to_duration(audio_path: str, duration_seconds: Optional[float]) 
         return
 
     data, sample_rate = sf.read(audio_path, always_2d=True)
-    sf.write(audio_path, data[:target_frames], sample_rate)
+    sf.write(audio_path, data[:target_frames], sample_rate, subtype="FLOAT")
 
 
-class _HybridLeapXePolarFormerRuntime:
-    """Use Leap XE for vocals and BS PolarFormer public ONNX for pure accompaniment."""
+def _get_custom_roformer_min_duration_seconds(model_dir: str, model_name: str) -> float:
+    """Read the exact audio-separator inference window, including stereo De-Reverb."""
+    import yaml
+
+    spec = _CUSTOM_AUDIO_SEPARATOR_MODELS[model_name]
+    config_path = Path(model_dir) / spec.get("local_subdir", "") / spec["config_filename"]
+    with config_path.open(encoding="utf-8") as stream:
+        config = yaml.full_load(stream)
+    hop = int(config["model"]["stft_hop_length"])
+    dim_t = int(config["inference"]["dim_t"])
+    sample_rate = int(config["audio"]["sample_rate"])
+    if hop <= 0 or dim_t <= 1 or sample_rate <= 0:
+        raise ValueError(f"RoFormer 推理窗口配置无效: {config_path}")
+    return hop * (dim_t - 1) / sample_rate
+
+
+class _HybridLeapInstrumentalRuntime:
+    """Two independent Leap targets share PCM; release the first model before the second."""
 
     def __init__(self, model_dir: str, output_dir: str, device: str):
         self.model_dir = model_dir
         self.output_dir = output_dir
         self.device = device
-        self.vocals_separator = None
-        self.instrumental_separator = None
-        self._init_output_dir = None
 
     def load_model(self, output_dir: str = ""):
         if output_dir:
             self.output_dir = output_dir
-        parent_dir = Path(self.output_dir)
-        leap_dir = parent_dir / "_hybrid_leap_xe_vocals"
-        polarformer_dir = parent_dir / "_hybrid_polarformer_instrumental"
-        leap_dir.mkdir(parents=True, exist_ok=True)
-        polarformer_dir.mkdir(parents=True, exist_ok=True)
+        Path(self.output_dir).mkdir(parents=True, exist_ok=True)
 
-        if self._init_output_dir == str(parent_dir):
-            return
-
-        log.info(
-            "已准备人声/纯伴奏分离链路: "
-            f"{LEAP_XE_VOCALS_DISPLAY_NAME} + {BS_POLARFORMER_DISPLAY_NAME}"
+    def _separate_stem(self, audio_path: str, model_name: str, role: str) -> str:
+        stem_dir = Path(self.output_dir) / ("_leap_vocals" if role == "lead" else "_leap_instrumental")
+        stem_dir.mkdir(parents=True, exist_ok=True)
+        separator = _load_audio_separator_model(
+            model_spec=model_name, output_dir=str(stem_dir),
+            model_dir=self.model_dir, device=self.device,
         )
-        self._init_output_dir = str(parent_dir)
+        try:
+            padded_path, duration = _pad_audio_to_min_duration(
+                audio_path, stem_dir,
+                _get_custom_roformer_min_duration_seconds(self.model_dir, model_name),
+            )
+            files = separator.separate(padded_path)
+            result = _select_separator_output_by_role(files, stem_dir, role, model_name)
+            _trim_audio_to_duration(result, duration)
+            return result
+        finally:
+            separator = None
+            gc.collect()
+            empty_device_cache()
 
     def separate(self, audio_path: str) -> list[str]:
-        if self._init_output_dir != str(Path(self.output_dir)):
-            self.load_model(self.output_dir)
-
-        parent_dir = Path(self.output_dir)
-        leap_dir = parent_dir / "_hybrid_leap_xe_vocals"
-        polarformer_dir = parent_dir / "_hybrid_polarformer_instrumental"
-        leap_dir.mkdir(parents=True, exist_ok=True)
-        polarformer_dir.mkdir(parents=True, exist_ok=True)
-        separator_audio_path = _ensure_separator_pcm_wav(
-            audio_path,
-            parent_dir / "_input",
-        )
-
-        self.vocals_separator = _load_audio_separator_model(
-            model_spec=LEAP_XE_VOCALS_MODEL,
-            output_dir=str(leap_dir),
-            model_dir=self.model_dir,
-            device=self.device,
-        )
-        try:
-            leap_input_path, original_duration = _pad_audio_to_min_duration(
-                separator_audio_path,
-                parent_dir,
-                _get_leap_xe_min_duration_seconds(self.model_dir),
-            )
-            leap_outputs = self.vocals_separator.separate(leap_input_path)
-            leap_vocals = _select_separator_output_by_role(
-                leap_outputs,
-                leap_dir,
-                "lead",
-                "Leap XE vocals",
-            )
-        finally:
-            self.vocals_separator = None
-            gc.collect()
-            empty_device_cache()
-
-        self.instrumental_separator = _BSPolarFormerRuntime(
-            model_dir=self.model_dir,
-            output_dir=str(polarformer_dir),
-            device=self.device,
-        )
-        try:
-            self.instrumental_separator.load_model(output_dir=str(polarformer_dir))
-            polarformer_outputs = self.instrumental_separator.separate(
-                separator_audio_path
-            )
-            polarformer_instrumental = _select_separator_output_by_role(
-                polarformer_outputs,
-                polarformer_dir,
-                "backing",
-                "BS PolarFormer instrumental",
-            )
-        finally:
-            self.instrumental_separator = None
-            gc.collect()
-            empty_device_cache()
-
-        parent_dir.mkdir(parents=True, exist_ok=True)
-        base_name = Path(audio_path).stem
-        vocals_path = str(parent_dir / f"{base_name}_(Vocals)_leap_xe90.wav")
-        instrumental_path = str(
-            parent_dir / f"{base_name}_(Instrumental)_polarformer62.wav"
-        )
-        _safe_move(leap_vocals, vocals_path)
-        _trim_audio_to_duration(vocals_path, original_duration)
-        _safe_move(polarformer_instrumental, instrumental_path)
-        return [vocals_path, instrumental_path]
+        self.load_model()
+        pcm_path = _ensure_separator_pcm_wav(audio_path, Path(self.output_dir) / "_input")
+        vocals = self._separate_stem(pcm_path, LEAP_XE_VOCALS_MODEL, "lead")
+        instrumental = self._separate_stem(pcm_path, LEAP_INSTRUMENTAL_MODEL, "backing")
+        return [vocals, instrumental]
 
 
 class RoformerSeparator:
-    """人声/伴奏分离器；默认输出 Leap XE 人声与 PolarFormer 纯伴奏。"""
+    """人声/伴奏分离器；默认输出 Leap XE 人声与标准 Leap 纯伴奏。"""
 
     def __init__(
         self,
@@ -1203,8 +785,7 @@ class RoformerSeparator:
         stem_pair_label = (
             "人声/纯伴奏"
             if (
-                _is_hybrid_leap_xe_polarformer_model_spec(model_name)
-                or _is_bs_polarformer_model_spec(model_name)
+                _is_hybrid_leap_instrumental_model_spec(model_name)
             )
             else "人声/伴奏"
         )
@@ -1212,18 +793,9 @@ class RoformerSeparator:
             f"正在加载高质量{stem_pair_label}分离模型: "
             f"{_model_spec_label(model_name)}"
         )
-        if _is_hybrid_leap_xe_polarformer_model_spec(model_name):
-            separator = _HybridLeapXePolarFormerRuntime(
-                model_dir=model_dir,
-                output_dir=target_dir,
-                device=self.device,
-            )
-            separator.load_model(output_dir=target_dir)
-        elif _is_bs_polarformer_model_spec(model_name):
-            separator = _BSPolarFormerRuntime(
-                model_dir=model_dir,
-                output_dir=target_dir,
-                device=self.device,
+        if _is_hybrid_leap_instrumental_model_spec(model_name):
+            separator = _HybridLeapInstrumentalRuntime(
+                model_dir=model_dir, output_dir=target_dir, device=self.device,
             )
             separator.load_model(output_dir=target_dir)
         else:
@@ -1259,8 +831,7 @@ class RoformerSeparator:
         stem_pair_label = (
             "人声/纯伴奏"
             if (
-                _is_hybrid_leap_xe_polarformer_model_spec(self.model_filename)
-                or _is_bs_polarformer_model_spec(self.model_filename)
+                _is_hybrid_leap_instrumental_model_spec(self.model_filename)
             )
             else "人声/伴奏"
         )
@@ -1274,6 +845,7 @@ class RoformerSeparator:
         self.load_model(output_dir=str(output_path))
         # audio-separator 需要 output_dir 在实例上设置
         self.separator.output_dir = str(output_path)
+        audio_path = _ensure_separator_pcm_wav(audio_path, output_path)
         output_files = self.separator.separate(audio_path)
 
         # audio-separator 返回的可能是纯文件名，需要拼上 output_dir
@@ -1284,22 +856,6 @@ class RoformerSeparator:
                 p = output_path / p
             resolved_files.append(str(p))
 
-        # Recovery: if resolved files don't exist, search the output dir
-        # for freshly created files. This handles cases where audio-separator
-        # writes to a slightly different path (e.g. after output_dir update
-        # on a reused Separator instance).
-        if resolved_files and not any(Path(f).exists() for f in resolved_files):
-            import glob as _glob
-            all_wavs = sorted(
-                _glob.glob(str(output_path / "*.wav")),
-                key=lambda x: os.path.getmtime(x),
-                reverse=True,
-            )
-            # Take the most recent files (should be our separation output)
-            if len(all_wavs) >= 2:
-                resolved_files = all_wavs[:2]
-            elif len(all_wavs) == 1:
-                resolved_files = all_wavs[:1]
 
         # audio-separator 返回文件列表，通常 [primary, secondary]
         # primary = Vocals, secondary = Instrumental (或反过来，取决于模型)
@@ -1319,14 +875,11 @@ class RoformerSeparator:
             elif "vocal" in f_lower or "primary" in f_lower:
                 vocals_path = f
 
-        # 如果无法通过文件名判断，按顺序分配
-        if vocals_path is None and accompaniment_path is None and len(resolved_files) >= 2:
-            vocals_path = resolved_files[0]
-            accompaniment_path = resolved_files[1]
-        elif vocals_path is None and len(resolved_files) >= 1:
-            vocals_path = resolved_files[0]
-        elif accompaniment_path is None and len(resolved_files) >= 2:
-            accompaniment_path = resolved_files[1]
+        if not vocals_path or not accompaniment_path or vocals_path == accompaniment_path:
+            raise RuntimeError(f"分离输出无法唯一确定人声与伴奏，停止处理：{resolved_files}")
+        for file_path in (vocals_path, accompaniment_path):
+            if not Path(file_path).is_file():
+                raise FileNotFoundError(f"分离输出不存在，不会复用目录中的旧文件：{file_path}")
 
         # 重命名为标准名称
         final_vocals = str(output_path / "vocals.wav")
@@ -1473,6 +1026,7 @@ class KaraokeSeparator:
             model_dir,
             self.model_filename,
         )
+        audio_path = _ensure_separator_pcm_wav(audio_path, output_path)
         separation_input_path = audio_path
         original_duration = None
         if min_duration_seconds > 0:
@@ -1662,6 +1216,14 @@ class RoformerDereverbSeparator:
 
         self.load_model(output_dir=str(output_path))
         self.separator.output_dir = str(output_path)
+        duration = None
+        audio_path = _ensure_separator_pcm_wav(audio_path, output_path)
+        if self.model_filename in _CUSTOM_AUDIO_SEPARATOR_MODELS:
+            model_dir = str(Path(__file__).parent.parent / "assets" / "separator_models")
+            audio_path, duration = _pad_audio_to_min_duration(
+                audio_path, output_path,
+                _get_custom_roformer_min_duration_seconds(model_dir, self.model_filename),
+            )
         output_files = self.separator.separate(audio_path)
 
         resolved_files = _resolve_output_files(output_files, output_path)
@@ -1687,6 +1249,7 @@ class RoformerDereverbSeparator:
 
         final_dry = str(output_path / "roformer_deecho_vocals.wav")
         _safe_move(dry_path, final_dry)
+        _trim_audio_to_duration(final_dry, duration)
         return final_dry
 
     def unload_model(self):
@@ -1762,8 +1325,11 @@ class VocalSeparator:
         if progress_callback:
             progress_callback("正在加载音频...", 0.1)
 
-        # 加载音频
-        waveform, sample_rate = torchaudio.load(audio_path)
+        # Use the same explicit float decoder as every separation route.
+        # torchaudio 2.9+ load delegates to an optional TorchCodec runtime.
+        prepared_input = _ensure_separator_pcm_wav(Path(audio_path), output_path)
+        audio, sample_rate = sf.read(prepared_input, dtype="float32", always_2d=True)
+        waveform = torch.from_numpy(audio.T.copy())
 
         # 重采样到模型采样率
         if sample_rate != self.model.samplerate:
@@ -1784,31 +1350,23 @@ class VocalSeparator:
 
         # 执行分离
         with torch.no_grad():
-            try:
-                sources = apply_model(
-                    self.model,
-                    waveform,
-                    device=self.device,
-                    shifts=self.shifts,
-                    overlap=self.overlap,
-                    split=self.split
-                )
-            except TypeError:
-                sources = apply_model(self.model, waveform, device=self.device)
+            sources = apply_model(
+                self.model, waveform, device=self.device,
+                shifts=self.shifts, overlap=self.overlap, split=self.split,
+            )
 
         # sources 形状: (batch, sources, channels, samples)
         # 获取各音轨索引
-        source_names = self.model.sources
+        source_names = list(self.model.sources)
+        if source_names.count("vocals") != 1 or len(source_names) < 2 or len(set(source_names)) != len(source_names):
+            raise ValueError(f"Demucs 音轨结构无效: {source_names!r}")
         vocals_idx = source_names.index("vocals")
-        drums_idx = source_names.index("drums")
-        bass_idx = source_names.index("bass")
-        other_idx = source_names.index("other")
 
         # 提取人声
         vocals = sources[0, vocals_idx]  # (channels, samples)
 
         # 合并非人声音轨作为伴奏
-        accompaniment = sources[0, drums_idx] + sources[0, bass_idx] + sources[0, other_idx]
+        accompaniment = sources[0, [idx for idx in range(len(source_names)) if idx != vocals_idx]].sum(dim=0)
 
         if progress_callback:
             progress_callback("正在保存分离结果...", 0.8)
@@ -1818,16 +1376,8 @@ class VocalSeparator:
         accompaniment_path = output_path / "accompaniment.wav"
 
         # 保存为 WAV
-        torchaudio.save(
-            str(vocals_path),
-            vocals.cpu(),
-            self.model.samplerate
-        )
-        torchaudio.save(
-            str(accompaniment_path),
-            accompaniment.cpu(),
-            self.model.samplerate
-        )
+        sf.write(vocals_path, vocals.detach().cpu().numpy().T, self.model.samplerate, subtype="FLOAT")
+        sf.write(accompaniment_path, accompaniment.detach().cpu().numpy().T, self.model.samplerate, subtype="FLOAT")
 
         if progress_callback:
             progress_callback("人声分离完成", 1.0)
@@ -1863,7 +1413,7 @@ def get_available_models() -> list:
     if AUDIO_SEPARATOR_AVAILABLE:
         models.append({
             "name": "roformer",
-            "description": "默认混合链路: Leap XE 90 vocals + BS PolarFormer public ONNX 62 pure accompaniment；RoFormer/BS-RoFormer 模型也用于 Karaoke、De-Reverb 和手动预设"
+            "description": "默认混合链路: Leap XE 90 vocals + Leap Instrumental 62 pure accompaniment；RoFormer/BS-RoFormer 模型也用于 Karaoke、De-Reverb 和手动预设"
         })
     if DEMUCS_AVAILABLE:
         models.extend([

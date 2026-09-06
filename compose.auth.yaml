@@ -1,0 +1,12 @@
+# 与 compose.yaml 或 compose.cpu.yaml 叠加；不能单独启动。
+services:
+  ai-rvc:
+    environment:
+      AI_RVC_AUTH_USER: ${AI_RVC_AUTH_USER:?请在 .env 设置登录用户名}
+      AI_RVC_AUTH_PASSWORD_FILE: /run/secrets/ai_rvc_password
+    secrets:
+      - ai_rvc_password
+
+secrets:
+  ai_rvc_password:
+    file: ./docker/secrets/password.txt

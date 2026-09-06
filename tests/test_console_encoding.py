@@ -8,6 +8,7 @@ class ConsoleEncodingTests(unittest.TestCase):
     def test_logger_writes_utf8_when_parent_environment_does_not_override_encoding(self):
         env = os.environ.copy()
         env.pop("PYTHONIOENCODING", None)
+        env["AI_RVC_LANGUAGE"] = "zh_CN"
         result = subprocess.run(
             [
                 sys.executable,

@@ -1,0 +1,23 @@
+name: ai-rvc
+services:
+  ai-rvc:
+    image: ${AI_RVC_IMAGE:-ai-rvc:1.5.0-rc.1-cpu}
+    build:
+      context: .
+      args:
+        VARIANT: cpu
+        VERSION: 1.5.0-rc.1
+    ports:
+      - "${AI_RVC_BIND:-127.0.0.1}:${AI_RVC_PORT:-7860}:7860"
+    environment:
+      AI_RVC_DEVICE: cpu
+      AI_RVC_ROOT_PATH: ${AI_RVC_ROOT_PATH:-}
+      AI_RVC_AUTH_USER: ${AI_RVC_AUTH_USER:-}
+      AI_RVC_AUTH_PASSWORD_FILE: ${AI_RVC_AUTH_PASSWORD_FILE:-}
+    volumes:
+      - ai-rvc-data:/data
+    restart: "on-failure:3"
+    stop_grace_period: 30s
+
+volumes:
+  ai-rvc-data:

@@ -1,5 +1,112 @@
 # Changelog
 
+## Unreleased — 2026-09-06
+
+### 中文
+
+- 增加 Linux x86-64 CPU/CUDA Docker 镜像和 Compose：固定完整 PyTorch 栈，多阶段构建前端与依赖，非 root 运行，单数据卷、可选密码文件登录、健康检查和显式设备失败；默认六模型、精度和音频输出策略不变。
+- 配置原子保存保留容器文件软链接，升级镜像继续使用原有配置和模型；本地浏览器启动行为保持，容器可无浏览器启动并设置反向代理子路径。
+- 兼容新版 FastAPI 的懒路由，保留下载鉴权、Range 和中文文件名；容器仅开放实际输出目录供下载。启动配置固定设备时，界面只读且保存接口明确拒绝无效修改。
+- 六个默认分离模型固定到已实测的提交与 SHA-256，已有有效缓存可断网使用；CPU 环境不预加载 CUDA 库，实际依赖或下载错误继续完整报告。
+- 发布工作流默认生成审核产物，上传草稿必须绑定一致的版本标签；完整回归、前端构建、包内文件清单和压缩包校验码进入流程，公开文档和截图随便携包分发。当前为 1.5.0-rc.1 发布准备，尚未发布镜像或新 Release。
+
+- 完全移除 PolarFormer 运行封装、混合预设、专用窗口参数及下载入口，新包不再包含遗留权重；旧配置显式报错。纯伴奏统一使用已设为默认的 Leap Instrumental，保留历史对比测量。
+
+- 跨平台安装改为一次解析完整项目依赖，并保留所选 PyTorch 构建；补齐 Apple Silicon 的 PyTorch 2.13 与 ARM 音频库要求、Blackwell CUDA 12.8 选择，明确拒绝不兼容组合。MCP 1.x 与 Gradio 5.49.1 保持兼容。
+- 修复同长度、同修改时间的权重或索引覆盖可能复用旧校验结果的问题；模型校验依据内容哈希。便携包对固定官方源码逐文件校验，不再依赖用户机器安装 Git；本地 spec 与发行流程统一使用目录包；补齐 safehttpx/groovy 资源，VC/UVR5 隔离导入保留冻结程序的依赖搜索路径。
+- 最终 Windows 源码、Docker CPU 与 CUDA 运行时各 335 项回归通过；两个镜像均完成断网默认六模型、RVC 与七类 Float WAV 输出。登录、子路径代理、上传下载、数据持久化和备份恢复均已实测。Colab 安装成功后被平台使用限制断开，HF 新建 CPU Space 返回 402；不把受阻云端及未接入硬件计为验收通过。
+
+- README 更新真实多轨波形、翻唱设置与可下载角色目录截图；区分伴奏受控实测、公开榜单与去混响权重名称指标，补充逐平台验收范围。
+- 本地、Colab、Space 与打包共用固定版 pip/setuptools 安装工具；补齐 CPU Space 功能依赖与完整 PyTorch 栈，正常解析依赖并执行检查。
+- 原生 PyTorch XPU 检测不再强制依赖 IPEX；固定官方源码校验兼容 Windows/WSL 共享工作树的换行符，仍拒绝真实内容修改。
+
+- 分离引擎统一升级到 audio-separator 0.47.0，同步本地 CPU/CUDA/DirectML、HF、Colab、安装检查与打包依赖。打包收集完整分离器模块、模型配置及版本元数据。
+- RoFormer 使用模型 YAML 的重叠参数，保持 FP32 常规推理；接入上游分块与输出修正，移除按轨道类型猜测缺失输出文件的兼容处理。输出、耗时可能随重叠计算修正而变化。
+- 明确拒绝上游 0.47.0 不支持的 MDXC/RoFormer + DirectML 组合，避免选择 DirectML 后自动在 CPU 推理。
+- Windows CUDA 源码的约 241 秒整曲和 5 秒短音频均完成默认翻唱，六模型参数生效、七类 Float WAV 输出完整。此前 Windows CUDA 实际包完成默认短音频与 UVR5 验收；本轮追加共用修正后仍需重建便携包，尚未发布。技术验收不作为主观听感提升证明。
+
+- 修复参数实际生效问题：UVR5 分离不再被音色转换引擎开关改成 Demucs；默认说话人 ID 按配置初始化并校验。补齐 FCPE 静音门限提取器，保留 PM 无声帧的零值。
+- 固定版官方 RVC 保留音高提取器的无声标记，修复插值使清辅音保护失效的问题。实际权重、固定随机种子验证修正前保护参数输出相同、修正后生效；不修改官方源码目录或模型权重。
+- 保留现有页面与操作流程，压缩顶部留白并对齐标题和语言栏；状态文本按内容展开、模型路径自动换行。修正 Gradio 样式重写导致的窄屏规则失效，优化手机页签、按钮与多轨触控尺寸。
+- 简化界面操作说明和中英文文案；处理流程展示选定步骤，模型面板分别显示文件、组件与校验状态。运行代码标记移至设置详情。
+- 修正默认角色详情、中文无障碍名称和播放器错误提示；数值校验使用界面语言并保留失败原因。
+- 更新 README、HF README、Colab 和兼容性文档，移除编辑过程残留并修正过时参数说明。
+
+- 角色模型下载/导入先在暂存目录校验完整权重、真实架构与索引，再安装；失败显式报告，替换前的文件保留备份。列表不再把发布名 v2 当作架构，拒绝按文件名相似度猜索引。
+- 修复稀疏 IVF 索引返回无效近邻与精确重复向量除零：当前/官方两路共用完整 FP32 向量的 FlatL2 精确检索，不关闭索引、不降维、不改写资产；支持中文索引路径。
+- Google Drive 对齐 gdown 6.0.0 的大文件确认接口；Mega 增加哈希锁定的 Megatools 客户端。181 个条目中 178 个 HF 来源文件存在、2 个 Drive 来源实际下载；樱坂雫原 Mega 来源 ENOENT，明确保留失效状态。8 个本地角色共 16 次带索引双路线真实推理通过，其余权重尚未完成推理验证。
+
+- 翻唱结果增加与 TelkNet 对齐的多轨时间轴，支持同步播放、静音、独奏、逐轨增益、时间偏移、缩放和拖入对照轨；默认只启用转换后人声与伴奏，七类输出保留独立试听和原始 WAV 下载。
+- 播放器默认整曲适配窗口、高度自适应，中英文及离线资源与 Gradio 共用；试听不改写音频，加载或解码失败显式停止。独立试听与多轨播放互斥，防止成品与分轨意外叠加。
+- 按 Gradio 上游修复上传进度 ID 的初始化，补齐流连接取消；Windows 网页服务器显式使用 Selector 套接字事件循环，避免媒体断连触发 Python 3.10 Proactor 清理异常。日志保留完整 traceback，错误不会被过滤。
+
+- 默认纯伴奏采用标准 Leap Instrumental 62；人声保留 Leap XE 90，主唱/带和声伴奏使用 MVSep 9205，去混响更新为 Stereo De-Reverb 22.5050。
+- 移除默认入口中未消费的滤波半径、HuBERT 层数、旧 F0 调优配置与重复去混响开关；配置和 MCP 拒绝未知参数，UI 按模型及路由禁用不适用控件。
+- 按真实权重支持 RVC v1/256、v2/768、F0/无 F0、32/40/48 kHz 和多说话人；校验完整推理权重及同维度 FAISS 索引，不填充/截断特征，不加载缺层的随机参数。
+- 音频中间结果与混音使用 Float32 WAV；固定版官方 VC/UVR5 采用编码层适配，避免先量化 PCM16 再写入浮点容器。
+- MCP 包改为 `rvc_mcp`，解决与 SDK 同名冲突；转换使用隔离进程，避免 Windows 原生数值库初始化阻塞 stdio；模型列表返回唯一 ID。
+- 离线官方转换固定常规推理，修正变长整曲反复预热和保留 CUDA Graph 显存的问题；模型及 FP32/FP16 策略不变。
+- Demucs 改用统一浮点解码并汇总全部非人声轨；补齐 FCPE 依赖，移除本地未实现的 DIO 配置；MCP 失败同步设置协议错误标志。
+- 补正冻结程序工作进程调度与打包资源；GPU 构建配置对齐 PyTorch 2.11/CUDA 12.8。Windows CUDA 包已完成默认短音频和 UVR5 实跑，云端部署仍未验收。
+- README、HF README、Colab 和兼容性说明同步更新。本节记录未发布源码修改，不表示已打包或部署到云端。
+
+- 界面语言即时切换，合并标签与候选项更新，保留手动参数和多轨会话；筛选后清理失效角色选择。
+- 基础模型固定提交并校验大小与 SHA-256，下载采用可验证续传及原子发布；失败不覆盖现有文件，脚本返回真实失败退出码。
+- 配置原子保存，预设工具支持任意工作目录；拒绝非有限数值、小数整数参数和不存在的设备编号。修正 Gradio 带 API 前缀的下载路由，保留授权及 Range 请求。
+
+### English
+
+- Add Linux x86-64 CPU/CUDA Docker images and Compose with a pinned PyTorch stack, multistage frontend/dependency builds, non-root execution, one persistent data volume, optional secret-file login, health checks and explicit device errors. Preserve the complete model chain, precision and output policy.
+- Keep configuration symlinks intact during atomic saves. Recreated containers retain settings and models; headless startup and reverse-proxy paths are optional without changing desktop startup defaults.
+- Support lazy routers in newer FastAPI while preserving download authentication, ranges and Unicode filenames. Allow only the actual output directory for container downloads. Make startup-pinned device settings read-only and reject ineffective save requests.
+- Pin all six default separator models to tested revisions and SHA-256 hashes for offline cache reuse. Avoid CUDA library preloading on CPU; retain complete dependency and download errors.
+- Make manual release builds review-only by default. Draft uploads require matching source/version tags; run the full suite, build the player, include public documentation and generate package inventories/checksums. Version 1.5.0-rc.1 is being prepared; no registry image or new Release has been published.
+
+- Remove the PolarFormer runtime, hybrid preset, dedicated window controls, and download entry points; new builds exclude any remaining cached weights. Retired model IDs fail explicitly. Pure accompaniment uses the existing Leap Instrumental default; historical comparison measurements remain available.
+
+- Resolve the full project dependency set in one transaction while preserving the selected PyTorch build. Add Apple Silicon runtime/library requirements and Blackwell cu128 selection; keep MCP 1.x compatible with Gradio 5.49.1.
+- Validate model and index contents despite unchanged file size and timestamps. Portable builds verify all pinned upstream source files without requiring system Git and use directory bundles consistently.
+- Final Windows source and both Docker runtimes passed 335 tests each. Both images completed network-disabled default six-model/RVC covers with seven Float WAV outputs. Authentication, subpath proxying, uploads/downloads, persistence and backup/restore were verified. Colab was terminated by platform restrictions after installation; new HF CPU Space creation returned HTTP 402. These cloud routes and unavailable hardware remain unverified.
+
+- Refresh README with actual multitrack waveforms, cover controls and the downloadable character catalog. Separate controlled accompaniment scores from public leaderboard and checkpoint-name metrics; document platform-specific evidence.
+- Share pinned pip/setuptools bootstrap across local, Colab, Space and package builds. Include all CPU Space feature dependencies, install the complete PyTorch stack and validate dependency resolution instead of bypassing it.
+- Detect native PyTorch XPU without requiring IPEX. Normalize Git checkout line endings when validating pinned upstream sources shared between Windows and WSL, while still rejecting content changes.
+
+- Upgrade audio-separator to 0.47.0 across local CPU/CUDA/DirectML, HF, Colab, installer checks and packaging. Bundle separator modules, model configuration data and distribution metadata.
+- Honor model-configured RoFormer overlap with FP32 eager inference. Adopt upstream chunk/output fixes and reject missing output paths instead of substituting existing stems. Corrected overlap can change output and runtime.
+- Reject MDXC/RoFormer on DirectML because upstream 0.47.0 substitutes CPU for that unsupported allocator; do not report GPU execution while running on CPU.
+- Windows CUDA source completed default covers of a roughly 241-second song and a 5-second clip, with six effective model configurations and seven Float WAV outputs. The earlier Windows CUDA portable app passed a default short cover and real UVR5 separation; it still needs rebuilding after the latest shared changes. No new installer was published, and listening improvement is not inferred from technical checks.
+
+- Make UVR5 selection independent of the VC engine and initialize the speaker ID from validated configuration. Add the missing FCPE extractor for silence gating and preserve PM unvoiced zeros.
+- Preserve native unvoiced F0 decisions in the pinned RVC adapter so consonant protection works. Fixed-seed, real-weight runs confirm that protection previously produced identical outputs and now changes them. Keep the upstream checkout and model weights intact.
+- Preserve the existing pages and workflows while aligning the header and language controls, reducing excess spacing, expanding status text and wrapping model paths. Fix responsive rules affected by Gradio CSS rewriting and improve mobile tabs, buttons and multitrack touch targets.
+- Switch interface language immediately while preserving manual controls and multitrack state; merge component updates and clear invalid filtered selections.
+- Pin base-model revisions and verify size/SHA-256. Use validated resume and atomic publication, preserve existing files on failure, and propagate script exit codes.
+- Save configuration atomically, resolve preset paths independently of the working directory, reject invalid numeric/device inputs, and preserve authorization and ranges on Gradio file routes.
+
+
+- Simplify interface copy in both languages. Show selected workflow steps separately from model-file, component-import and validation status; move the runtime build marker to settings details.
+- Correct initial character details, Chinese accessible names and player errors. Localize numeric validation and retain failure details.
+- Update README, HF README, Colab and compatibility documentation, removing editorial residue and outdated parameter instructions.
+
+- Validate character weights, native architecture and indices in staging before installation/import. Preserve replaced assets, surface failures, distinguish distribution labels from RVC versions and reject ambiguous index pairing.
+- Use shared exhaustive FlatL2 retrieval over original FP32 vectors in both VC routes, fixing sparse-IVF invalid neighbors and zero-distance weighting. Preserve dimensions and index files; support Unicode index paths. Exact search can cost more memory/time.
+- Use gdown 6.0.0 for public Drive confirmation forms and pinned, SHA-256-verified Megatools builds for MEGA. Check remote file presence for 178 HF entries, download both Drive entries and complete 16 indexed runs across 8 local characters. Keep the Shizuku Osaka entry visibly source-unavailable (MEGA ENOENT); Other registered weights remain untested.
+
+- Add the TelkNet multitrack timeline with synchronized playback, mute/solo, gain, offsets, zoom and draggable comparison tracks. Start with converted vocals and accompaniment; retain standalone playback and original WAV downloads for all seven output roles.
+- Fit the complete timeline to the available width and resize the embedded player to its content. Bundle all frontend assets and both locales. Preview edits do not rewrite audio; loading/decoding errors stop the mixer. Standalone and multitrack playback are mutually exclusive.
+- Backport Gradio's upload progress ID initialization fix and implement actual stream cancellation. Use an explicit Selector socket loop for the Windows web server to avoid Python 3.10 Proactor cleanup failures on media disconnects. Preserve exception tracebacks without filtering errors.
+
+- Use standard Leap Instrumental 62 for pure accompaniment, retaining Leap XE 90 vocals, MVSep 9205 lead/backing+instrumental and Stereo De-Reverb 22.5050.
+- Remove unused default-route parameters and duplicate preprocessing controls. Reject unknown config/MCP fields and disable controls that do not apply to the selected model or route.
+- Validate native RVC v1/256 and v2/768, F0/non-F0, 32/40/48 kHz, speaker IDs and matching FAISS indices. No feature padding/truncation, missing-layer random initialization or low-bit quantization.
+- Preserve Float32 WAV intermediates and exports with checked encoding-only adapters for pinned upstream VC/UVR5.
+- Rename the MCP package to `rvc_mcp`, isolate numerical conversion from stdio threads and expose unambiguous model IDs.
+- Use eager execution for offline conversion without changing model precision. Avoid repeated CUDA Graph warmup and retained memory pools for variable-length clips.
+- Use float decoding and all non-vocal stems in Demucs, include FCPE dependencies, reject unsupported local DIO settings and propagate MCP protocol errors.
+- Correct frozen worker dispatch and bundled assets; align GPU build definitions with PyTorch 2.11/CUDA 12.8. The Windows CUDA portable app passed a default short cover and real UVR5 separation; cloud E2E remains unverified.
+- These are unreleased source changes; local verification is not a new release or cloud deployment.
+
 ## v1.4.0 - 2026-07-12
 
 ### 中文更新说明
@@ -78,7 +185,7 @@ AI-RVC v1.3.0 重点整理默认翻唱质量路线、模型兼容性和发布打
 #### UI 和文档
 
 - 翻唱参数现在会校验输入值，不再自动夹取或静默降级。
-- 混音预设会真正同步到音量和混响滑块，同时仍可手动微调。
+- 混音预设会同步到音量和混响滑块，同时仍可手动微调。
 - README 和 Hugging Face README 已更新当前模型定位、SOTA 边界、严格默认参数和官方 RVC 源码准备方式。
 - 本地 agent 指令文件和生成的审计产物已从 Git 跟踪中移除；被 README 引用的文档和界面演示图继续保留。
 

@@ -15,9 +15,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from lib.console_i18n import console_print as print
 
-PRESETS_DIR = Path("configs/presets")
-CONFIG_FILE = Path("configs/config.json")
-BACKUP_FILE = Path("configs/config.backup.json")
+PRESETS_DIR = PROJECT_ROOT / Path("configs/presets")
+CONFIG_FILE = PROJECT_ROOT / Path("configs/config.json")
+BACKUP_FILE = PROJECT_ROOT / Path("configs/config.backup.json")
 
 PRESETS = {
     "1": "balanced.json",
@@ -32,8 +32,8 @@ def load_json(path: Path) -> dict:
 
 def save_json(path: Path, data: dict):
     """保存JSON文件"""
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    from configs.persistence import update_config
+    update_config(path, data, replace=True)
 
 def backup_config():
     """备份当前配置"""
@@ -44,21 +44,19 @@ def backup_config():
 def restore_config():
     """恢复备份配置"""
     if BACKUP_FILE.exists():
-        shutil.copy(BACKUP_FILE, CONFIG_FILE)
+        from configs.schema import validate_config
+        validate_config(load_json(BACKUP_FILE))
+        save_json(CONFIG_FILE, load_json(BACKUP_FILE))
         print(f"✓ 已恢复配置从: {BACKUP_FILE}")
     else:
-        print("✗ 未找到备份文件")
+        raise FileNotFoundError(str(BACKUP_FILE))
 
 def apply_preset(preset_name: str):
     """应用预设配置"""
     preset_path = PRESETS_DIR / preset_name
 
-    if not preset_path.exists():
-        print(f"✗ 预设文件不存在: {preset_path}")
-        return
-
-    # 备份当前配置
-    backup_config()
+    if not preset_path.is_file():
+        raise FileNotFoundError(f"预设文件不存在: {preset_path}")
 
     # 加载预设和当前配置
     preset = load_json(preset_path)
@@ -67,8 +65,11 @@ def apply_preset(preset_name: str):
     # 合并配置 (只更新 cover 部分)
     if "cover" in preset:
         config["cover"].update(preset["cover"])
+    from configs.schema import validate_config
+    validate_config(config)
 
-    # 保存
+    # Only replace the backup after validation has succeeded.
+    backup_config()
     save_json(CONFIG_FILE, config)
 
     print(f"\n✓ 已应用预设: {preset.get('name', preset_name)}")
@@ -77,8 +78,6 @@ def apply_preset(preset_name: str):
     print(f"  - index_rate: {config['cover']['index_rate']}")
     print(f"  - protect: {config['cover']['protect']}")
     print(f"  - rms_mix_rate: {config['cover']['rms_mix_rate']}")
-    print(f"  - filter_radius: {config['cover']['filter_radius']}")
-    print(f"  - f0_stabilize: {config['cover']['f0_stabilize']}")
 
 def show_menu():
     """显示菜单"""

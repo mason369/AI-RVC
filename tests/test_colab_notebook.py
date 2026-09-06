@@ -30,20 +30,24 @@ class ColabNotebookTests(unittest.TestCase):
 
     def test_colab_preinstalls_gpu_torch_before_project_dependencies(self):
         self.assertIn("--index-url https://download.pytorch.org/whl/cu126", self.source)
-        self.assertIn("pip install torch torchaudio", self.source)
+        stack = "pip install torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0"
+        self.assertIn(stack, self.source)
+        self.assertLess(self.source.index("pip install -r pre-requirements.txt"),
+                        self.source.index(stack))
+        self.assertNotIn("pip install --upgrade pip", self.source)
         self.assertIn("raise RuntimeError('GPU PyTorch install completed but CUDA is not available.')", self.source)
         self.assertNotIn("https://download.pytorch.org/whl/cpu", self.source)
 
     def test_colab_checks_current_processing_model_defaults(self):
         self.assertIn(
-            "ROFORMER_DEFAULT_MODEL == 'hybrid:leap_xe90_vocals+polarformer62_instrumental'",
+            "ROFORMER_DEFAULT_MODEL == 'hybrid:leap_xe90_vocals+leap62_instrumental'",
             self.source,
         )
         self.assertIn("KARAOKE_DEFAULT_MODEL == 'ensemble:mvsep_9205_avg'", self.source)
         self.assertIn("check_required_default_separator_models", self.source)
         self.assertIn("get_missing_default_separator_model_files", self.source)
         self.assertIn(
-            "ROFORMER_DEREVERB_DEFAULT_MODEL == 'dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt'",
+            "ROFORMER_DEREVERB_DEFAULT_MODEL == 'dereverb_bs_roformer_anvuew_sdr_22.5050.ckpt'",
             self.source,
         )
         self.assertIn("'onnxruntime-gpu': '>=1.17'", self.source)
@@ -60,8 +64,9 @@ class ColabNotebookTests(unittest.TestCase):
         self.assertNotIn("--skip-check", self.source)
 
     def test_colab_includes_full_processing_mode_matrix(self):
-        self.assertIn("$PY tools/run_mode_matrix.py", self.source)
-        self.assertIn("--output-dir /content/AI-RVC/outputs/mode_matrix_colab", self.source)
+        self.assertIn("'/content/AI-RVC/tools/run_mode_matrix.py'", self.source)
+        self.assertIn("'--input', str(Path(INPUT_AUDIO).resolve())", self.source)
+        self.assertIn("'--output-dir', '/content/AI-RVC/outputs/mode_matrix_colab'", self.source)
         self.assertIn("--require-cuda", self.source)
         self.assertIn("download_character_model('rin')", self.source)
         self.assertIn("Missing test audio", self.source)

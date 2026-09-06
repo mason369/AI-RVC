@@ -1,0 +1,86 @@
+{
+  "date": "2026-09-06",
+  "test_type": "30-second artificial piano plus separated vocal mixture; not original-song ground truth",
+  "results": [
+    {
+      "model": "leap",
+      "audio_separator": "0.47.0",
+      "torch": "2.11.0+cu128",
+      "gpu": "NVIDIA GeForce RTX 4070 Ti SUPER",
+      "input_sha256": "0d4b0edeb9dadfc79660432ef4190e8400d890bb97468e3db4c33e94fd4bff56",
+      "reference_sha256": "c319960ccf17ef110536e74358860494768afca30edd11dd1f19a5c945d0388f",
+      "parameters": {
+        "precision": "fp32",
+        "compiled": false,
+        "overlap": 2,
+        "batch_size": 2
+      },
+      "load_seconds": 1.4188920999877155,
+      "inference_seconds": 6.145191700023133,
+      "si_sdr_db": 19.284428393984548,
+      "sdr_db": 19.31965655923698,
+      "segments": [
+        {
+          "si_sdr_db": 22.168779293191903,
+          "sdr_db": 22.184121965839804
+        },
+        {
+          "si_sdr_db": 18.016121762330265,
+          "sdr_db": 18.057881339679252
+        },
+        {
+          "si_sdr_db": 16.556159731870007,
+          "sdr_db": 16.633568674334786
+        }
+      ],
+      "files": [
+        "controlled_piano_vocal_30s_(vocals)_bs_roformer_leap_inst.wav",
+        "controlled_piano_vocal_30s_(other)_bs_roformer_leap_inst.wav"
+      ],
+      "output_sha256": "d6fecd2ee04f365232a898b5d9ea6ab95c10ea4748d618ecea5c855bd95a3e56",
+      "frames": 1323000,
+      "channels": 2
+    },
+    {
+      "model": "polarformer",
+      "audio_separator": "0.47.0",
+      "torch": "2.11.0+cu128",
+      "gpu": "NVIDIA GeForce RTX 4070 Ti SUPER",
+      "input_sha256": "0d4b0edeb9dadfc79660432ef4190e8400d890bb97468e3db4c33e94fd4bff56",
+      "reference_sha256": "c319960ccf17ef110536e74358860494768afca30edd11dd1f19a5c945d0388f",
+      "parameters": {
+        "providers": [
+          "CUDAExecutionProvider",
+          "CPUExecutionProvider"
+        ],
+        "chunk_samples": 441000,
+        "overlap": 2
+      },
+      "load_seconds": 2.059904599969741,
+      "inference_seconds": 126.55248579999898,
+      "si_sdr_db": 18.456475353704427,
+      "sdr_db": 18.517785524128442,
+      "segments": [
+        {
+          "si_sdr_db": 21.328746831673435,
+          "sdr_db": 21.359880191947155
+        },
+        {
+          "si_sdr_db": 17.148780527323677,
+          "sdr_db": 17.230742611340034
+        },
+        {
+          "si_sdr_db": 15.760945526346394,
+          "sdr_db": 15.872044100850243
+        }
+      ],
+      "files": [
+        "controlled_piano_vocal_30s_(Vocals)_bs_polarformer.wav",
+        "controlled_piano_vocal_30s_(Instrumental)_bs_polarformer.wav"
+      ],
+      "output_sha256": "d00872029f2281d42e57ccc552835a21c39638b090f2e70a0a3a051f66d38135",
+      "frames": 1323000,
+      "channels": 2
+    }
+  ]
+}

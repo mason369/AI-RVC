@@ -30,7 +30,7 @@ class FfmpegRuntimeTests(unittest.TestCase):
             root = Path(tmp)
             bin_dir = root / "tools" / "ffmpeg" / "bin"
             bin_dir.mkdir(parents=True, exist_ok=True)
-            (bin_dir / "ffmpeg.exe").write_bytes(b"exe")
+            (bin_dir / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")).write_bytes(b"exe")
 
             resolved = module.get_ffmpeg_bin_dir(root_dir=root)
 
@@ -43,9 +43,9 @@ class FfmpegRuntimeTests(unittest.TestCase):
             root = Path(tmp)
             bin_dir = root / "tools" / "ffmpeg" / "bin"
             bin_dir.mkdir(parents=True, exist_ok=True)
-            ffmpeg = bin_dir / "ffmpeg.exe"
+            ffmpeg = bin_dir / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
             ffmpeg.write_bytes(b"exe")
-            ffprobe = bin_dir / "ffprobe.exe"
+            ffprobe = bin_dir / ("ffprobe.exe" if os.name == "nt" else "ffprobe")
             ffprobe.write_bytes(b"exe")
 
             env = {"PATH": r"C:\Windows\System32"}
@@ -67,13 +67,13 @@ class FfmpegRuntimeTests(unittest.TestCase):
             root = Path(tmp)
             bin_dir = root / "tools" / "ffmpeg" / "bin"
             bin_dir.mkdir(parents=True, exist_ok=True)
-            (bin_dir / "ffmpeg.exe").write_bytes(b"exe")
-            ffprobe = bin_dir / "ffprobe.exe"
+            (bin_dir / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")).write_bytes(b"exe")
+            ffprobe = bin_dir / ("ffprobe.exe" if os.name == "nt" else "ffprobe")
             ffprobe.write_bytes(b"broken")
 
             def fake_run(command, **kwargs):
                 executable = Path(command[0]).name.lower()
-                if executable == "ffmpeg.exe":
+                if executable in {"ffmpeg", "ffmpeg.exe"}:
                     return subprocess.CompletedProcess(command, 0, stdout="ffmpeg version", stderr="")
                 return subprocess.CompletedProcess(
                     command,

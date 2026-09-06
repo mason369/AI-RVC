@@ -13,7 +13,7 @@ import torch
 from infer.quality_policy import build_conservative_crepe_fill_mask
 
 
-F0Method = Literal["rmvpe", "pm", "harvest", "crepe", "hybrid"]
+F0Method = Literal["rmvpe", "pm", "harvest", "crepe", "fcpe", "hybrid"]
 
 
 class F0Extractor:
@@ -43,9 +43,8 @@ class PMExtractor(F0Extractor):
             pitch_floor=self.f0_min,
             pitch_ceiling=self.f0_max,
         )
-        f0 = pitch.selected_array["frequency"]
-        f0[f0 == 0] = np.nan
-        return f0
+        # Parselmouth uses zero for unvoiced frames; the silence gate needs it.
+        return np.asarray(pitch.selected_array["frequency"], dtype=np.float32)
 
 
 class HarvestExtractor(F0Extractor):
@@ -124,6 +123,29 @@ class RMVPEExtractor(F0Extractor):
         return self.model.infer_from_audio(audio, thred=0.01)
 
 
+class FCPEExtractor(F0Extractor):
+    """Use the pinned torchfcpe bundled weights for official-route postprocessing."""
+
+    def __init__(self, device: str = "cpu"):
+        super().__init__()
+        self.device = device
+        self.model = None
+
+    def extract(self, audio: np.ndarray) -> np.ndarray:
+        from torchfcpe import spawn_bundled_infer_model
+
+        if self.model is None:
+            self.model = spawn_bundled_infer_model(device=self.device)
+        samples = torch.from_numpy(np.asarray(audio, dtype=np.float32)).unsqueeze(0).to(self.device)
+        with torch.inference_mode():
+            f0 = self.model.infer(
+                samples, sr=self.sample_rate, decoder_mode="local_argmax",
+                threshold=0.006, interp_uv=False,
+                output_interp_target_length=len(audio) // self.hop_length + 1,
+            )
+        return f0.detach().cpu().numpy().reshape(-1).astype(np.float32)
+
+
 def get_f0_extractor(
     method: F0Method,
     device: str = "cuda",
@@ -150,6 +172,8 @@ def get_f0_extractor(
         return HarvestExtractor()
     if method == "crepe":
         return CrepeExtractor(device=device)
+    if method == "fcpe":
+        return FCPEExtractor(device=device)
     raise ValueError(f"Unknown F0 method: {method}")
 
 

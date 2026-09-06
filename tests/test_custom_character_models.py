@@ -15,8 +15,8 @@ class CustomCharacterModelTests(unittest.TestCase):
             uploads.mkdir()
             weight = uploads / "voice.pth"
             index = uploads / "voice.index"
-            weight.write_bytes(b"not-a-real-checkpoint")
-            index.write_bytes(b"not-a-real-index")
+            from tests.character_fixtures import write_character_fixture
+            write_character_fixture(weight, index)
 
             character_models.get_project_root = lambda: root
             try:

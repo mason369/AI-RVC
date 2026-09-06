@@ -100,21 +100,18 @@ class OfficialAdapterTests(unittest.TestCase):
             official_indexes = tmp_root / "official_indexes"
             official_indexes.mkdir()
             target_index = official_indexes / "V1Model.index"
-            index_path.write_bytes(b"new!")
-            target_index.write_bytes(b"old?")
+            import faiss
+            current = faiss.IndexFlatL2(256)
+            current.add(np.ones((8, 256), dtype=np.float32))
+            old = faiss.IndexFlatL2(256)
+            old.add(np.zeros((8, 256), dtype=np.float32))
+            index_path.write_bytes(faiss.serialize_index(current).tobytes())
+            target_index.write_bytes(faiss.serialize_index(old).tobytes())
             self._write_minimal_checkpoint(source)
-
-            fake_index = mock.Mock()
-            fake_index.d = 256
-            with mock.patch("infer.official_adapter.faiss.read_index", return_value=fake_index):
-                _, copied_index = official_adapter.export_model_to_official(
-                    official_models,
-                    official_indexes,
-                    str(source),
-                    str(index_path),
-                )
-
-            self.assertEqual(Path(copied_index).read_bytes(), b"new!")
+            self.assertEqual(index_path.stat().st_size, target_index.stat().st_size)
+            _, copied_index = official_adapter.export_model_to_official(
+                official_models, official_indexes, str(source), str(index_path))
+            self.assertEqual(Path(copied_index).read_bytes(), index_path.read_bytes())
 
     def test_official_export_rejects_mismatched_index_dim(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -146,12 +143,12 @@ class OfficialAdapterTests(unittest.TestCase):
     def test_current_pipeline_rejects_mismatched_index_dim(self):
         pipe = VoiceConversionPipeline.__new__(VoiceConversionPipeline)
         pipe.model_feature_dim = 256
-        fake_index = mock.Mock()
-        fake_index.d = 768
-
-        with mock.patch("infer.pipeline.faiss.read_index", return_value=fake_index):
+        import faiss
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'bad.index'
+            path.write_bytes(faiss.serialize_index(faiss.IndexFlatL2(768)).tobytes())
             with self.assertRaisesRegex(ValueError, "索引维度与模型不匹配"):
-                pipe.load_index("bad.index")
+                pipe.load_index(str(path))
 
     def test_auto_index_resolution_requires_name_match(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -177,27 +174,23 @@ class OfficialAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_root = Path(tmp_dir)
 
-            def fake_run(cmd, cwd, check, timeout):
-                official_root = Path(cmd[-1])
-                for rel_path in download_models.UPSTREAM_RVC_REQUIRED_FILES:
-                    target = official_root / rel_path
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_text("# ok\n", encoding="utf-8")
+            expected = tmp_root / download_models.UPSTREAM_RVC_DIR
+            with (
+                mock.patch.object(download_models.upstream_runtime, "ensure_source", return_value=expected) as source,
+                mock.patch.object(download_models.upstream_runtime, "ensure_transformers_hubert") as hubert,
+            ):
+                official_root = download_models.ensure_upstream_rvc_tree(tmp_root)
 
-            with mock.patch("tools.download_models.shutil.which", return_value="git"):
-                with mock.patch("tools.download_models.subprocess.run", side_effect=fake_run) as run_mock:
-                    official_root = download_models.ensure_upstream_rvc_tree(tmp_root)
-
-            self.assertTrue(download_models.check_upstream_rvc_tree(tmp_root))
             self.assertEqual(official_root, tmp_root / download_models.UPSTREAM_RVC_DIR)
-            run_mock.assert_called_once()
+            source.assert_called_once_with(tmp_root, "vc", 900)
+            hubert.assert_called_once_with(tmp_root)
 
     def test_ensure_upstream_rvc_tree_rejects_incomplete_existing_tree(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_root = Path(tmp_dir)
-            (tmp_root / download_models.UPSTREAM_RVC_DIR).mkdir()
+            (tmp_root / download_models.UPSTREAM_RVC_DIR).mkdir(parents=True)
 
-            with self.assertRaisesRegex(FileNotFoundError, "不完整"):
+            with self.assertRaisesRegex(RuntimeError, "源码不可用"):
                 download_models.ensure_upstream_rvc_tree(tmp_root)
 
 

@@ -202,6 +202,8 @@ def build_default_cover_kwargs(
     config: Mapping[str, Any],
     output_root: Path,
 ) -> dict[str, Any]:
+    from configs.schema import validate_config
+    validate_config(dict(config))
     validate_manifest_schema({"cases": [dict(case)]})
     cover_cfg = config.get("cover")
     if not isinstance(cover_cfg, Mapping):
@@ -219,10 +221,13 @@ def build_default_cover_kwargs(
         "index_path": str(_resolve_path(str(case["index_path"]))) if case.get("index_path") else None,
         "pitch_shift": 0,
         "index_ratio": float(cover_value("index_rate")),
-        "filter_radius": int(cover_value("filter_radius")),
         "rms_mix_rate": float(cover_value("rms_mix_rate")),
         "protect": float(cover_value("protect")),
         "speaker_id": int(cover_value("speaker_id")),
+        "silence_gate": bool(cover_value("silence_gate")),
+        "silence_threshold_db": float(cover_value("silence_threshold_db")),
+        "silence_smoothing_ms": float(cover_value("silence_smoothing_ms")),
+        "silence_min_duration_ms": float(cover_value("silence_min_duration_ms")),
         "f0_method": str(cover_value("f0_method")),
         "demucs_model": str(cover_value("demucs_model")),
         "demucs_shifts": int(cover_value("demucs_shifts")),
@@ -234,7 +239,6 @@ def build_default_cover_kwargs(
         "uvr5_agg": int(cover_value("uvr5_agg")),
         "uvr5_format": str(cover_value("uvr5_format")),
         "use_official": bool(cover_value("use_official")),
-        "hubert_layer": int(cover_value("hubert_layer")),
         "vocals_volume": float(cover_value("default_vocals_volume")) / 100.0,
         "accompaniment_volume": float(cover_value("default_accompaniment_volume")) / 100.0,
         "reverb_amount": float(cover_value("default_reverb")) / 100.0,
@@ -242,7 +246,6 @@ def build_default_cover_kwargs(
         "karaoke_separation": bool(cover_value("karaoke_separation")),
         "karaoke_model": str(cover_value("karaoke_model")),
         "karaoke_merge_backing_into_accompaniment": bool(cover_value("karaoke_merge_backing_into_accompaniment")),
-        "vc_preprocess_mode": str(cover_value("vc_preprocess_mode")),
         "source_constraint_mode": str(cover_value("source_constraint_mode")),
         "vc_pipeline_mode": str(cover_value("vc_pipeline_mode")),
         "output_dir": str(output_dir),

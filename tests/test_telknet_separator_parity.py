@@ -20,108 +20,8 @@ def _write(path: Path, payload: bytes) -> None:
 
 
 class TelkNetSeparatorParityTests(unittest.TestCase):
-    def test_obsolete_polarformer_124_alias_is_not_accepted(self):
-        from infer.separator import _is_bs_polarformer_model_spec
 
-        self.assertFalse(
-            _is_bs_polarformer_model_spec(
-                "bs_polarformer_" + "124bands_fp16"
-            )
-        )
 
-    def test_hybrid_runtime_uses_one_shared_pcm_wav_for_leap_and_polarformer(self):
-        from infer import separator
-
-        received = {}
-
-        class FakeLeapSeparator:
-            def __init__(self, output_dir: str):
-                self.output_dir = output_dir
-
-            def separate(self, audio_path: str):
-                received["leap"] = audio_path
-                output_dir = Path(self.output_dir)
-                output_dir.mkdir(parents=True, exist_ok=True)
-                audio, sample_rate = sf.read(audio_path, always_2d=True)
-                vocals = output_dir / "song_(Vocals)_leap.wav"
-                other = output_dir / "song_(Instrumental)_leap.wav"
-                sf.write(vocals, audio, sample_rate)
-                sf.write(other, np.zeros_like(audio), sample_rate)
-                return [str(vocals), str(other)]
-
-        class FakePolarFormerRuntime:
-            def __init__(self, model_dir: str, output_dir: str, device: str):
-                self.output_dir = output_dir
-
-            def load_model(self, output_dir: str = ""):
-                if output_dir:
-                    self.output_dir = output_dir
-
-            def separate(self, audio_path: str):
-                received["polarformer"] = audio_path
-                output_dir = Path(self.output_dir)
-                output_dir.mkdir(parents=True, exist_ok=True)
-                audio, sample_rate = sf.read(audio_path, always_2d=True)
-                vocals = output_dir / "song_(Vocals)_polar.wav"
-                instrumental = output_dir / "song_(Instrumental)_polar.wav"
-                sf.write(vocals, np.zeros_like(audio), sample_rate)
-                sf.write(instrumental, audio, sample_rate)
-                return [str(vocals), str(instrumental)]
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_path = Path(tmp_dir)
-            source_path = tmp_path / "source.mp3"
-            pcm_path = tmp_path / "out" / "_input" / "source_separator_input.wav"
-            sf.write(source_path, np.ones((8000, 2), dtype=np.float32), 16000, format="WAV")
-            pcm_path.parent.mkdir(parents=True, exist_ok=True)
-            sf.write(pcm_path, np.ones((22050, 2), dtype=np.float32), 44100, subtype="PCM_16")
-
-            with (
-                patch.object(
-                    separator,
-                    "_ensure_separator_pcm_wav",
-                    return_value=str(pcm_path),
-                    create=True,
-                ) as ensure_pcm,
-                patch.object(
-                    separator,
-                    "_load_audio_separator_model",
-                    side_effect=lambda **kwargs: FakeLeapSeparator(kwargs["output_dir"]),
-                ),
-                patch.object(separator, "_BSPolarFormerRuntime", FakePolarFormerRuntime),
-                patch.object(separator, "_get_leap_xe_min_duration_seconds", return_value=0.0),
-            ):
-                runtime = separator._HybridLeapXePolarFormerRuntime(
-                    model_dir=str(tmp_path / "models"),
-                    output_dir=str(tmp_path / "out"),
-                    device="cpu",
-                )
-                runtime.separate(str(source_path))
-
-            ensure_pcm.assert_called_once_with(
-                str(source_path),
-                tmp_path / "out" / "_input",
-            )
-            self.assertEqual(received["leap"], str(pcm_path))
-            self.assertEqual(received["polarformer"], str(pcm_path))
-
-    def test_polarformer_suppresses_sustained_isolated_channel_saturation(self):
-        from infer import separator
-
-        self.assertTrue(hasattr(separator, "_suppress_isolated_channel_saturation"))
-        sample_rate = 1000
-        estimate = np.zeros((2, sample_rate), dtype=np.float32)
-        estimate[0] = 1.0
-        mixture = np.full((2, sample_rate), 0.05, dtype=np.float32)
-
-        cleaned = separator._suppress_isolated_channel_saturation(
-            estimate,
-            mixture,
-            sample_rate,
-        )
-
-        self.assertLess(float(np.mean(np.abs(cleaned[0]))), 0.2)
-        np.testing.assert_array_equal(cleaned[1], estimate[1])
 
     def test_karaoke_rejects_unknown_stem_names_instead_of_guessing_order(self):
         from infer import separator
@@ -217,7 +117,7 @@ class TelkNetSeparatorParityTests(unittest.TestCase):
             model_path = tmp_path / "voice.pth"
             index_path = tmp_path / "voice.index"
             vocals_path = tmp_path / "sota" / "leap_vocals.wav"
-            pure_accompaniment_path = tmp_path / "sota" / "polarformer_accompaniment.wav"
+            pure_accompaniment_path = tmp_path / "sota" / "leap_accompaniment.wav"
             lead_path = tmp_path / "karaoke" / "lead_vocals.wav"
             accompaniment_with_harmony_path = (
                 tmp_path / "karaoke" / "backing_plus_instrumental.wav"
@@ -227,7 +127,7 @@ class TelkNetSeparatorParityTests(unittest.TestCase):
                 (model_path, b"model"),
                 (index_path, b"index"),
                 (vocals_path, b"leap-vocals"),
-                (pure_accompaniment_path, b"polarformer-accompaniment"),
+                (pure_accompaniment_path, b"leap-accompaniment"),
                 (lead_path, b"mvsep-lead"),
                 (accompaniment_with_harmony_path, b"mvsep-backing-plus-instrumental"),
             ):
@@ -270,6 +170,9 @@ class TelkNetSeparatorParityTests(unittest.TestCase):
 
             with (
                 patch.object(module, "_get_audio_duration", return_value=1.0),
+                patch("infer.contracts.inspect_checkpoint", return_value=types.SimpleNamespace(speaker_count=1, uses_f0=True, feature_dim=768)),
+                patch("infer.contracts.read_index"),
+                patch.object(module.torch, "load", return_value={}),
                 patch.object(pipeline, "_init_separator", side_effect=fake_init_separator),
                 patch.object(pipeline, "_separate_karaoke", side_effect=fake_karaoke),
                 patch.object(pipeline, "_prepare_vocals_for_vc", side_effect=fake_prepare),
@@ -289,7 +192,7 @@ class TelkNetSeparatorParityTests(unittest.TestCase):
                     model_path=str(model_path),
                     index_path=str(index_path),
                     separator="roformer",
-                    roformer_model="hybrid:leap_xe90_vocals+polarformer62_instrumental",
+                    roformer_model="hybrid:leap_xe90_vocals+leap62_instrumental",
                     karaoke_separation=True,
                     karaoke_model="ensemble:mvsep_9205_avg",
                     karaoke_merge_backing_into_accompaniment=True,
@@ -302,7 +205,7 @@ class TelkNetSeparatorParityTests(unittest.TestCase):
                     model_path=str(model_path),
                     index_path=str(index_path),
                     separator="roformer",
-                    roformer_model="hybrid:leap_xe90_vocals+polarformer62_instrumental",
+                    roformer_model="hybrid:leap_xe90_vocals+leap62_instrumental",
                     karaoke_separation=True,
                     karaoke_model="ensemble:mvsep_9205_avg",
                     karaoke_merge_backing_into_accompaniment=False,
@@ -330,7 +233,7 @@ class TelkNetSeparatorParityTests(unittest.TestCase):
             )
             self.assertEqual(
                 Path(result["accompaniment_without_harmony"]).read_bytes(),
-                b"polarformer-accompaniment",
+                b"leap-accompaniment",
             )
             self.assertEqual(
                 Path(result["backing_vocals"]).read_bytes(),
@@ -344,7 +247,7 @@ class TelkNetSeparatorParityTests(unittest.TestCase):
                 Path(
                     result_without_harmony_mix["accompaniment_without_harmony"]
                 ).read_bytes(),
-                b"polarformer-accompaniment",
+                b"leap-accompaniment",
             )
 
     def test_cover_rejects_legacy_karaoke_model_for_public_output_contract(self):

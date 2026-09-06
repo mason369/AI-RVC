@@ -1,11 +1,13 @@
-# RVC AI 翻唱依赖 (Hugging Face Space - CPU 精简版)
+# RVC AI 翻唱依赖 (Hugging Face Space - CPU 完整功能)
 # 注意：此文件用于 HF Space 部署，同步到 Space 时需重命名为 requirements.txt
-# 本地安装请使用 requirements.txt（包含完整 GPU 依赖）
+# 同时保留根目录 pre-requirements.txt 和 packages.txt。
+# 本地安装使用 requirements_cpu.txt / requirements_cuda.txt / requirements_dml.txt。
 
 # PyTorch
-torch>=2.0.0
-torchvision>=0.15.0
-torchaudio>=2.0.0
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.11.0+cpu
+torchvision==0.26.0+cpu
+torchaudio==2.11.0+cpu
 
 # Gradio 界面
 gradio==5.49.1
@@ -16,7 +18,7 @@ jinja2>=3.1,<4
 pandas>=2,<3
 
 # 音频处理
-librosa>=0.9.0
+librosa>=0.10.0
 soundfile>=0.12.0
 scipy>=1.10.0
 numpy>=2,<3
@@ -24,6 +26,7 @@ PyYAML>=6.0
 einops>=0.7.0
 praat-parselmouth>=0.4.3
 torchcrepe>=0.0.20
+torchfcpe==0.0.4
 
 # 向量检索
 faiss-cpu>=1.7.4
@@ -31,17 +34,22 @@ faiss-cpu>=1.7.4
 # 工具库
 tqdm>=4.65.0
 requests>=2.28.0
+gdown==6.0.0
 python-dotenv>=1.0.0
 colorama>=0.4.6
 
 # AI 翻唱功能（核心）
-audio-separator[cpu]==0.44.1
+audio-separator[cpu]==0.47.0
 huggingface_hub>=0.19.0,<1.0
+transformers==4.49.0
 pedalboard>=0.7.0
 ffmpeg-python>=0.2.0
+imageio-ffmpeg>=0.5.1
 
-# 以下包在 HF Space 构建环境中编译失败，改为运行时按需安装：
-# fairseq==0.12.2  (HuBERT 特征提取)
-# demucs>=4.0.0    (人声分离备选)
-# pyworld>=0.3.4   (F0 提取备选)
-# av>=10.0.0       (音频解码备选)
+# 本地兼容 VC、可选 Demucs、Harvest 和音频解码在构建期安装。
+fairseq==0.12.2
+demucs>=4.0.0
+pyworld>=0.3.4
+av>=10.0.0
+mcp>=1.26,<2  # Keep the Gradio 5.49.1 / Pydantic <2.12 contract
+jsonschema>=4,<5

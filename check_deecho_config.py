@@ -4,7 +4,7 @@
 回声处理配置验证脚本
 
 检查当前配置是否对齐严格默认翻唱链路：
-Leap XE 提取人声、BS PolarFormer 提取纯伴奏、MVSep 9205 主唱/带和声伴奏分离、纯和声差分、RoFormer De-Reverb。
+Leap XE 提取人声、Leap Instrumental 提取纯伴奏、MVSep 9205 主唱/带和声伴奏分离、纯和声差分、RoFormer De-Reverb。
 """
 
 import json
@@ -97,8 +97,8 @@ def print_recommendations():
 
     print("""
 1. 当前配置使用严格默认链路：
-   - 输入规范：非 WAV 统一解码为 44.1 kHz 双声道 PCM16
-   - 整曲人声/纯伴奏分离：Leap XE 90 vocals + BS PolarFormer public ONNX 62 accompaniment
+   - 输入规范：非 WAV 统一解码为 44.1 kHz 双声道 Float32
+   - 整曲人声/纯伴奏分离：Leap XE 90 vocals + Leap Instrumental 62 bands accompaniment
    - 主唱/带和声伴奏分离：MVSep 9205 三 BS-RoFormer avg_wave ensemble
    - 纯和声：Leap 人声减去 MVSep 主唱
    - VC 前处理：RoFormer De-Reverb；运行环境缺失时会停止并显示错误
@@ -109,7 +109,7 @@ def print_recommendations():
    - 使用更高质量的输入音频
 
 3. 处理流程：
-   统一 PCM → Leap XE vocals + BS PolarFormer pure accompaniment → MVSep 9205 Karaoke → 纯和声差分 → RoFormer De-Reverb → RVC 转换 → 混音输出
+   统一 PCM → Leap XE vocals + Leap Instrumental pure accompaniment → MVSep 9205 Karaoke → 纯和声差分 → RoFormer De-Reverb → RVC 转换 → 混音输出
 
 4. 测试建议：
    - 选择一首有明显回声的歌曲

@@ -1,0 +1,5 @@
+# fairseq 0.12.2 requires OmegaConf 2.0.x, whose legacy metadata needs pip < 24.1.
+# Shared by the installer, release builds and Hugging Face Spaces.
+pip==24.0
+setuptools==69.5.1
+wheel

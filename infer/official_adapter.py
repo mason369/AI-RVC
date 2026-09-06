@@ -21,8 +21,11 @@ import torch
 from configs.config import Config as OfficialConfig
 from infer.quality_policy import resolve_cover_f0_policy
 from infer.rvc_version import inspect_rvc_model_version
+from infer.contracts import inspect_checkpoint, read_index, number, integer
 from lib.logger import log
 from tools.download_models import ensure_upstream_rvc_tree
+from tools.upstream_runtime import HUBERT_FILES
+from tools.model_assets import verify_asset
 
 
 class _IsolatedArgv:
@@ -71,65 +74,24 @@ def _get_audio_activity_stats(audio_path: Path) -> Tuple[float, float, int]:
 
 
 def _resolve_index_path(model_path: Path, index_path: Optional[str]) -> Optional[Path]:
-    """Best-effort resolve of the matching FAISS index for a model."""
+    """Resolve an explicit path or exact basename, never a similarity guess."""
     if index_path:
         idx_path = Path(index_path)
-        if idx_path.exists():
+        if idx_path.is_file():
             return idx_path
+        raise FileNotFoundError(f"指定的 RVC 索引不存在：{index_path}")
 
-    direct_candidate = model_path.with_suffix(".index")
-    if direct_candidate.exists():
-        return direct_candidate
-
-    index_files = list(model_path.parent.glob("*.index"))
-    if not index_files:
-        return None
-
-    def _normalize_name(text: str) -> str:
-        return re.sub(r"[^a-z0-9]+", "", text.lower())
-
-    def _tokenize_name(text: str):
-        return [token for token in re.split(r"[^a-z0-9]+", text.lower()) if len(token) >= 2]
-
-    model_norm = _normalize_name(model_path.stem)
-    model_tokens = set(_tokenize_name(model_path.stem))
-
-    best_match = None
-    best_score = -1
-    for idx in index_files:
-        idx_norm = _normalize_name(idx.stem)
-        idx_tokens = set(_tokenize_name(idx.stem))
-        score = 0
-        if idx_norm == model_norm:
-            score += 1000
-        if model_norm and (model_norm in idx_norm or idx_norm in model_norm):
-            score += 300
-        score += len(model_tokens & idx_tokens) * 40
-        if "added" in idx.stem.lower():
-            score += 10
-        if score > best_score:
-            best_score = score
-            best_match = idx
-
-    if best_match is not None and best_score >= 80:
-        return best_match
-    return None
+    matches = [path for path in model_path.parent.glob('*.index')
+               if path.stem.casefold() == model_path.stem.casefold()]
+    if len(matches) > 1:
+        raise ValueError(f'模型与索引配对不唯一，请放入独立角色目录：{model_path}')
+    return matches[0] if matches else None
 
 
 def _validate_index_feature_dim(index_path: Path, expected_dim: Optional[int], model_path: Path) -> None:
     if expected_dim is None:
-        return
-    try:
-        index = faiss.read_index(str(index_path))
-    except Exception as e:
-        raise ValueError(f"RVC索引文件无法读取: index={index_path}, model={model_path}") from e
-    index_dim = int(index.d)
-    if index_dim != int(expected_dim):
-        raise ValueError(
-            "RVC索引维度与模型不匹配: "
-            f"model={model_path}, index={index_path}, "
-            f"model_feature_dim={expected_dim}, index_dim={index_dim}。"
-        )
+        raise ValueError(f"无法确认 RVC 模型特征维度：{model_path}")
+    read_index(index_path, expected_dim, min_vectors=8)
 
 
 def setup_official_env(root_dir: Path) -> dict:
@@ -176,7 +138,9 @@ def export_model_to_official(
     official_models: Path,
     official_indexes: Path,
     model_path: str,
-    index_path: Optional[str]
+    index_path: Optional[str],
+    *,
+    copy_index: bool = True,
 ) -> Tuple[str, Optional[str]]:
     """Copy model/index into official layout and return sid + index path."""
     model_path = Path(model_path)
@@ -186,6 +150,7 @@ def export_model_to_official(
     log.detail(f"导出模型到官方目录: {sid}")
 
     cpt = torch.load(model_path, map_location="cpu", weights_only=False)
+    contract = inspect_checkpoint(cpt, str(model_path))
     version_info = inspect_rvc_model_version(cpt, str(model_path))
     if version_info.metadata_mismatch:
         log.warning(
@@ -204,12 +169,13 @@ def export_model_to_official(
         log.detail(f"模型版本确认: {version_info.version}")
 
     cpt["version"] = version_info.version
+    cpt["config"] = contract.config
     target_model.parent.mkdir(parents=True, exist_ok=True)
     log.detail(f"写入官方模型副本: {model_path} -> {target_model}")
     torch.save(cpt, target_model)
 
     target_index_path = None
-    resolved_index = _resolve_index_path(model_path, index_path)
+    resolved_index = _resolve_index_path(model_path, index_path) if copy_index else None
     if resolved_index is not None:
         _validate_index_feature_dim(resolved_index, version_info.feature_dim, model_path)
         if index_path and Path(index_path).exists():
@@ -534,21 +500,21 @@ def _sync_upstream_reference_asset(src: Path, dst: Path, label: str) -> None:
     if not src.exists():
         raise FileNotFoundError(f"{label} not found: {src}")
     dst.parent.mkdir(parents=True, exist_ok=True)
-    if not dst.exists() or dst.stat().st_size != src.stat().st_size:
+    if not dst.exists() or not filecmp.cmp(src, dst, shallow=False):
         shutil.copy2(src, dst)
         log.detail(f"同步官方资源: {src.name} -> {dst}")
 
 
 
-def setup_upstream_official_env(root_dir: Path) -> dict:
+def setup_upstream_official_env(root_dir: Path, *, capability: str = "vc") -> dict:
     """Prepare vendored upstream RVC layout and environment."""
     log.detail("准备内置官方 RVC 环境...")
-    official_root = ensure_upstream_rvc_tree(root_dir)
+    official_root = ensure_upstream_rvc_tree(root_dir, capability=capability)
 
     official_models = official_root / "assets" / "weights"
     official_indexes = official_root / "assets" / "indices"
     official_rmvpe_root = official_root / "assets" / "rmvpe"
-    official_hubert_root = official_root / "assets" / "hubert"
+    official_hubert_root = official_root / "assets" / "hubert_base"
     official_uvr5_root = official_root / "assets" / "uvr5_weights"
     official_models.mkdir(parents=True, exist_ok=True)
     official_indexes.mkdir(parents=True, exist_ok=True)
@@ -556,16 +522,15 @@ def setup_upstream_official_env(root_dir: Path) -> dict:
     official_hubert_root.mkdir(parents=True, exist_ok=True)
     official_uvr5_root.mkdir(parents=True, exist_ok=True)
 
-    _sync_upstream_reference_asset(
-        root_dir / "assets" / "hubert" / "hubert_base.pt",
-        official_hubert_root / "hubert_base.pt",
-        "HuBERT model",
-    )
-    _sync_upstream_reference_asset(
-        root_dir / "assets" / "rmvpe" / "rmvpe.pt",
-        official_rmvpe_root / "rmvpe.pt",
-        "RMVPE model",
-    )
+    if capability == "vc":
+        for name, digest in HUBERT_FILES.items():
+            source = verify_asset(root_dir / "assets" / "hubert_base" / name, digest)
+            _sync_upstream_reference_asset(source, official_hubert_root / name, "Transformers HuBERT")
+            verify_asset(official_hubert_root / name, digest)
+        _sync_upstream_reference_asset(
+            root_dir / "assets" / "rmvpe" / "rmvpe.pt",
+            official_rmvpe_root / "rmvpe.pt", "RMVPE model",
+        )
 
     os.environ["weight_root"] = str(official_models)
     os.environ["index_root"] = str(official_indexes)
@@ -599,13 +564,24 @@ def convert_vocals_official_upstream(
     f0_method: str,
     pitch_shift: int,
     index_rate: float,
-    filter_radius: int,
     rms_mix_rate: float,
     protect: float,
     speaker_id: int = 0,
     device: str = "auto",
 ) -> str:
     """Run vendored upstream official RVC in an isolated subprocess."""
+    pitch_shift = integer(pitch_shift, "pitch_shift", -24, 24)
+    index_rate = number(index_rate, "index_rate", 0, 1)
+    rms_mix_rate = number(rms_mix_rate, "rms_mix_rate", 0, 1)
+    protect = number(protect, "protect", 0, 0.5)
+    checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
+    contract = inspect_checkpoint(checkpoint, str(model_path))
+    del checkpoint
+    speaker_id = integer(speaker_id, "speaker_id", 0, contract.speaker_count - 1)
+    if not contract.uses_f0 and pitch_shift != 0:
+        raise ValueError("非 F0 模型不支持音高偏移；不会忽略 pitch_shift")
+    if Path(output_path).suffix.lower() != ".wav":
+        raise ValueError("VC 输出必须使用 .wav 扩展名，不会生成扩展名与格式不符的文件")
     root_dir = Path(__file__).parent.parent
     app_cfg = _load_app_config(root_dir)
     f0_policy = resolve_cover_f0_policy(
@@ -614,6 +590,11 @@ def convert_vocals_official_upstream(
         repair_profile=False,
     )
     effective_f0_method = f0_policy.vc_method
+    if effective_f0_method not in {"pm", "rmvpe", "fcpe"}:
+        raise ValueError(
+            f"固定版官方 RVC 不支持 F0 方法 {effective_f0_method!r}，支持 pm/rmvpe/fcpe；"
+            "不会自动更换音高算法。"
+        )
     env_paths = setup_upstream_official_env(root_dir)
 
     sid, official_index = export_model_to_official(
@@ -621,22 +602,27 @@ def convert_vocals_official_upstream(
         env_paths["official_indexes"],
         model_path,
         index_path,
+        copy_index=index_rate > 0,
     )
+
+    if index_rate > 0 and not official_index:
+        raise ValueError("index_rate > 0 时必须有匹配的有效索引；不用索引请设为 0")
 
     official_rms_mix_rate = 1.0 - float(rms_mix_rate)
     runner_path = root_dir / "infer" / "official_upstream_runner.py"
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
 
-    command = [
-        sys.executable,
-        str(runner_path),
+    from lib.worker_launch import build_worker_command
+    command = build_worker_command("vc") + [
+        "--official-root",
+        str(env_paths["official_root"]),
         "--sid",
         sid,
         "--vocals-path",
-        str(vocals_path),
+        str(Path(vocals_path).resolve()),
         "--output-path",
-        str(output_path),
+        str(Path(output_path).resolve()),
         "--f0-method",
         str(effective_f0_method),
         "--pitch-shift",
@@ -645,8 +631,6 @@ def convert_vocals_official_upstream(
         str(official_index or ""),
         "--index-rate",
         str(float(index_rate)),
-        "--filter-radius",
-        str(int(filter_radius)),
         "--rms-mix-rate",
         str(float(official_rms_mix_rate)),
         "--protect",
@@ -677,6 +661,7 @@ def convert_vocals_official_upstream(
             cwd=env_paths["official_root"],
             env=env,
             check=True,
+            stdout=sys.stderr,
         )
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(f"内置官方VC转换失败，退出码: {exc.returncode}") from exc
@@ -724,10 +709,11 @@ def separate_uvr5_official_upstream(
     model_name: Optional[str],
     agg: int = 10,
     fmt: str = "wav",
+    device: str = "auto",
 ) -> Tuple[str, str]:
     """Run vendored upstream UVR5 separation in an isolated subprocess."""
     root_dir = Path(__file__).parent.parent
-    env_paths = setup_upstream_official_env(root_dir)
+    env_paths = setup_upstream_official_env(root_dir, capability="uvr5")
     resolved_model_name = _sync_upstream_uvr5_model(root_dir, env_paths["official_uvr5_root"], model_name)
 
     temp_dir.mkdir(parents=True, exist_ok=True)
@@ -745,9 +731,10 @@ def separate_uvr5_official_upstream(
     runner_path = root_dir / "infer" / "official_upstream_uvr_runner.py"
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
-    command = [
-        sys.executable,
-        str(runner_path),
+    from lib.worker_launch import build_worker_command
+    command = build_worker_command("uvr5") + [
+        "--official-root",
+        str(env_paths["official_root"]),
         "--model-name",
         resolved_model_name,
         "--input-dir",
@@ -760,6 +747,8 @@ def separate_uvr5_official_upstream(
         str(int(agg)),
         "--format",
         str(fmt),
+        "--device",
+        str(device),
     ]
 
     log.progress("开始内置官方UVR5分离...")

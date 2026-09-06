@@ -21,7 +21,7 @@ from infer.separator import (
     ROFORMER_DEFAULT_MODEL,
     ROFORMER_DEREVERB_DEFAULT_MODEL,
     KARAOKE_DEFAULT_MODEL,
-    _is_hybrid_leap_xe_polarformer_model_spec,
+    _is_hybrid_leap_instrumental_model_spec,
     get_separator_chain_labels,
     check_demucs_available,
     check_roformer_available,
@@ -329,7 +329,7 @@ class CoverPipeline:
             start = max(0, end - clip_samples)
             clip = audio[start:end]
             out_path = clip_dir / f"{prefix}_{float(time_sec):07.3f}s.wav"
-            sf.write(str(out_path), clip, sr)
+            sf.write(str(out_path), clip, sr, subtype="FLOAT")
             return str(out_path)
 
         for time_sec in suspect_times[: max(1, int(max_clips))]:
@@ -840,7 +840,7 @@ class CoverPipeline:
         selected = soft_clip(selected.astype(np.float32), threshold=0.9, ceiling=0.99)
 
         final_output_path = output_path or processed_candidate_path
-        sf.write(final_output_path, selected, processed_sr)
+        sf.write(final_output_path, selected, processed_sr, subtype="FLOAT")
         post_selection_smoothing = self._apply_residual_transition_smoothing(
             source_vocals_path=source_vocals_path,
             converted_vocals_path=str(final_output_path),
@@ -1506,7 +1506,7 @@ class CoverPipeline:
 
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
-        sf.write(str(output), foreground_audio.astype(np.float32), vocals_sr)
+        sf.write(str(output), foreground_audio.astype(np.float32), vocals_sr, subtype="FLOAT")
         adjusted_mono = foreground_main.mean(axis=1).astype(np.float32)
         adjusted_rms = self._weighted_rms(adjusted_mono, weights)
         adjusted_balance_db = float(
@@ -1579,7 +1579,7 @@ class CoverPipeline:
         else:
             converted_audio = suppressed
 
-        sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr)
+        sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr, subtype="FLOAT")
 
     def _apply_source_breath_cleanup(
         self,
@@ -1750,7 +1750,7 @@ class CoverPipeline:
         else:
             converted_audio = blended_main
 
-        sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr)
+        sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr, subtype="FLOAT")
         log.detail(
             "Source breath cleanup: "
             f"blended {blended_frames}/{frame_count} low-mid-energy frames toward dry source "
@@ -1995,7 +1995,7 @@ class CoverPipeline:
         else:
             converted_audio = repaired_main
 
-        sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr)
+        sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr, subtype="FLOAT")
         log.detail(
             "Source transition cleanup: "
             f"blended {blended_frames}/{frame_count} frames "
@@ -2145,7 +2145,7 @@ class CoverPipeline:
         else:
             converted_audio = restored_main
 
-        sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr)
+        sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr, subtype="FLOAT")
         log.detail(
             "Source loudness restore: "
             f"boosted {boosted_frames}/{frame_count} body frames, "
@@ -2375,7 +2375,7 @@ class CoverPipeline:
         else:
             converted_audio = restored_main
 
-        sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr)
+        sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr, subtype="FLOAT")
         log.detail(
             "Raw body restore: "
             f"blended {restored_frames}/{frame_count} stable voiced frames from raw VC "
@@ -2645,7 +2645,7 @@ class CoverPipeline:
         else:
             converted_audio = rescued_main
 
-        sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr)
+        sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr, subtype="FLOAT")
         log.detail(
             "Artifact segment rescue: "
             f"rescued {rescued_frames}/{frame_count} frames "
@@ -2817,7 +2817,7 @@ class CoverPipeline:
         else:
             converted_audio = smoothed_main
 
-        sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr)
+        sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr, subtype="FLOAT")
         log.detail(
             "Residual transition smoothing: "
             f"trimmed {total_guarded_frames}/{frame_count} active transition frames "
@@ -2965,7 +2965,7 @@ class CoverPipeline:
         else:
             converted_audio = restored_main
 
-        sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr)
+        sf.write(converted_vocals_path, converted_audio.astype(np.float32), converted_sr, subtype="FLOAT")
         max_gain = float(np.max(frame_gain[recovery_mask]))
         log.detail(
             "Active body presence recovery: "
@@ -3567,7 +3567,7 @@ class CoverPipeline:
         mono = soft_clip(mono, threshold=0.9, ceiling=0.99)
 
         out_path = session_dir / "vocals_for_vc.wav"
-        sf.write(str(out_path), mono, sr)
+        sf.write(str(out_path), mono, sr, subtype="FLOAT")
         return str(out_path)
 
     def _derive_backing_vocals(
@@ -3623,7 +3623,7 @@ class CoverPipeline:
             str(destination),
             backing.T.astype(np.float32),
             vocal_mix_sr,
-            subtype="PCM_24",
+            subtype="FLOAT",
         )
         return str(destination)
 
@@ -3660,14 +3660,16 @@ class CoverPipeline:
         rmvpe_path = root_dir / "assets" / "rmvpe" / "rmvpe.pt"
         gate_policy = resolve_cover_f0_policy(f0_method)
         gate_method = gate_policy.gate_method
-        if gate_method in ("rmvpe", "hybrid"):
-            if not rmvpe_path.exists():
-                raise FileNotFoundError(f"RMVPE 模型未找到: {rmvpe_path}")
-            gate_pipe.load_f0_extractor(gate_method, str(rmvpe_path))
-        else:
-            gate_pipe.load_f0_extractor(gate_method, None)
-        f0 = gate_pipe.f0_extractor.extract(audio_in)
-        gate_pipe.unload_f0_extractor()
+        try:
+            if gate_method in ("rmvpe", "hybrid"):
+                if not rmvpe_path.exists():
+                    raise FileNotFoundError(f"RMVPE 模型未找到: {rmvpe_path}")
+                gate_pipe.load_f0_extractor(gate_method, str(rmvpe_path))
+            else:
+                gate_pipe.load_f0_extractor(gate_method, None)
+            f0 = gate_pipe.f0_extractor.extract(audio_in)
+        finally:
+            gate_pipe.unload_f0_extractor()
 
         # Load converted vocals (keep original sample rate)
         audio_out, sr_out = sf.read(converted_path)
@@ -3719,7 +3721,7 @@ class CoverPipeline:
         if output_path is None:
             output_path = str(Path(converted_path).with_suffix("").as_posix() + "_blend.wav")
 
-        sf.write(output_path, mixed, sr)
+        sf.write(output_path, mixed, sr, subtype="FLOAT")
         return output_path
 
     def _constrain_converted_to_source(
@@ -3962,7 +3964,7 @@ class CoverPipeline:
 
         if output_path is None:
             output_path = converted_vocals_path
-        sf.write(output_path, constrained, conv_sr)
+        sf.write(output_path, constrained, conv_sr, subtype="FLOAT")
         return output_path
 
     def process(
@@ -3972,7 +3974,6 @@ class CoverPipeline:
         index_path: Optional[str] = None,
         pitch_shift: int = 0,
         index_ratio: float = 0.5,
-        filter_radius: int = 3,
         rms_mix_rate: float = 0.25,
         protect: float = 0.33,
         speaker_id: int = 0,
@@ -3982,12 +3983,11 @@ class CoverPipeline:
         demucs_overlap: float = 0.25,
         demucs_split: bool = True,
         roformer_model: str = ROFORMER_DEFAULT_MODEL,
-        separator: str = "uvr5",
+        separator: str = "roformer",
         uvr5_model: Optional[str] = None,
         uvr5_agg: int = 10,
         uvr5_format: str = "wav",
         use_official: bool = True,
-        hubert_layer: int = 12,
         silence_gate: bool = False,
         silence_threshold_db: float = -40.0,
         silence_smoothing_ms: float = 50.0,
@@ -3999,10 +3999,8 @@ class CoverPipeline:
         karaoke_separation: bool = True,
         karaoke_model: str = KARAOKE_DEFAULT_MODEL,
         karaoke_merge_backing_into_accompaniment: bool = True,
-        vc_preprocess_mode: str = "auto",
         source_constraint_mode: str = "auto",
         vc_pipeline_mode: str = "current",
-        singing_repair: bool = False,
         output_dir: Optional[str] = None,
         model_display_name: Optional[str] = None,
         output_name_suffixes: Optional[Dict[str, str]] = None,
@@ -4017,8 +4015,6 @@ class CoverPipeline:
             index_path: 索引文件路径 (可选)
             pitch_shift: 音调偏移 (半音)
             index_ratio: 索引混合比率
-            index_ratio: 索引混合比率
-            filter_radius: 中值滤波半径
             rms_mix_rate: RMS 混合比率
             protect: 保护参数
             speaker_id: 说话人 ID（多说话人模型可调）
@@ -4027,8 +4023,7 @@ class CoverPipeline:
             demucs_shifts: Demucs shifts 参数
             demucs_overlap: Demucs overlap 参数
             demucs_split: Demucs split 参数
-            roformer_model: 混合 SOTA / BS PolarFormer ONNX / RoFormer audio-separator 模型或 ensemble preset
-            hubert_layer: HuBERT 输出层
+            roformer_model: Leap XE / Leap Instrumental / RoFormer audio-separator 模型或 ensemble preset
             silence_gate: 是否启用静音门限
             silence_threshold_db: 静音阈值 (dB, 相对峰值)
             silence_smoothing_ms: 门限平滑时长 (ms)
@@ -4049,6 +4044,25 @@ class CoverPipeline:
                 "accompaniment": 伴奏路径
             }
         """
+        from configs.schema import validate_config
+        from infer.contracts import integer, number, inspect_checkpoint, read_index
+        validate_config({"cover": {
+            "separator": separator, "f0_method": f0_method, "use_official": use_official,
+            "vc_pipeline_mode": vc_pipeline_mode, "source_constraint_mode": source_constraint_mode,
+            "index_rate": index_ratio, "rms_mix_rate": rms_mix_rate, "protect": protect,
+            "speaker_id": speaker_id, "uvr5_format": uvr5_format, "uvr5_agg": uvr5_agg,
+            "demucs_shifts": demucs_shifts, "demucs_overlap": demucs_overlap, "demucs_split": demucs_split,
+            "karaoke_separation": karaoke_separation,
+            "karaoke_merge_backing_into_accompaniment": karaoke_merge_backing_into_accompaniment,
+            "silence_gate": silence_gate, "silence_threshold_db": silence_threshold_db,
+            "silence_smoothing_ms": silence_smoothing_ms, "silence_min_duration_ms": silence_min_duration_ms,
+            "backing_mix": backing_mix,
+        }})
+        pitch_shift = integer(pitch_shift, "pitch_shift", -24, 24)
+        for name, value, upper in (("vocals_volume", vocals_volume, 2),
+                                   ("accompaniment_volume", accompaniment_volume, 2),
+                                   ("reverb_amount", reverb_amount, 1)):
+            number(value, name, 0, upper)
         normalized_vc_pipeline_mode = str(vc_pipeline_mode).strip().lower()
         if normalized_vc_pipeline_mode not in {"current", "official"}:
             raise ValueError(
@@ -4070,18 +4084,16 @@ class CoverPipeline:
                 "其他 Karaoke 模型可使用评估工具单独运行，不能接入默认成品混音"
             )
 
-        # 官方模式：强制使用官方推荐参数，确保1:1纯净推理
-        if effective_official_mode:
-            if str(f0_method).strip().lower() != "rmvpe":
-                raise ValueError(
-                    "官方模式只接受 f0_method='rmvpe'；不会自动改写 F0 方法"
-                )
-            if protect != 0.33:
-                raise ValueError(
-                    "官方模式只接受 protect=0.33；不会自动改写保护系数"
-                )
-        if singing_repair:
-            raise ValueError("唱歌修复依赖 F0 兜底链路，严格默认路线已禁用该处理")
+        if not Path(input_audio).is_file():
+            raise FileNotFoundError(f"输入音频不存在：{input_audio}")
+        contract = inspect_checkpoint(torch.load(model_path, map_location="cpu", weights_only=False), model_path)
+        speaker_id = integer(speaker_id, "speaker_id", 0, contract.speaker_count - 1)
+        if not contract.uses_f0 and pitch_shift != 0:
+            raise ValueError("无 F0 模型不支持音高偏移，请将 pitch_shift 设为 0")
+        if index_ratio > 0:
+            if not index_path:
+                raise ValueError("index_ratio 大于 0 时必须提供有效索引；无索引模型请显式设为 0")
+            read_index(index_path, contract.feature_dim, min_vectors=8 if use_official or vc_pipeline_mode == "official" else 1)
 
         total_steps = 5 if effective_karaoke_separation else 4
         step_karaoke = 2 if effective_karaoke_separation else None
@@ -4112,7 +4124,7 @@ class CoverPipeline:
         log.config(f"说话人ID: {speaker_id}")
         log.config(f"VC管线模式: {normalized_vc_pipeline_mode}")
         if effective_official_mode:
-            log.config("官方模式: 强制UVR5分离 + 去混响预处理 + 官方VC (rmvpe, protect=0.33)")
+            log.config("官方模式: UVR5分离 + 去混响预处理 + 官方VC，保留用户的音高与保护参数")
         log.config(f"人声分离器: {effective_separator}")
         if effective_separator == "uvr5":
             log.config(f"UVR5模型: {uvr5_model or '自动选择'}")
@@ -4148,7 +4160,7 @@ class CoverPipeline:
             karaoke_model=karaoke_model,
         )
         if separator_chain_labels:
-            log.config("TelKNet分离链路（本次实际执行）:")
+            log.config("本次实际分离链路:")
             for separator_chain_label in separator_chain_labels:
                 log.config(f"  {separator_chain_label}")
 
@@ -4161,7 +4173,7 @@ class CoverPipeline:
             # ===== 步骤 1: 人声分离 =====
             default_pure_accompaniment_route = (
                 effective_separator == "roformer"
-                and _is_hybrid_leap_xe_polarformer_model_spec(roformer_model)
+                and _is_hybrid_leap_instrumental_model_spec(roformer_model)
             )
             report_progress(
                 "正在分离人声和纯伴奏..."
@@ -4180,18 +4192,19 @@ class CoverPipeline:
                     uvr5_model,
                     agg=uvr5_agg,
                     fmt=uvr5_format,
+                    device=str(self.device),
                 )
-            elif effective_use_official and effective_separator == "uvr5":
-                log.model("使用当前项目官方封装UVR5进行人声分离")
-                setup_official_env(Path(__file__).parent.parent)
+            elif effective_separator == "uvr5":
+                log.model("使用固定版本官方UVR5进行人声分离")
                 uvr_temp = session_dir / "uvr5"
                 log.detail(f"UVR5临时目录: {uvr_temp}")
-                vocals_path, accompaniment_path = separate_uvr5(
+                vocals_path, accompaniment_path = separate_uvr5_official_upstream(
                     input_audio,
                     uvr_temp,
                     uvr5_model,
                     agg=uvr5_agg,
                     fmt=uvr5_format,
+                    device=str(self.device),
                 )
                 log.success("UVR5分离完成")
             elif effective_separator == "roformer":
@@ -4271,19 +4284,15 @@ class CoverPipeline:
                 if effective_karaoke_merge_backing:
                     mix_accompaniment_path = accompaniment_path
                     log.detail(
-                        "成品直接使用 MVSep Back+Instrumental，不叠加 PolarFormer 纯伴奏"
+                        "成品直接使用 MVSep Back+Instrumental，不叠加纯伴奏"
                     )
                 else:
                     log.detail(
-                        "成品使用 PolarFormer 纯伴奏；accompaniment.wav 仍按公开合同导出 "
+                        "成品使用纯伴奏；accompaniment.wav 仍按公开合同导出 "
                         "MVSep Back+Instrumental"
                     )
 
-            normalized_vc_preprocess_mode = str(vc_preprocess_mode).strip().lower()
-            if normalized_vc_preprocess_mode not in {"auto", "uvr_deecho"}:
-                raise ValueError(
-                    f"不支持的 VC 预处理模式: {vc_preprocess_mode!r}，请使用 auto 或 uvr_deecho"
-                )
+            normalized_vc_preprocess_mode = "auto"
             normalized_source_constraint_mode = str(source_constraint_mode).strip().lower()
             if normalized_source_constraint_mode not in {"auto", "off", "on"}:
                 raise ValueError(
@@ -4332,7 +4341,7 @@ class CoverPipeline:
             if normalized_vc_pipeline_mode == "official":
                 log.detail("使用内置官方VC实现进行转换")
                 log.config(f"F0方法: {f0_method}, 音调: {pitch_shift}, 索引率: {index_ratio}")
-                log.config(f"滤波半径: {filter_radius}, RMS混合: {rms_mix_rate}, 保护: {protect}")
+                log.config(f"RMS混合: {rms_mix_rate}, 保护: {protect}")
 
                 convert_vocals_official_upstream(
                     vocals_path=vc_input_path,
@@ -4342,7 +4351,6 @@ class CoverPipeline:
                     f0_method=f0_method,
                     pitch_shift=pitch_shift,
                     index_rate=index_ratio,
-                    filter_radius=filter_radius,
                     rms_mix_rate=rms_mix_rate,
                     protect=protect,
                     speaker_id=speaker_id,
@@ -4362,7 +4370,7 @@ class CoverPipeline:
                 log.detail("VC backend: upstream_official_raw + current postprocess")
                 log.detail("VC route detail: vendored upstream official raw -> current cleanup chain")
                 log.config(f"F0方法: {f0_method}, 音调: {pitch_shift}, 索引率: {index_ratio}")
-                log.config(f"滤波半径: {filter_radius}, RMS混合: {rms_mix_rate}, 保护: {protect}")
+                log.config(f"RMS混合: {rms_mix_rate}, 保护: {protect}")
 
                 convert_vocals_official_upstream(
                     vocals_path=vc_input_path,
@@ -4372,7 +4380,6 @@ class CoverPipeline:
                     f0_method=f0_method,
                     pitch_shift=pitch_shift,
                     index_rate=index_ratio,
-                    filter_radius=filter_radius,
                     rms_mix_rate=rms_mix_rate,
                     protect=protect,
                     speaker_id=speaker_id,
@@ -4485,8 +4492,6 @@ class CoverPipeline:
                 # 使用自定义VC管道进行转换
                 log.detail("使用自定义VC管道进行转换")
                 self._init_rvc_pipeline()
-                self.rvc_pipeline.hubert_layer = hubert_layer
-                log.config(f"HuBERT层: {hubert_layer}")
 
                 root_dir = Path(__file__).parent.parent
                 hubert_path = root_dir / "assets" / "hubert" / "hubert_base.pt"
@@ -4524,7 +4529,6 @@ class CoverPipeline:
                     output_path=converted_vocals_path,
                     pitch_shift=pitch_shift,
                     index_ratio=index_ratio,
-                    filter_radius=filter_radius,
                     rms_mix_rate=rms_mix_rate,
                     protect=protect,
                     speaker_id=speaker_id,
@@ -4659,7 +4663,7 @@ class CoverPipeline:
                     )
                     log.detail(f"已混入原始人声: ratio={backing_mix:.2f}")
                 except Exception as e:
-                    log.warning(f"混入原始人声失败，使用转换人声: {e}")
+                    raise RuntimeError(f"Original vocal blend failed: {e}") from e
 
             foreground_report = self._prepare_mix_vocal_foreground(
                 source_vocals_path=vc_input_path,

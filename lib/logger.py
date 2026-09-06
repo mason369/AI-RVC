@@ -198,6 +198,10 @@ class ColoredFormatter(logging.Formatter):
         # 格式化输出
         message = localize_console_message(record.getMessage())
         formatted = f"{color}{timestamp} | {level_name} | {module_name} | {message}{reset}"
+        if record.exc_info:
+            formatted += "\n" + self.formatException(record.exc_info)
+        if record.stack_info:
+            formatted += "\n" + self.formatStack(record.stack_info)
         return formatted
 
 

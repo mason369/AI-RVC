@@ -167,7 +167,7 @@ class DefaultQualityAuditTests(unittest.TestCase):
         config = {
             "cover": {
                 "separator": "roformer",
-                "roformer_model": "hybrid:leap_xe90_vocals+polarformer62_instrumental",
+                "roformer_model": "hybrid:leap_xe90_vocals+leap62_instrumental",
                 "karaoke_separation": True,
                 "karaoke_model": "ensemble:mvsep_9205_avg",
                 "karaoke_merge_backing_into_accompaniment": True,
@@ -180,18 +180,18 @@ class DefaultQualityAuditTests(unittest.TestCase):
                 "demucs_overlap": 0.5,
                 "demucs_split": True,
                 "f0_method": "rmvpe",
-                "f0_hybrid_mode": "off",
                 "index_rate": 0.5,
-                "filter_radius": 3,
                 "rms_mix_rate": 0.0,
                 "protect": 0.33,
                 "speaker_id": 0,
-                "hubert_layer": 12,
+                "silence_gate": False,
+                "silence_threshold_db": -50,
+                "silence_smoothing_ms": 50,
+                "silence_min_duration_ms": 200,
                 "default_vocals_volume": 100,
                 "default_accompaniment_volume": 100,
                 "default_reverb": 0,
                 "backing_mix": 0.0,
-                "vc_preprocess_mode": "auto",
                 "source_constraint_mode": "auto",
                 "vc_pipeline_mode": "current",
             }
@@ -210,7 +210,7 @@ class DefaultQualityAuditTests(unittest.TestCase):
         self.assertEqual(kwargs["pitch_shift"], 0)
         self.assertEqual(kwargs["index_ratio"], 0.5)
         self.assertEqual(kwargs["f0_method"], "rmvpe")
-        self.assertEqual(kwargs["vc_preprocess_mode"], "auto")
+        self.assertNotIn("vc_preprocess_mode", kwargs)
         self.assertEqual(kwargs["source_constraint_mode"], "auto")
         self.assertEqual(kwargs["vc_pipeline_mode"], "current")
         self.assertNotIn("singing_repair", kwargs)

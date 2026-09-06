@@ -1,0 +1,30 @@
+name: ai-rvc
+services:
+  ai-rvc:
+    image: ${AI_RVC_IMAGE:-ai-rvc:1.5.0-rc.1-cuda}
+    build:
+      context: .
+      args:
+        VARIANT: cuda
+        VERSION: 1.5.0-rc.1
+    ports:
+      - "${AI_RVC_BIND:-127.0.0.1}:${AI_RVC_PORT:-7860}:7860"
+    environment:
+      AI_RVC_DEVICE: cuda
+      AI_RVC_ROOT_PATH: ${AI_RVC_ROOT_PATH:-}
+      AI_RVC_AUTH_USER: ${AI_RVC_AUTH_USER:-}
+      AI_RVC_AUTH_PASSWORD_FILE: ${AI_RVC_AUTH_PASSWORD_FILE:-}
+    volumes:
+      - ai-rvc-data:/data
+    restart: "on-failure:3"
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  ai-rvc-data:

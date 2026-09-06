@@ -19,12 +19,12 @@ if str(REPO_ROOT) not in sys.path:
 
 
 CASES: tuple[dict[str, Any], ...] = (
-    dict(name="current_roformer_auto_source_auto", separator="roformer", vc_preprocess_mode="auto", source_constraint_mode="auto", vc_pipeline_mode="current", karaoke_separation=False),
-    dict(name="current_roformer_uvr_deecho_source_on", separator="roformer", vc_preprocess_mode="uvr_deecho", source_constraint_mode="on", vc_pipeline_mode="current", karaoke_separation=False),
-    dict(name="current_roformer_karaoke_source_off", separator="roformer", vc_preprocess_mode="auto", source_constraint_mode="off", vc_pipeline_mode="current", karaoke_separation=True),
-    dict(name="current_demucs_auto_source_auto", separator="demucs", vc_preprocess_mode="auto", source_constraint_mode="auto", vc_pipeline_mode="current", karaoke_separation=False),
-    dict(name="current_uvr5_auto_source_auto", separator="uvr5", vc_preprocess_mode="auto", source_constraint_mode="auto", vc_pipeline_mode="current", karaoke_separation=False),
-    dict(name="official_uvr5_one_to_one", separator="uvr5", vc_preprocess_mode="auto", source_constraint_mode="auto", vc_pipeline_mode="official", karaoke_separation=False),
+    dict(name="current_roformer_source_auto", separator="roformer", source_constraint_mode="auto", vc_pipeline_mode="current", karaoke_separation=False),
+    dict(name="current_roformer_source_on", separator="roformer", source_constraint_mode="on", vc_pipeline_mode="current", karaoke_separation=False),
+    dict(name="current_roformer_karaoke_source_off", separator="roformer", source_constraint_mode="off", vc_pipeline_mode="current", karaoke_separation=True),
+    dict(name="current_demucs_source_auto", separator="demucs", source_constraint_mode="auto", vc_pipeline_mode="current", karaoke_separation=False),
+    dict(name="current_uvr5_source_auto", separator="uvr5", source_constraint_mode="auto", vc_pipeline_mode="current", karaoke_separation=False),
+    dict(name="official_uvr5", separator="uvr5", source_constraint_mode="off", vc_pipeline_mode="official", karaoke_separation=False),
 )
 
 
@@ -85,7 +85,6 @@ def _run_case(case: Dict[str, Any], input_audio: Path, model_path: Path, index_p
             index_path=str(index_path) if index_path else None,
             pitch_shift=0,
             index_ratio=0.5,
-            filter_radius=3,
             rms_mix_rate=0.0,
             protect=0.33,
             speaker_id=0,
@@ -94,13 +93,12 @@ def _run_case(case: Dict[str, Any], input_audio: Path, model_path: Path, index_p
             demucs_shifts=1,
             demucs_overlap=0.25,
             demucs_split=True,
-            roformer_model="hybrid:leap_xe90_vocals+polarformer62_instrumental",
+            roformer_model="hybrid:leap_xe90_vocals+leap62_instrumental",
             separator=case["separator"],
             uvr5_model="HP2_all_vocals",
             uvr5_agg=10,
             uvr5_format="wav",
             use_official=True,
-            hubert_layer=12,
             vocals_volume=1.0,
             accompaniment_volume=1.0,
             reverb_amount=0.0,
@@ -108,7 +106,6 @@ def _run_case(case: Dict[str, Any], input_audio: Path, model_path: Path, index_p
             karaoke_separation=bool(case["karaoke_separation"]),
             karaoke_model="ensemble:mvsep_9205_avg",
             karaoke_merge_backing_into_accompaniment=True,
-            vc_preprocess_mode=case["vc_preprocess_mode"],
             source_constraint_mode=case["source_constraint_mode"],
             vc_pipeline_mode=case["vc_pipeline_mode"],
             output_dir=str(case_output),

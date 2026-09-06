@@ -1,0 +1,8 @@
+{
+  "name": "ai-rvc-multitrack",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {"build": "node build.mjs"},
+  "dependencies": {"react": "19.2.8", "react-dom": "19.2.8", "lucide-react": "1.41.0"},
+  "devDependencies": {"esbuild": "0.28.2", "tailwindcss": "4.3.3", "@tailwindcss/cli": "4.3.3"}
+}

@@ -79,8 +79,27 @@ BACKEND_SETTINGS = {
     },
 }
 
+TORCH_MIN_VERSION = (
+    "2.13.0"
+    if sys.platform == "darwin" and platform.machine().lower() in {"arm64", "aarch64"}
+    else "2.3.0"
+)
+TORCH_REQUIREMENT = f"torch>={TORCH_MIN_VERSION},<3"
+TORCH_STACK_NAMES = ("torch", "torchvision", "torchaudio")
+TORCH_INSTALL_PACKAGES = (
+    ("torch==2.13.0", "torchvision==0.28.0", "torchaudio==2.13.0")
+    if TORCH_MIN_VERSION == "2.13.0"
+    else ("torch==2.11.0", "torchvision==0.26.0", "torchaudio==2.11.0")
+)
+
 PACKAGES = {
-    "torch": {"import": "torch", "name": "PyTorch", "pip": "torch"},
+    "transformers": {
+        "import": "transformers", "name": "Transformers HuBERT",
+        "pip": "transformers==4.49.0", "dist": "transformers",
+        "required_version": "4.49.0",
+    },
+    "torch": {"import": "torch", "name": "PyTorch", "pip": "torch", "dist": "torch",
+              "min_version": TORCH_MIN_VERSION, "max_exclusive_version": "3.0.0"},
     "torchvision": {"import": "torchvision", "name": "torchvision", "pip": "torchvision"},
     "torchaudio": {"import": "torchaudio", "name": "torchaudio", "pip": "torchaudio"},
     "gradio": {
@@ -107,19 +126,25 @@ PACKAGES = {
     "parselmouth": {"import": "parselmouth", "name": "praat-parselmouth", "pip": "praat-parselmouth"},
     "pyworld": {"import": "pyworld", "name": "pyworld", "pip": "pyworld"},
     "torchcrepe": {"import": "torchcrepe", "name": "torchcrepe", "pip": "torchcrepe"},
+    "torchfcpe": {"import": "torchfcpe", "name": "torchfcpe", "pip": "torchfcpe==0.0.4",
+                  "dist": "torchfcpe", "min_version": "0.0.4", "max_exclusive_version": "0.0.5"},
     "faiss": {"import": "faiss", "name": "faiss-cpu", "pip": "faiss-cpu"},
     "tqdm": {"import": "tqdm", "name": "tqdm", "pip": "tqdm"},
     "requests": {"import": "requests", "name": "requests", "pip": "requests"},
     "dotenv": {"import": "dotenv", "name": "python-dotenv", "pip": "python-dotenv"},
     "colorama": {"import": "colorama", "name": "colorama", "pip": "colorama"},
     "mcp": {"import": "mcp", "name": "mcp", "pip": "mcp"},
+    "jsonschema": {"import": "jsonschema", "name": "jsonschema", "pip": "jsonschema>=4,<5",
+                   "dist": "jsonschema", "min_version": "4.0.0", "max_exclusive_version": "5.0.0"},
+    "gdown": {"import": "gdown", "name": "gdown", "pip": "gdown==6.0.0",
+              "dist": "gdown", "min_version": "6.0.0", "max_exclusive_version": "6.0.1"},
     "demucs": {"import": "demucs", "name": "demucs", "pip": "demucs"},
     "audio_separator": {
         "import": "audio_separator",
         "name": "audio-separator",
         "pip": "audio-separator",
         "dist": "audio-separator",
-        "required_version": "0.44.1",
+        "required_version": "0.47.0",
     },
     "huggingface_hub": {
         "import": "huggingface_hub",
@@ -175,7 +200,7 @@ def create_venv():
         r = subprocess.run([venv_py, "--version"], capture_output=True, text=True)
         if r.returncode == 0 and "3.10" in r.stdout:
             print(f"  [OK] 虚拟环境已存在: {VENV_DIR}")
-            return True
+            return prepare_install_tools(venv_py)
 
     py310 = find_python310()
     if not py310:
@@ -191,9 +216,20 @@ def create_venv():
         return False
 
     print("  [OK] 虚拟环境创建成功")
-    print("  升级 pip ...")
-    subprocess.run([venv_py, "-m", "pip", "install", "--upgrade", "pip"],
-                   capture_output=True, text=True)
+    return prepare_install_tools(venv_py)
+
+
+def prepare_install_tools(venv_py):
+    """Install the same fairseq-compatible build tools on every entry point."""
+    result = subprocess.run(
+        [venv_py, "-m", "pip", "install", "-r", str(ROOT_DIR / "pre-requirements.txt")],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print("  [失败] 安装工具准备失败")
+        print((result.stderr or result.stdout).strip())
+        return False
     return True
 
 # === 依赖检查与安装 ===
@@ -288,16 +324,27 @@ def detect_cuda_version():
             match = re.search(r"CUDA Version:\s*(\d+)\.(\d+)", output)
             if match:
                 major, minor = int(match.group(1)), int(match.group(2))
-                if (major, minor) >= (12, 6):
-                    return "https://download.pytorch.org/whl/cu126"
-                elif (major, minor) >= (12, 4):
-                    return "https://download.pytorch.org/whl/cu124"
-                elif (major, minor) >= (12, 1):
-                    return "https://download.pytorch.org/whl/cu121"
-                elif (major, minor) >= (11, 8):
-                    return "https://download.pytorch.org/whl/cu118"
-                else:
+                if (major, minor) < (12, 6):
+                    print("  [错误] PyTorch 2.11 安装要求支持 CUDA 12.6 或更新版本的驱动。")
                     return None
+                devices = subprocess.run(
+                    ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                capabilities = devices.stdout.strip().splitlines()
+                if devices.returncode != 0 or not capabilities or any(
+                    not re.fullmatch(r"\d+\.\d+", value.strip()) for value in capabilities
+                ):
+                    print("  [错误] 无法读取 NVIDIA 计算能力，无法选择兼容的 CUDA 运行时。")
+                    return None
+                capabilities = [tuple(map(int, value.strip().split("."))) for value in capabilities]
+                if any(value >= (10, 0) for value in capabilities):
+                    if (major, minor) < (12, 8) or any(value < (7, 5) for value in capabilities):
+                        print("  [错误] 当前驱动或混合 GPU 架构不满足 Blackwell 的 CUDA 12.8 运行时要求。")
+                        return None
+                    return "https://download.pytorch.org/whl/cu128"
+                # CUDA 12.6 retains Maxwell/Pascal/Volta kernels in PyTorch 2.11.
+                return "https://download.pytorch.org/whl/cu126"
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
     return None
@@ -360,7 +407,7 @@ def check_backend_available(venv_py: str, backend: str) -> bool:
             "torch.zeros(1, device='cuda')"
         ),
         "xpu": (
-            "import torch, intel_extension_for_pytorch; "
+            "import torch; "
             "assert hasattr(torch, 'xpu') and torch.xpu.is_available(), 'XPU is unavailable'; "
             "torch.zeros(1, device='xpu')"
         ),
@@ -391,11 +438,11 @@ def check_backend_available(venv_py: str, backend: str) -> bool:
     return False
 
 
-def pip_install(venv_py, package, extra="", index_url=None, no_deps=False, version_spec=""):
+def pip_install(venv_py, package, extra="", index_url=None, no_deps=False, version_spec="", pinned_packages=()):
     """用虚拟环境的 pip 安装包"""
     target = f"{package}[{extra}]{version_spec}" if extra else f"{package}{version_spec}"
     print(f"  安装 {target} ...")
-    cmd = [venv_py, "-m", "pip", "install", target]
+    cmd = [venv_py, "-m", "pip", "install", target, *pinned_packages]
     if index_url:
         cmd.extend(["--index-url", index_url])
     if no_deps:
@@ -445,6 +492,17 @@ def check_dependency_consistency(venv_py):
         for line in details.splitlines():
             print(f"      {line}")
     return False
+
+
+def install_project_dependencies(venv_py, backend, pinned_packages):
+    """Resolve the whole application together, including already installed pins."""
+    settings = BACKEND_SETTINGS[backend]
+    separator_version = PACKAGES["audio_separator"]["required_version"]
+    return pip_install_packages(venv_py, (
+        "-r", str(ROOT_DIR / "requirements.txt"),
+        f"audio-separator[{settings['audio_extra']}]=={separator_version}",
+        *pinned_packages,
+    ))
 
 
 def check_all(venv_py):
@@ -538,48 +596,44 @@ def install_all(venv_py, gpu=True, backend=None):
             missing.append(audio_separator_info)
 
     if not missing:
-        print("\n无需安装，所有依赖已就绪。")
-        return (
-            check_backend_available(venv_py, backend)
-            and check_dependency_consistency(venv_py)
-        )
+        if not check_backend_available(venv_py, backend):
+            return False
+        if check_dependency_consistency(venv_py):
+            print("\n无需安装，所有依赖已就绪。")
+            return True
 
-    print(f"\n开始安装 {len(missing)} 个缺失的依赖...\n")
+    print("\n开始解析并安装完整项目依赖...\n")
     failed = []
-    torch_stack_names = {"torch", "torchvision", "torchaudio"}
-    torch_stack_missing = [info for info in missing if info["pip"] in torch_stack_names]
+    torch_stack_missing = [info for info in missing if info["pip"] in TORCH_STACK_NAMES]
     if torch_stack_missing:
         if settings["torch_install"] == "preinstalled":
             print(
                 f"  [错误] {backend} 需要先安装并验证对应的 PyTorch 运行栈；"
                 "安装器不会用其他 PyTorch 版本覆盖它"
             )
-            failed.extend(info["name"] for info in torch_stack_missing)
+            return False
         elif not pip_install_packages(
             venv_py,
-            ("torch", "torchvision", "torchaudio"),
+            TORCH_INSTALL_PACKAGES,
             index_url=torch_index_url,
         ):
-            failed.extend(info["name"] for info in torch_stack_missing)
-        missing = [info for info in missing if info["pip"] not in torch_stack_names]
+            return False
+        missing = [info for info in missing if info["pip"] not in TORCH_STACK_NAMES]
 
-    for info in missing:
-        pip_name = info["pip"]
-        if pip_name == "audio-separator":
-            if info.get("required_version"):
-                version_spec = f"=={info['required_version']}"
-            else:
-                version_spec = f">={info['min_version']}" if info.get("min_version") else ""
-            ok = pip_install(
-                venv_py,
-                pip_name,
-                extra=settings["audio_extra"],
-                version_spec=version_spec,
-            )
-        else:
-            ok = pip_install(venv_py, pip_name)
-        if not ok:
-            failed.append(info["name"])
+    # Keep the selected CPU/CUDA/ROCm/XPU/DirectML build in every later resolver
+    # transaction, including its local version suffix. Conflicts must fail before
+    # pip can replace one part of the already coupled runtime stack.
+    pinned_packages = []
+    for package in TORCH_STACK_NAMES:
+        version = get_installed_version(venv_py, package)
+        if not version:
+            print(f"  [错误] 无法读取 {package} 版本，依赖安装已停止。")
+            return False
+        pinned_packages.append(f"{package}=={version}")
+    pinned_packages = tuple(pinned_packages)
+
+    if not install_project_dependencies(venv_py, backend, pinned_packages):
+        return False
 
     if not get_installed_version(venv_py, runtime_dist):
         failed.append(runtime_dist)
@@ -639,7 +693,9 @@ def launch_app(venv_py):
     print(f"\n启动应用: {run_script}")
     print("=" * 50)
     try:
-        subprocess.run([venv_py, run_script], cwd=str(ROOT_DIR))
+        result = subprocess.run([venv_py, run_script], cwd=str(ROOT_DIR))
+        if result.returncode:
+            raise SystemExit(result.returncode)
     except KeyboardInterrupt:
         print("\n已停止")
 
@@ -669,7 +725,10 @@ def main():
 
     # 1. 创建虚拟环境
     print("\n[1/3] 检查虚拟环境")
-    if not create_venv():
+    if args.check and not Path(get_venv_python()).is_file():
+        print("Virtual environment is missing; run install.py to create it.")
+        sys.exit(1)
+    if not args.check and not create_venv():
         sys.exit(1)
 
     venv_py = get_venv_python()

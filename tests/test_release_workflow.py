@@ -14,14 +14,15 @@ class ReleaseWorkflowTests(unittest.TestCase):
             self.workflow.count(
                 "torch_stack: torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0"
             ),
-            2,
+            4,
         )
         self.assertEqual(
             self.workflow.count(
                 "torch_stack: torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1"
             ),
-            2,
+            0,
         )
+        self.assertEqual(self.workflow.count("https://download.pytorch.org/whl/cu128"), 2)
         self.assertIn(
             "pip install ${{ matrix.torch_stack }} --index-url ${{ matrix.pytorch_url }}",
             self.workflow,
@@ -41,6 +42,17 @@ class ReleaseWorkflowTests(unittest.TestCase):
             "fi\n\n            exit_code=$?",
             self.workflow,
         )
+
+
+    def test_build_includes_current_workers_and_model_dependencies(self):
+        self.assertIn('_official_rvc_runtime${SEP}_official_rvc_runtime', self.workflow)
+        self.assertIn('assets/hubert_base${SEP}assets/hubert_base', self.workflow)
+        self.assertIn('rvc_mcp${SEP}rvc_mcp', self.workflow)
+        self.assertNotIn('_official_rvc${SEP}_official_rvc"', self.workflow)
+        for package in ('torchfcpe', 'transformers', 'mcp'):
+            self.assertIn('--collect-all ' + package, self.workflow)
+        self.assertIn('--internal-worker vc --help', self.workflow)
+        self.assertIn('--internal-worker uvr5 --help', self.workflow)
 
 
 if __name__ == "__main__":

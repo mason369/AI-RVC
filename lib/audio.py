@@ -38,7 +38,7 @@ def save_audio(path: str, audio: np.ndarray, sr: int = 48000):
     """
     # 确保音频在 [-1, 1] 范围内
     audio = np.clip(audio, -1.0, 1.0)
-    sf.write(path, audio, sr)
+    sf.write(path, audio, sr, subtype="FLOAT")
 
 
 def soft_clip(

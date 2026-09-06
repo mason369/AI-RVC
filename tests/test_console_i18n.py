@@ -34,7 +34,7 @@ RELEASE_ROOTS = (
     ROOT / "lib",
     ROOT / "tools",
     ROOT / "ui",
-    ROOT / "mcp",
+    ROOT / "rvc_mcp",
 )
 
 

@@ -1,0 +1,6 @@
+build-essential
+git
+ffmpeg
+libsndfile1
+libsamplerate0
+portaudio19-dev

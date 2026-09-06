@@ -62,9 +62,9 @@ class PlatformSupportContractTests(unittest.TestCase):
 
     def test_backend_requirement_files_have_one_runtime_extra_each(self):
         expected = {
-            "requirements_cpu.txt": "audio-separator[cpu]==0.44.1",
-            "requirements_cuda.txt": "audio-separator[gpu]==0.44.1",
-            "requirements_dml.txt": "audio-separator[dml]==0.44.1",
+            "requirements_cpu.txt": "audio-separator[cpu]==0.47.0",
+            "requirements_cuda.txt": "audio-separator[gpu]==0.47.0",
+            "requirements_dml.txt": "audio-separator[dml]==0.47.0",
         }
         for filename, selected in expected.items():
             with self.subTest(filename=filename):

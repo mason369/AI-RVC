@@ -226,7 +226,7 @@ class SourceRegressionTests(unittest.TestCase):
         diagnose_source = (REPO_ROOT / "tools" / "diagnose_vc_session.py").read_text(encoding="utf-8")
 
         self.assertRegex(source, r'"f0_method"\s*:\s*"rmvpe"')
-        self.assertRegex(source, r'"f0_hybrid_mode"\s*:\s*"off"')
+        self.assertNotIn('"f0_hybrid_mode"', source)
         self.assertNotRegex(source, r'"f0_method"\s*:\s*"hybrid"')
         self.assertNotRegex(source, r'"f0_hybrid_mode"\s*:\s*"fallback"')
         self.assertNotRegex(source, r'"crepe_force_ratio"\s*:\s*0\.0')
@@ -249,8 +249,9 @@ class SourceRegressionTests(unittest.TestCase):
     def test_config_includes_breath_gate_defaults(self):
         source = (REPO_ROOT / "configs" / "config.json").read_text(encoding="utf-8")
 
-        self.assertRegex(source, r'"unvoiced_feature_gate_floor"\s*:\s*0\.28')
-        self.assertRegex(source, r'"breath_active_margin_db"\s*:\s*52\.0')
+        # These knobs belong to the legacy wrapper, not the active cover route.
+        self.assertNotIn('"unvoiced_feature_gate_floor"', source)
+        self.assertNotIn('"breath_active_margin_db"', source)
 
     def test_ui_keeps_effective_manual_controls_and_removes_deprecated_options(self):
         ui_source = (REPO_ROOT / "ui" / "app.py").read_text(encoding="utf-8")
@@ -264,18 +265,19 @@ class SourceRegressionTests(unittest.TestCase):
         dereverb_source = (REPO_ROOT / "infer" / "advanced_dereverb.py").read_text(encoding="utf-8")
 
         self.assertRegex(ui_source, r"t\(['\"]automatic_cover_settings['\"], ['\"]cover['\"]\)")
-        self.assertIn('t("vc_preprocess_auto", "cover"): "auto"', ui_source)
-        self.assertIn('t("vc_preprocess_uvr_deecho", "cover"): "uvr_deecho"', ui_source)
+        self.assertNotIn("get_vc_preprocess_option_maps", ui_source)
+        self.assertIn('t("fixed_dereverb_info", "cover")', ui_source)
         self.assertNotIn('t("vc_preprocess_direct", "cover"): "direct"', ui_source)
         self.assertNotIn('t("vc_preprocess_legacy", "cover"): "legacy"', ui_source)
         self.assertIn("cover_mix_preset", ui_source)
-        self.assertIn("cover_vc_preprocess_mode", ui_source)
+        self.assertNotIn("cover_vc_preprocess_mode", ui_source)
         self.assertIn("cover_vc_pipeline_mode", ui_source)
         self.assertNotIn("cover_singing_repair", ui_source)
         self.assertIn("Invalid cover config", ui_source)
         self.assertNotIn("已改用 auto", cover_source)
         self.assertNotIn("已改用 RoFormer De-Reverb", cover_source)
-        self.assertIn("不会偷偷降级", i18n_data["cover"]["automatic_cover_settings_info"])
+        self.assertIn("手动调整", i18n_data["cover"]["automatic_cover_settings_info"])
+        self.assertNotIn("偷偷", i18n_data["cover"]["automatic_cover_settings_info"])
         self.assertIn('"mix_preset"', i18n_source)
         self.assertIn('"source_constraint_mode"', i18n_source)
         self.assertIn('"vc_pipeline_mode"', i18n_source)

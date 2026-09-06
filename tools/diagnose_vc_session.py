@@ -60,7 +60,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--pitch-shift", type=int, default=0)
     parser.add_argument("--index-rate", type=float, default=0.5)
-    parser.add_argument("--filter-radius", type=int, default=3)
     parser.add_argument("--rms-mix-rate", type=float, default=0.0)
     parser.add_argument("--protect", type=float, default=0.33)
     parser.add_argument("--speaker-id", type=int, default=0)
@@ -160,39 +159,8 @@ def _choose_model_file(folder: Path) -> Path:
 
 
 def _resolve_index_for_model(model_path: Path, explicit_index: Optional[str] = None) -> Optional[Path]:
-    if explicit_index:
-        explicit = Path(explicit_index)
-        if explicit.exists():
-            return explicit
-
-    candidates = list(model_path.parent.glob("*.index"))
-    official_indexes = REPO_ROOT / "assets" / "weights" / "official_indexes"
-    if official_indexes.exists():
-        candidates.extend(list(official_indexes.glob("*.index")))
-    if not candidates:
-        return None
-    if len(candidates) == 1:
-        return candidates[0]
-
-    model_norm = _normalize_name(model_path.stem)
-    model_tokens = set(_tokenize_name(model_path.stem))
-    best_match = None
-    best_score = -1
-    for candidate in candidates:
-        idx_norm = _normalize_name(candidate.stem)
-        idx_tokens = set(_tokenize_name(candidate.stem))
-        score = 0
-        if idx_norm == model_norm:
-            score += 1000
-        if model_norm and (model_norm in idx_norm or idx_norm in model_norm):
-            score += 300
-        score += len(model_tokens & idx_tokens) * 40
-        if "added" in candidate.stem.lower():
-            score += 10
-        if score > best_score:
-            best_score = score
-            best_match = candidate
-    return best_match if best_score > 0 else None
+    from infer.official_adapter import _resolve_index_path
+    return _resolve_index_path(model_path, explicit_index)
 
 
 def _infer_model_from_session(session_dir: Path) -> Tuple[Path, Optional[Path], Optional[str]]:
@@ -391,7 +359,6 @@ def _run_upstream_bundle(
         f0_method=args.f0_method,
         pitch_shift=args.pitch_shift,
         index_rate=float(args.index_rate if index_rate is None else index_rate),
-        filter_radius=args.filter_radius,
         rms_mix_rate=args.rms_mix_rate,
         protect=args.protect,
         speaker_id=args.speaker_id,

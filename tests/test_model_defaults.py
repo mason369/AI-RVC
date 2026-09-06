@@ -1,10 +1,8 @@
 import inspect
-import os
 import subprocess
 import sys
 import tempfile
 import unittest
-import weakref
 from unittest.mock import patch
 from pathlib import Path
 
@@ -36,7 +34,7 @@ class ModelDefaultTests(unittest.TestCase):
 
         self.assertEqual(
             separator.ROFORMER_DEFAULT_MODEL,
-            "hybrid:leap_xe90_vocals+polarformer62_instrumental",
+            "hybrid:leap_xe90_vocals+leap62_instrumental",
         )
         self.assertEqual(
             separator.ROFORMER_SOTA_MODELS,
@@ -44,13 +42,10 @@ class ModelDefaultTests(unittest.TestCase):
                 "bs_roformer_leap_xe_voc.ckpt",
                 "Xe/leap_xe_config_voc.yaml",
                 "Xe/bs_roformer_leap_xe_config_voc.yaml",
-                "bs_polarformer.onnx",
-                "model_bs_polarformer_float16.yaml",
+                "leap_instrumental/bs_roformer_leap_inst.ckpt",
+                "leap_instrumental/bs_leap_inst_conf.yaml",
+                "leap_instrumental/bs_roformer_leap_inst_runtime.yaml",
             ],
-        )
-        self.assertEqual(
-            separator.BS_POLARFORMER_MODEL,
-            "bs_polarformer_public_onnx_62bands",
         )
         self.assertIn(
             "vocals_mel_band_roformer.ckpt",
@@ -85,10 +80,10 @@ class ModelDefaultTests(unittest.TestCase):
         from infer import separator
 
         self.assertEqual(
-            separator._model_spec_label(separator.ROFORMER_DEFAULT_MODEL),
+            separator._model_spec_label("hybrid:leap_xe90_vocals+leap62_instrumental"),
             (
                 "BS-RoFormer Leap XE 90 bands (pcunwa) + "
-                "BS PolarFormer public ONNX 62 bands (bgkb/ZFTurbo)"
+                "BS-RoFormer Leap Instrumental 62 bands (pcunwa)"
             ),
         )
         self.assertEqual(
@@ -101,16 +96,15 @@ class ModelDefaultTests(unittest.TestCase):
         self.assertEqual(
             separator.get_separator_chain_labels(
                 separator_name="roformer",
-                roformer_model=separator.ROFORMER_DEFAULT_MODEL,
+                roformer_model="hybrid:leap_xe90_vocals+leap62_instrumental",
                 karaoke_enabled=True,
                 karaoke_model=separator.KARAOKE_DEFAULT_MODEL,
             ),
             [
-                "输入: Leap XE 与 PolarFormer 共用 44.1kHz 双声道 PCM（非WAV预解码）",
+                "输入: 两路 Leap 共用 44.1kHz 双声道 PCM（非WAV预解码）",
                 "人声: BS-RoFormer Leap XE 90 bands (pcunwa)",
                 (
-                    "纯伴奏: BS PolarFormer public ONNX 62 bands "
-                    "(bgkb/ZFTurbo)（含孤立声道饱和保护）"
+                    "纯伴奏: BS-RoFormer Leap Instrumental 62 bands (pcunwa)"
                 ),
                 (
                     "主唱/带和声伴奏: BS-Kar-Gabox_IS + "
@@ -124,7 +118,7 @@ class ModelDefaultTests(unittest.TestCase):
         from infer.cover_pipeline import CoverPipeline
 
         source = inspect.getsource(CoverPipeline.process)
-        manifest_position = source.index("TelKNet分离链路")
+        manifest_position = source.index("本次实际分离链路")
         separation_position = source.index(
             '"正在分离人声和纯伴奏..."'
         )
@@ -145,87 +139,10 @@ class ModelDefaultTests(unittest.TestCase):
             )
         )
 
-    def test_bs_polarformer_provider_selection_does_not_silently_downgrade(self):
-        from infer import separator
 
-        class CpuOnlyOrt:
-            @staticmethod
-            def get_available_providers():
-                return ["CPUExecutionProvider"]
 
-        self.assertEqual(
-            separator._BSPolarFormerRuntime._select_onnx_providers(CpuOnlyOrt, "cpu"),
-            ["CPUExecutionProvider"],
-        )
-        with self.assertRaises(RuntimeError):
-            separator._BSPolarFormerRuntime._select_onnx_providers(CpuOnlyOrt, "cuda")
 
-    def test_bs_polarformer_cuda_provider_preserves_device_id(self):
-        from infer import separator
 
-        class CudaOrt:
-            @staticmethod
-            def get_available_providers():
-                return ["CUDAExecutionProvider", "CPUExecutionProvider"]
-
-        self.assertEqual(
-            separator._BSPolarFormerRuntime._select_onnx_providers(CudaOrt, "cuda:1"),
-            [
-                ("CUDAExecutionProvider", {"device_id": 1}),
-                "CPUExecutionProvider",
-            ],
-        )
-
-    def test_bs_polarformer_non_onnx_accelerators_use_explicit_cpu_provider(self):
-        from infer import separator
-
-        class CpuOrt:
-            @staticmethod
-            def get_available_providers():
-                return ["CPUExecutionProvider"]
-
-        for device in ("xpu", "xpu:0", "mps"):
-            with self.subTest(device=device):
-                self.assertEqual(
-                    separator._BSPolarFormerRuntime._select_onnx_providers(
-                        CpuOrt,
-                        device,
-                    ),
-                    ["CPUExecutionProvider"],
-                )
-
-    def test_bs_polarformer_rocm_uses_explicit_cpu_provider(self):
-        from infer import separator
-
-        class CpuOrt:
-            @staticmethod
-            def get_available_providers():
-                return ["CPUExecutionProvider"]
-
-        with patch.object(separator.torch.version, "hip", "6.2", create=True):
-            self.assertEqual(
-                separator._BSPolarFormerRuntime._select_onnx_providers(
-                    CpuOrt,
-                    "cuda:0",
-                ),
-                ["CPUExecutionProvider"],
-            )
-
-    def test_bs_polarformer_directml_requires_directml_provider(self):
-        from infer import separator
-
-        class DirectMlOrt:
-            @staticmethod
-            def get_available_providers():
-                return ["DmlExecutionProvider", "CPUExecutionProvider"]
-
-        self.assertEqual(
-            separator._BSPolarFormerRuntime._select_onnx_providers(
-                DirectMlOrt,
-                "privateuseone:0",
-            ),
-            ["DmlExecutionProvider", "CPUExecutionProvider"],
-        )
 
     def test_audio_separator_runtime_honors_explicit_cpu_selection(self):
         from infer import separator
@@ -267,108 +184,14 @@ class ModelDefaultTests(unittest.TestCase):
                 ["CPUExecutionProvider"],
             )
 
-    def test_bs_polarformer_chunk_size_matches_telknet_runtime_cap(self):
-        from infer import separator
 
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("POLARFORMER_MAX_CHUNK_SIZE", None)
-            self.assertEqual(
-                separator._resolve_polarformer_chunk_size(882000),
-                441000,
-            )
-            self.assertEqual(
-                separator._resolve_polarformer_chunk_size(220500),
-                220500,
-            )
-
-        with patch.dict(
-            os.environ,
-            {"POLARFORMER_MAX_CHUNK_SIZE": "330750"},
-            clear=False,
-        ):
-            self.assertEqual(
-                separator._resolve_polarformer_chunk_size(882000),
-                330750,
-            )
-
-        with patch.dict(
-            os.environ,
-            {"POLARFORMER_MAX_CHUNK_SIZE": "invalid"},
-            clear=False,
-        ):
-            with self.assertRaisesRegex(RuntimeError, "POLARFORMER_MAX_CHUNK_SIZE"):
-                separator._resolve_polarformer_chunk_size(882000)
-
-    def test_bs_polarformer_reports_chunk_progress(self):
-        import torch
-
-        from infer import separator
-
-        class FakeInput:
-            name = "stft_features"
-
-        class FakeSession:
-            @staticmethod
-            def get_inputs():
-                return [FakeInput()]
-
-            @staticmethod
-            def run(_outputs, _feeds):
-                return [np.zeros((1, 1, 1, 1, 2), dtype=np.float32)]
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_path = Path(tmp_dir)
-            audio_path = tmp_path / "short.wav"
-            sf.write(audio_path, np.zeros((12, 2), dtype=np.float32), 8000)
-
-            runtime = separator._BSPolarFormerRuntime(
-                model_dir=str(tmp_path / "models"),
-                output_dir=str(tmp_path / "out"),
-                device="cpu",
-            )
-            runtime._session = FakeSession()
-            runtime._config = {
-                "audio": {"sample_rate": 8000},
-                "model": {
-                    "stft_n_fft": 4,
-                    "stft_hop_length": 2,
-                    "stft_win_length": 4,
-                    "stereo": True,
-                },
-                "inference": {"chunk_size": 4, "num_overlap": 2},
-            }
-
-            fake_stft = (
-                torch.zeros((1, 1, 1), dtype=torch.float32),
-                torch.zeros((1, 2, 1, 1, 2), dtype=torch.float32),
-                torch.ones(4, dtype=torch.float32),
-                torch.zeros((1, 8), dtype=torch.float32),
-            )
-            fake_reconstruction = torch.zeros((1, 1, 2, 4), dtype=torch.float32)
-
-            with (
-                patch.object(runtime, "_prepare_stft", return_value=fake_stft),
-                patch.object(
-                    runtime,
-                    "_reconstruct_audio",
-                    return_value=fake_reconstruction,
-                ),
-                patch.object(separator.log, "info") as log_info,
-            ):
-                runtime.separate(str(audio_path))
-
-            messages = [str(call.args[0]) for call in log_info.call_args_list]
-            self.assertTrue(
-                any("BS PolarFormer" in message and "/" in message for message in messages),
-                messages,
-            )
 
     def test_deecho_default_uses_public_roformer_dereverb_model(self):
         from infer import separator
 
         self.assertEqual(
             separator.ROFORMER_DEREVERB_DEFAULT_MODEL,
-            "dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt",
+            "dereverb_bs_roformer_anvuew_sdr_22.5050.ckpt",
         )
 
     def test_download_models_tracks_default_separator_assets(self):
@@ -391,7 +214,7 @@ class ModelDefaultTests(unittest.TestCase):
                 "\n".join(flat_paths),
             )
             self.assertIn(
-                "assets/separator_models/bs_polarformer/bs_polarformer.onnx",
+                "assets/separator_models/leap_instrumental/bs_roformer_leap_inst.ckpt",
                 "\n".join(flat_paths),
             )
             self.assertIn(
@@ -399,7 +222,7 @@ class ModelDefaultTests(unittest.TestCase):
                 "\n".join(flat_paths),
             )
             self.assertIn(
-                "assets/separator_models/dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt",
+                "assets/separator_models/dereverb_stereo/dereverb_bs_roformer_anvuew_sdr_22.5050.ckpt",
                 "\n".join(flat_paths),
             )
             self.assertFalse(
@@ -429,13 +252,13 @@ class ModelDefaultTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            def fake_download(_repo_id, filename, _model_dir):
+            def fake_download(_repo_id, filename, _model_dir, *_pins):
                 if str(filename).endswith(".ckpt"):
                     return str(upstream_model)
                 return str(upstream_config)
 
             fake_separator = FakeSeparator(str(tmp_path / "models"))
-            with patch.object(separator, "_download_hf_file", side_effect=fake_download):
+            with patch("tools.model_assets.download_pinned_asset", side_effect=fake_download):
                 separator._install_custom_audio_separator_models(fake_separator)
                 result = fake_separator.download_model_files(
                     separator.LEAP_XE_VOCALS_MODEL
@@ -445,230 +268,8 @@ class ModelDefaultTests(unittest.TestCase):
             runtime_data = yaml.safe_load(runtime_config.read_text(encoding="utf-8"))
             self.assertEqual(runtime_data["model_type"], "bs_roformer")
 
-    def test_hybrid_runtime_uses_leap_vocals_and_polarformer_instrumental(self):
-        from infer import separator
 
-        class FakeAudioSeparator:
-            def __init__(self, output_dir: str):
-                self.output_dir = output_dir
-                self.last_audio_path = None
 
-            def separate(self, audio_path: str):
-                self.last_audio_path = audio_path
-                out_dir = Path(self.output_dir)
-                out_dir.mkdir(parents=True, exist_ok=True)
-                vocals = out_dir / "song_(Vocals)_leap.wav"
-                other = out_dir / "song_(Instrumental)_leap.wav"
-                data, sample_rate = sf.read(audio_path, always_2d=True)
-                sf.write(vocals, data, sample_rate)
-                sf.write(other, data * 0, sample_rate)
-                return [str(vocals), str(other)]
-
-        class FakePolarFormerRuntime:
-            def __init__(self, model_dir: str, output_dir: str, device: str):
-                self.output_dir = output_dir
-
-            def load_model(self, output_dir: str = ""):
-                if output_dir:
-                    self.output_dir = output_dir
-
-            def separate(self, audio_path: str):
-                out_dir = Path(self.output_dir)
-                out_dir.mkdir(parents=True, exist_ok=True)
-                vocals = out_dir / "song_(Vocals)_polar.wav"
-                instrumental = out_dir / "song_(Instrumental)_polar.wav"
-                data, sample_rate = sf.read(audio_path, always_2d=True)
-                sf.write(vocals, data * 0, sample_rate)
-                sf.write(instrumental, data, sample_rate)
-                return [str(vocals), str(instrumental)]
-
-        original_audio_loader = separator._load_audio_separator_model
-        original_polarformer = separator._BSPolarFormerRuntime
-        original_min_duration = separator._get_leap_xe_min_duration_seconds
-        try:
-            fake_audio_separator = None
-
-            def fake_audio_loader(**kwargs):
-                nonlocal fake_audio_separator
-                fake_audio_separator = FakeAudioSeparator(kwargs["output_dir"])
-                return fake_audio_separator
-
-            separator._load_audio_separator_model = fake_audio_loader
-            separator._BSPolarFormerRuntime = FakePolarFormerRuntime
-            separator._get_leap_xe_min_duration_seconds = lambda model_dir: 0.25
-
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                tmp_path = Path(tmp_dir)
-                audio_path = tmp_path / "song.wav"
-                sf.write(audio_path, np.ones(8000, dtype=np.float32), 16000)
-                runtime = separator._HybridLeapXePolarFormerRuntime(
-                    model_dir=str(tmp_path / "models"),
-                    output_dir=str(tmp_path / "out"),
-                    device="cpu",
-                )
-                outputs = runtime.separate(str(audio_path))
-
-                self.assertEqual(len(outputs), 2)
-                self.assertTrue(Path(outputs[0]).exists())
-                self.assertTrue(Path(outputs[1]).exists())
-                self.assertEqual(sf.info(outputs[0]).frames, 8000)
-                self.assertEqual(sf.info(outputs[1]).frames, 8000)
-                self.assertEqual(fake_audio_separator.last_audio_path, str(audio_path))
-        finally:
-            separator._load_audio_separator_model = original_audio_loader
-            separator._BSPolarFormerRuntime = original_polarformer
-            separator._get_leap_xe_min_duration_seconds = original_min_duration
-
-    def test_hybrid_runtime_releases_leap_before_loading_polarformer(self):
-        from infer import separator
-
-        leap_reference = None
-
-        class FakeAudioSeparator:
-            def __init__(self, output_dir: str):
-                self.output_dir = output_dir
-
-            def separate(self, audio_path: str):
-                out_dir = Path(self.output_dir)
-                out_dir.mkdir(parents=True, exist_ok=True)
-                data, sample_rate = sf.read(audio_path, always_2d=True)
-                vocals = out_dir / "song_(Vocals)_leap.wav"
-                other = out_dir / "song_(Instrumental)_leap.wav"
-                sf.write(vocals, data, sample_rate)
-                sf.write(other, data * 0, sample_rate)
-                return [str(vocals), str(other)]
-
-        class FakePolarFormerRuntime:
-            def __init__(self, model_dir: str, output_dir: str, device: str):
-                self.output_dir = output_dir
-                self.assert_leap_released()
-
-            @staticmethod
-            def assert_leap_released():
-                self_reference = leap_reference
-                if self_reference is not None and self_reference() is not None:
-                    raise AssertionError("Leap XE remained loaded before PolarFormer startup")
-
-            def load_model(self, output_dir: str = ""):
-                if output_dir:
-                    self.output_dir = output_dir
-
-            def separate(self, audio_path: str):
-                out_dir = Path(self.output_dir)
-                out_dir.mkdir(parents=True, exist_ok=True)
-                data, sample_rate = sf.read(audio_path, always_2d=True)
-                vocals = out_dir / "song_(Vocals)_polar.wav"
-                instrumental = out_dir / "song_(Instrumental)_polar.wav"
-                sf.write(vocals, data * 0, sample_rate)
-                sf.write(instrumental, data, sample_rate)
-                return [str(vocals), str(instrumental)]
-
-        original_audio_loader = separator._load_audio_separator_model
-        original_polarformer = separator._BSPolarFormerRuntime
-        original_min_duration = separator._get_leap_xe_min_duration_seconds
-        try:
-            def fake_audio_loader(**kwargs):
-                nonlocal leap_reference
-                active_separator = FakeAudioSeparator(kwargs["output_dir"])
-                leap_reference = weakref.ref(active_separator)
-                return active_separator
-
-            separator._load_audio_separator_model = fake_audio_loader
-            separator._BSPolarFormerRuntime = FakePolarFormerRuntime
-            separator._get_leap_xe_min_duration_seconds = lambda _model_dir: 0.0
-
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                tmp_path = Path(tmp_dir)
-                audio_path = tmp_path / "song.wav"
-                sf.write(audio_path, np.ones(8000, dtype=np.float32), 16000)
-                runtime = separator._HybridLeapXePolarFormerRuntime(
-                    model_dir=str(tmp_path / "models"),
-                    output_dir=str(tmp_path / "out"),
-                    device="cpu",
-                )
-                outputs = runtime.separate(str(audio_path))
-
-                self.assertEqual(len(outputs), 2)
-                self.assertIsNone(leap_reference())
-        finally:
-            separator._load_audio_separator_model = original_audio_loader
-            separator._BSPolarFormerRuntime = original_polarformer
-            separator._get_leap_xe_min_duration_seconds = original_min_duration
-
-    def test_hybrid_runtime_pads_short_leap_input_and_trims_output(self):
-        from infer import separator
-
-        class FakeAudioSeparator:
-            def __init__(self, output_dir: str):
-                self.output_dir = output_dir
-                self.last_audio_path = None
-
-            def separate(self, audio_path: str):
-                self.last_audio_path = audio_path
-                out_dir = Path(self.output_dir)
-                out_dir.mkdir(parents=True, exist_ok=True)
-                data, sample_rate = sf.read(audio_path, always_2d=True)
-                vocals = out_dir / "song_(Vocals)_leap.wav"
-                other = out_dir / "song_(Instrumental)_leap.wav"
-                sf.write(vocals, data, sample_rate)
-                sf.write(other, data * 0, sample_rate)
-                return [str(vocals), str(other)]
-
-        class FakePolarFormerRuntime:
-            def __init__(self, model_dir: str, output_dir: str, device: str):
-                self.output_dir = output_dir
-
-            def load_model(self, output_dir: str = ""):
-                if output_dir:
-                    self.output_dir = output_dir
-
-            def separate(self, audio_path: str):
-                out_dir = Path(self.output_dir)
-                out_dir.mkdir(parents=True, exist_ok=True)
-                data, sample_rate = sf.read(audio_path, always_2d=True)
-                vocals = out_dir / "song_(Vocals)_polar.wav"
-                instrumental = out_dir / "song_(Instrumental)_polar.wav"
-                sf.write(vocals, data * 0, sample_rate)
-                sf.write(instrumental, data, sample_rate)
-                return [str(vocals), str(instrumental)]
-
-        original_audio_loader = separator._load_audio_separator_model
-        original_polarformer = separator._BSPolarFormerRuntime
-        original_min_duration = separator._get_leap_xe_min_duration_seconds
-        try:
-            fake_audio_separator = None
-
-            def fake_audio_loader(**kwargs):
-                nonlocal fake_audio_separator
-                fake_audio_separator = FakeAudioSeparator(kwargs["output_dir"])
-                return fake_audio_separator
-
-            separator._load_audio_separator_model = fake_audio_loader
-            separator._BSPolarFormerRuntime = FakePolarFormerRuntime
-            separator._get_leap_xe_min_duration_seconds = lambda model_dir: 2.0
-
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                tmp_path = Path(tmp_dir)
-                audio_path = tmp_path / "short.wav"
-                sf.write(audio_path, np.ones(8000, dtype=np.float32), 16000)
-                runtime = separator._HybridLeapXePolarFormerRuntime(
-                    model_dir=str(tmp_path / "models"),
-                    output_dir=str(tmp_path / "out"),
-                    device="cpu",
-                )
-                outputs = runtime.separate(str(audio_path))
-
-                self.assertNotEqual(fake_audio_separator.last_audio_path, str(audio_path))
-                self.assertGreaterEqual(
-                    sf.info(fake_audio_separator.last_audio_path).frames,
-                    32001,
-                )
-                self.assertEqual(sf.info(outputs[0]).frames, 8000)
-                self.assertEqual(sf.info(outputs[1]).frames, 8000)
-        finally:
-            separator._load_audio_separator_model = original_audio_loader
-            separator._BSPolarFormerRuntime = original_polarformer
-            separator._get_leap_xe_min_duration_seconds = original_min_duration
 
     def test_mvsep_9205_runtime_pads_short_input_and_trims_outputs(self):
         from infer import separator
@@ -720,8 +321,9 @@ class ModelDefaultTests(unittest.TestCase):
                     sf.info(fake_ensemble.last_audio_path).frames,
                     32001,
                 )
-                self.assertEqual(sf.info(lead_path).frames, 8000)
-                self.assertEqual(sf.info(backing_path).frames, 8000)
+                self.assertEqual(sf.info(lead_path).samplerate, 44100)
+                self.assertEqual(sf.info(lead_path).frames, 22050)
+                self.assertEqual(sf.info(backing_path).frames, 22050)
                 self.assertEqual(Path(lead_path).name, "lead_vocals.wav")
                 self.assertEqual(Path(backing_path).name, "accompaniment.wav")
         finally:

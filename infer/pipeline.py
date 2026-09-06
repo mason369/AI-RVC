@@ -16,6 +16,7 @@ from lib.device import get_device, empty_device_cache, supports_fp16
 from lib.logger import log
 from infer.f0_extractor import get_f0_extractor, shift_f0, F0Method
 from infer.rvc_version import inspect_rvc_model_version
+from infer.contracts import inspect_checkpoint, validate_state_dict, read_index, retrieve_features, number, integer
 
 # 48Hz 高通 Butterworth 滤波器（与官方管道一致，去除低频隆隆声）
 _bh, _ah = sp_signal.butter(N=5, Wn=48, btype="high", fs=16000)
@@ -34,9 +35,10 @@ class VoiceConversionPipeline:
         self.device = get_device(device)
         self.hubert_model = None
         self.hubert_model_type = None
-        self.hubert_layer = 12
         self.voice_model = None
         self.index = None
+        self.index_vectors = None
+        self.uses_f0 = True
         self.f0_extractor = None
         self.spk_count = 1
         self.model_feature_dim = None
@@ -94,212 +96,65 @@ class VoiceConversionPipeline:
         self.unload_f0_extractor()
         self.unload_voice_model()
         self.index = None
+        self.index_vectors = None
 
     def load_hubert(self, model_path: str):
-        """
-        加载 HuBERT 模型
-
-        Args:
-            model_path: HuBERT 模型路径（可以是本地 .pt 文件或 Hugging Face 模型名）
-        """
-        # 优先使用 fairseq 兼容实现（官方实现）
-        if os.path.isfile(model_path):
-            try:
-                from fairseq import checkpoint_utils
-
-                models, _, _ = checkpoint_utils.load_model_ensemble_and_task(
-                    [model_path],
-                    suffix=""
-                )
-                model = models[0]
-                model = model.to(self.device).eval()
-                self.hubert_model = model
-                self.hubert_model_type = "fairseq"
-                log.info(f"HuBERT 模型已加载: {model_path} ({self.device})")
-                return
-            except Exception as e:
-                log.warning(f"fairseq 加载失败，尝试 torchaudio: {e}")
-
-        try:
-            import torchaudio
-
-            bundle = torchaudio.pipelines.HUBERT_BASE
-            model = bundle.get_model()
-            model = model.to(self.device).eval()
-            self.hubert_model = model
-            self.hubert_model_type = "torchaudio"
-            log.info(
-                f"HuBERT 模型已加载: torchaudio HUBERT_BASE ({self.device})"
-            )
-            return
-        except Exception as e:
-            log.warning(f"torchaudio 加载失败，尝试 transformers: {e}")
-
-        from transformers import HubertModel
-
-        if os.path.isfile(model_path):
-            log.info("检测到本地模型文件，将使用 Hugging Face 预训练模型替代")
-            model_name = "facebook/hubert-base-ls960"
-        else:
-            model_name = model_path
-
-        try:
-            self.hubert_model = HubertModel.from_pretrained(model_name)
-        except Exception as e:
-            log.warning(f"从网络加载失败，尝试使用本地缓存: {e}")
-            self.hubert_model = HubertModel.from_pretrained(
-                model_name,
-                local_files_only=True
-            )
-        self.hubert_model = self.hubert_model.to(self.device).eval()
-        self.hubert_model_type = "transformers"
-        log.info(f"HuBERT 模型已加载: {model_name} ({self.device})")
+        """只加载指定的本地 HuBERT；损坏或缺失时不下载其他编码器替代。"""
+        path = Path(model_path)
+        if not path.is_file():
+            raise FileNotFoundError(f"HuBERT 模型文件不存在：{path}")
+        from fairseq import checkpoint_utils
+        from fairseq.data.dictionary import Dictionary
+        # The pinned HuBERT checkpoint contains this Fairseq vocabulary class.
+        # Keep PyTorch's weights-only loader; allow only the required class.
+        with torch.serialization.safe_globals([Dictionary]):
+            models, _, _ = checkpoint_utils.load_model_ensemble_and_task([str(path)], suffix="")
+        if len(models) != 1 or not hasattr(models[0], "final_proj"):
+            raise ValueError("HuBERT 必须包含 RVC v1 所需的原生 final_proj 权重")
+        self.hubert_model = models[0].to(self.device).float().eval()
+        self.hubert_model_type = "fairseq"
+        log.info(f"HuBERT 模型已加载: {path} ({self.device}, FP32)")
 
     def load_voice_model(self, model_path: str) -> dict:
-        """
-        加载语音模型
-
-        Args:
-            model_path: 模型文件路径 (.pth)
-
-        Returns:
-            dict: 模型信息
-        """
-        log.debug(f"正在加载语音模型: {model_path}")
-        cpt = torch.load(model_path, map_location="cpu", weights_only=False)
-
-        log.debug(f"模型文件 keys: {cpt.keys()}")
-
-        # 提取模型配置
-        config = cpt.get("config", [])
-        self.output_sr = cpt.get("sr", 48000)
-
-        log.debug(f"config 类型: {type(config)}, 内容: {config}")
-        log.debug(f"采样率: {self.output_sr}")
-
-        # 处理 list 格式的 config（RVC v2 标准格式）
-        if isinstance(config, list) and len(config) >= 18:
-            model_config = {
-                "spec_channels": config[0],
-                "segment_size": config[1],
-                "inter_channels": config[2],
-                "hidden_channels": config[3],
-                "filter_channels": config[4],
-                "n_heads": config[5],
-                "n_layers": config[6],
-                "kernel_size": config[7],
-                "p_dropout": config[8],
-                "resblock": config[9],
-                "resblock_kernel_sizes": config[10],
-                "resblock_dilation_sizes": config[11],
-                "upsample_rates": config[12],
-                "upsample_initial_channel": config[13],
-                "upsample_kernel_sizes": config[14],
-                "spk_embed_dim": config[15],
-                "gin_channels": config[16],
-            }
-            # 使用 config 中的采样率（如果有）
-            if len(config) > 17:
-                self.output_sr = config[17]
-        elif isinstance(config, dict):
-            # 兼容 dict 格式
-            model_config = config
-        else:
-            # 使用默认值
-            log.warning("无法解析 config，使用默认值")
-            model_config = {}
-
-        log.debug(f"解析后的配置: {model_config}")
-
-        version_info = inspect_rvc_model_version(cpt, str(model_path))
-        model_version = version_info.version
-        self.model_feature_dim = version_info.feature_dim
-        log.debug(
-            "模型版本检测: "
-            f"version={version_info.raw_version_label}, "
-            f"feature_dim={version_info.feature_dim}, "
-            f"detected={model_version}, "
-            f"source={version_info.source}"
+        """按实际权重结构加载 v1/v2、F0/非 F0 模型，不猜测缺失的架构。"""
+        from infer.lib.infer_pack.models import (
+            SynthesizerTrnMs256NSFsid, SynthesizerTrnMs768NSFsid,
+            SynthesizerTrnMs256NSFsid_nono, SynthesizerTrnMs768NSFsid_nono,
         )
-        if version_info.metadata_mismatch:
-            log.warning(
-                "模型version字段与权重结构不一致，按权重结构使用: "
-                f"{version_info.raw_version_label} -> {model_version}"
-            )
-
-        # 根据检测结果选择合成器
-        if model_version == "v1":
-            # v1模型：256维
-            from infer.lib.infer_pack.models import SynthesizerTrnMs256NSFsid
-            synthesizer_class = SynthesizerTrnMs256NSFsid
-            self.model_version = "v1"
-            log.debug(f"使用v1合成器 (256维)")
-        else:
-            # v2模型：768维（默认）
-            from infer.lib.infer_pack.models import SynthesizerTrnMs768NSFsid
-            synthesizer_class = SynthesizerTrnMs768NSFsid
-            self.model_version = "v2"
-            log.debug(f"使用v2合成器 (768维)")
-
-        # 加载模型权重
-        self.voice_model = synthesizer_class(
-            spec_channels=model_config.get("spec_channels", 1025),
-            segment_size=model_config.get("segment_size", 32),
-            inter_channels=model_config.get("inter_channels", 192),
-            hidden_channels=model_config.get("hidden_channels", 192),
-            filter_channels=model_config.get("filter_channels", 768),
-            n_heads=model_config.get("n_heads", 2),
-            n_layers=model_config.get("n_layers", 6),
-            kernel_size=model_config.get("kernel_size", 3),
-            p_dropout=model_config.get("p_dropout", 0),
-            resblock=model_config.get("resblock", "1"),
-            resblock_kernel_sizes=model_config.get("resblock_kernel_sizes", [3, 7, 11]),
-            resblock_dilation_sizes=model_config.get("resblock_dilation_sizes", [[1, 3, 5], [1, 3, 5], [1, 3, 5]]),
-            upsample_rates=model_config.get("upsample_rates", [10, 10, 2, 2]),
-            upsample_initial_channel=model_config.get("upsample_initial_channel", 512),
-            upsample_kernel_sizes=model_config.get("upsample_kernel_sizes", [16, 16, 4, 4]),
-            spk_embed_dim=model_config.get("spk_embed_dim", 109),
-            gin_channels=model_config.get("gin_channels", 256),
-            sr=self.output_sr,
-            is_half=supports_fp16(self.device)  # 根据设备能力决定是否使用半精度
-        )
-        self.spk_count = int(model_config.get("spk_embed_dim", 1) or 1)
-
-        # 加载权重
-        self.voice_model.load_state_dict(cpt["weight"], strict=False)
-        self.voice_model = self.voice_model.to(self.device).eval()
-
-        model_info = {
-            "name": Path(model_path).stem,
-            "sample_rate": self.output_sr,
-            "version": self.model_version,
+        checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
+        contract = inspect_checkpoint(checkpoint, str(model_path))
+        classes = {
+            ("v1", True): SynthesizerTrnMs256NSFsid,
+            ("v2", True): SynthesizerTrnMs768NSFsid,
+            ("v1", False): SynthesizerTrnMs256NSFsid_nono,
+            ("v2", False): SynthesizerTrnMs768NSFsid_nono,
         }
-
-        log.info(f"语音模型已加载: {model_info['name']} ({self.output_sr}Hz)")
-        return model_info
+        model = classes[(contract.version, contract.uses_f0)](*contract.config, is_half=False)
+        del model.enc_q
+        validate_state_dict(model, checkpoint["weight"])
+        model.load_state_dict({k: v for k, v in checkpoint["weight"].items()
+                               if not k.startswith("enc_q.")}, strict=True)
+        self.voice_model = model.to(self.device).float().eval()
+        self.model_version = contract.version
+        self.model_feature_dim = contract.feature_dim
+        self.output_sr = contract.sample_rate
+        self.spk_count = contract.speaker_count
+        self.uses_f0 = contract.uses_f0
+        self.index = None
+        self.index_vectors = None
+        info = {"name": Path(model_path).stem, "sample_rate": self.output_sr,
+                "version": self.model_version, "feature_dim": self.model_feature_dim,
+                "speaker_count": self.spk_count, "uses_f0": self.uses_f0}
+        log.info(f"语音模型已加载: {info}")
+        return info
 
     def load_index(self, index_path: str):
-        """
-        加载 FAISS 索引
-
-        Args:
-            index_path: 索引文件路径 (.index)
-        """
-        self.index = faiss.read_index(index_path)
-        if self.model_feature_dim is not None:
-            index_dim = int(self.index.d)
-            if index_dim != int(self.model_feature_dim):
-                raise ValueError(
-                    "RVC索引维度与模型不匹配: "
-                    f"model_feature_dim={self.model_feature_dim}, "
-                    f"index_dim={index_dim}, index={index_path}。"
-                )
-        # 启用 direct_map 以支持 reconstruct()
-        try:
-            self.index.make_direct_map()
-        except Exception:
-            pass  # 某些索引类型不支持，忽略
-        log.info(f"索引已加载: {index_path}")
+        """校验成功后才提交索引状态；失败不会留下不匹配的索引。"""
+        if self.model_feature_dim is None:
+            raise RuntimeError("请先加载语音模型，再加载索引")
+        index, vectors = read_index(index_path, self.model_feature_dim)
+        self.index, self.index_vectors = index, vectors
+        log.info(f"索引已加载: {index_path} ({index.d} 维, {index.ntotal} 个向量)")
 
     def load_f0_extractor(self, method: F0Method = "rmvpe",
                           rmvpe_path: str = None):
@@ -347,58 +202,22 @@ class VoiceConversionPipeline:
             )[0]
             # v1 模型需要 256 维特征，使用 final_proj 投影
             # v2 模型需要 768 维特征，不使用 final_proj
-            if use_final_proj and hasattr(self.hubert_model, 'final_proj'):
+            if use_final_proj:
+                if not hasattr(self.hubert_model, 'final_proj'):
+                    raise ValueError("v1 需要 HuBERT 原生 final_proj，不能截断或补零代替")
                 feats = self.hubert_model.final_proj(feats)
+            expected_dim = 256 if use_final_proj else 768
+            if feats.shape[-1] != expected_dim:
+                raise ValueError(f"HuBERT 特征维度错误：预期 {expected_dim}，实际 {feats.shape[-1]}")
             return feats
 
-        if self.hubert_model_type == "torchaudio":
-            feats_list, _ = self.hubert_model.extract_features(audio_tensor)
-            layer_idx = min(self.hubert_layer - 1, len(feats_list) - 1)
-            return feats_list[layer_idx]
-
-        # transformers fallback
-        outputs = self.hubert_model(audio_tensor, output_hidden_states=True)
-        layer_idx = min(self.hubert_layer, len(outputs.hidden_states) - 1)
-        return outputs.hidden_states[layer_idx]
+        raise ValueError(f"不支持的本地 HuBERT 后端：{self.hubert_model_type!r}")
 
     def search_index(self, features: np.ndarray, k: int = 8) -> np.ndarray:
-        """
-        在索引中搜索相似特征
-
-        Args:
-            features: 输入特征
-            k: 返回的近邻数量
-
-        Returns:
-            np.ndarray: 检索到的特征
-        """
-        if self.index is None:
-            return features
-
-        # 检查特征维度是否与索引匹配
-        if features.shape[-1] != self.index.d:
-            log.warning(f"特征维度 ({features.shape[-1]}) 与索引维度 ({self.index.d}) 不匹配，跳过索引搜索")
-            return features
-
-        # 搜索（使用距离倒数平方加权，与官方管道一致）
-        scores, indices = self.index.search(features, k)
-
-        # 尝试重建特征，如果索引不支持则跳过
-        try:
-            big_npy = self.index.reconstruct_n(0, self.index.ntotal)
-        except RuntimeError as e:
-            if "direct map" in str(e):
-                log.warning("索引不支持向量重建，跳过索引混合")
-                return features
-            raise
-
-        # 距离倒数平方加权
-        weight = np.square(1.0 / (scores + 1e-6))
-        weight /= weight.sum(axis=1, keepdims=True)
-        retrieved = np.sum(
-            big_npy[indices] * np.expand_dims(weight, axis=2), axis=1
-        )
-        return retrieved
+        """执行有限数值、维度一致的 FAISS 检索；失败明确停止。"""
+        if self.index is None or self.index_vectors is None:
+            raise RuntimeError("未加载有效索引，不能执行检索")
+        return retrieve_features(self.index, self.index_vectors, features, k)
     @staticmethod
     def _f0_to_coarse(
         f0: np.ndarray,
@@ -608,29 +427,21 @@ class VoiceConversionPipeline:
         log.debug(f"[_process_chunk] F0 张量: shape={f0_tensor.shape}, max={f0_tensor.max().item():.1f}, min={f0_tensor.min().item():.1f}")
         log.debug(f"[_process_chunk] F0 coarse (pitch索引): shape={f0_coarse.shape}, max={f0_coarse.max().item()}, min={f0_coarse.min().item()}")
 
-        safe_speaker_id = int(max(0, min(max(1, int(self.spk_count)) - 1, int(speaker_id))))
+        safe_speaker_id = integer(speaker_id, "speaker_id", 0, self.spk_count - 1)
         sid = torch.tensor([safe_speaker_id], device=self.device)
         log.debug(f"[_process_chunk] 说话人 ID: {sid.item()}")
 
         # FP16 推理
         log.debug(f"[_process_chunk] 开始推理, use_fp16={use_fp16}, device={self.device.type}")
+        args = [features_tensor, torch.tensor([features_tensor.shape[1]], device=self.device)]
+        if self.uses_f0:
+            args.extend([f0_coarse, f0_tensor])
+        args.append(sid)
         if use_fp16 and supports_fp16(self.device):
-            with torch.amp.autocast(str(self.device.type)):
-                audio_out, x_mask, _ = self.voice_model.infer(
-                    features_tensor,
-                    torch.tensor([features_tensor.shape[1]], device=self.device),
-                    f0_coarse,
-                    f0_tensor,
-                    sid
-                )
+            with torch.amp.autocast(str(self.device.type), dtype=torch.float16):
+                audio_out, x_mask, _ = self.voice_model.infer(*args)
         else:
-            audio_out, x_mask, _ = self.voice_model.infer(
-                features_tensor,
-                torch.tensor([features_tensor.shape[1]], device=self.device),
-                f0_coarse,
-                f0_tensor,
-                sid
-            )
+            audio_out, x_mask, _ = self.voice_model.infer(*args)
 
         log.debug(f"[_process_chunk] 推理完成, audio_out: shape={audio_out.shape}, dtype={audio_out.dtype}")
         log.debug(f"[_process_chunk] x_mask: shape={x_mask.shape}, sum={x_mask.sum().item()}")
@@ -690,20 +501,36 @@ class VoiceConversionPipeline:
             raise RuntimeError("请先加载语音模型")
         if self.hubert_model is None:
             raise RuntimeError("请先加载 HuBERT 模型")
-        if self.f0_extractor is None:
+        if self.uses_f0 and self.f0_extractor is None:
             raise RuntimeError("请先加载 F0 提取器")
+        pitch_shift = integer(pitch_shift, "pitch_shift", -24, 24)
+        index_ratio = number(index_ratio, "index_ratio", 0, 1)
+        filter_radius = integer(filter_radius, "filter_radius", 0, 15)
+        rms_mix_rate = number(rms_mix_rate, "rms_mix_rate", 0, 1)
+        protect = number(protect, "protect", 0, 0.5)
+        speaker_id = integer(speaker_id, "speaker_id", 0, self.spk_count - 1)
+        resample_sr = integer(resample_sr, "resample_sr", 0, 192000)
+        if resample_sr and resample_sr < 16000:
+            raise ValueError("resample_sr 必须为 0 或 16000～192000 Hz")
+        if type(silence_gate) is not bool:
+            raise ValueError("silence_gate 必须是布尔值")
+        number(silence_threshold_db, "silence_threshold_db", -120, 0)
+        number(silence_smoothing_ms, "silence_smoothing_ms", 0, 10000)
+        number(silence_min_duration_ms, "silence_min_duration_ms", 0, 60000)
+        if not self.uses_f0 and pitch_shift != 0:
+            raise ValueError("非 F0 模型不支持音高偏移，请使用 F0 模型或设为 0")
+        if index_ratio > 0 and self.index is None:
+            raise ValueError("index_ratio > 0 时必须提供有效索引；不使用索引请显式设为 0")
 
         # 加载音频
         audio = load_audio(audio_path, sr=self.sample_rate)
         audio = normalize_audio(audio)
-        rms_mix_rate = float(np.clip(rms_mix_rate, 0.0, 1.0))
-        speaker_id = int(max(0, min(max(1, int(self.spk_count)) - 1, int(speaker_id))))
 
         # 高通滤波去除低频隆隆声（与官方管道一致）
         audio = sp_signal.filtfilt(_bh, _ah, audio).astype(np.float32)
 
         # 步骤1: 提取 F0 (使用 RMVPE 或 Hybrid)
-        f0 = self.f0_extractor.extract(audio)
+        f0 = self.f0_extractor.extract(audio) if self.uses_f0 else np.zeros(max(1, len(audio) // 160), dtype=np.float32)
 
         # 音调偏移
         if pitch_shift != 0:
@@ -776,7 +603,7 @@ class VoiceConversionPipeline:
 
             # 动态辅音保护：基于F0置信度和能量调整protect强度
             # 避免索引检索破坏辅音清晰度，与官方管道行为一致
-            if protect < 0.5:
+            if self.uses_f0 and protect < 0.5:
                 # 构建逐帧保护掩码：F0>0 的帧用 1.0（完全使用索引混合后特征），
                 # F0=0 的帧用 protect 值（大部分保留原始特征）
                 # F0 帧率是特征帧率的 2 倍 (hop 160 vs 320)，需要下采样对齐
@@ -813,64 +640,7 @@ class VoiceConversionPipeline:
                 protect_mask = protect_mask[:, np.newaxis]  # [T, 1] 广播到 [T, C]
                 features = features * protect_mask + features_before_index * (1 - protect_mask)
 
-        # --- 能量感知软门控（索引+protect 之后、分块推理之前）---
-        # 注意：使用软门控而非硬清零，避免音量损失
-        import librosa as _librosa_local
-        _hop_feat = 320  # HuBERT hop
-        _n_feat = features.shape[0]
-        _frame_rms = _librosa_local.feature.rms(
-            y=audio, frame_length=_hop_feat * 2, hop_length=_hop_feat, center=True
-        )[0]
-        if _frame_rms.ndim > 1:
-            _frame_rms = _frame_rms[0]
-        if len(_frame_rms) > _n_feat:
-            _frame_rms = _frame_rms[:_n_feat]
-        elif len(_frame_rms) < _n_feat:
-            _frame_rms = np.pad(_frame_rms, (0, _n_feat - len(_frame_rms)), mode='edge')
-        _energy_db = 20.0 * np.log10(_frame_rms + 1e-8)
-        _ref_db = float(np.percentile(_energy_db, 95)) if _frame_rms.size > 0 else -20.0
-
-        # 改进的软门控：使用渐变衰减而非硬清零，保留低能量内容
-        _silence_threshold = _ref_db - 65.0  # 进一步放宽到-65dB（只处理极端静音）
-        _is_very_quiet = (_energy_db < _silence_threshold).astype(np.float32)
-
-        # 检查F0：F0=0的帧更可能是静音（但也可能是辅音）
-        _f0_50fps = f0[::2] if len(f0) >= _n_feat * 2 else np.pad(f0[::2], (0, _n_feat - len(f0[::2])), mode='edge')
-        _f0_50fps = _f0_50fps[:_n_feat]
-        _is_unvoiced = (_f0_50fps <= 0).astype(np.float32)
-
-        # 组合判断：极低能量 + 无声 = 可能静音
-        _is_silence = _is_very_quiet * _is_unvoiced
-
-        # 平滑门控曲线
-        _sm = np.array([1, 2, 3, 2, 1], dtype=np.float32)
-        _sm /= _sm.sum()
-        _is_silence = np.convolve(_is_silence, _sm, mode='same')[:_n_feat]
-
-        # 最小静音时长过滤（避免误判短暂的低能量辅音）
-        _min_silence_frames = 10  # 约200ms @ 50fps（更保守）
-        _silence_binary = (_is_silence > 0.7).astype(int)  # 提高阈值到0.7
-        _changes = np.diff(np.concatenate(([0], _silence_binary, [0])))
-        _starts = np.where(_changes == 1)[0]
-        _ends = np.where(_changes == -1)[0]
-        _keep_silence = np.zeros_like(_silence_binary, dtype=bool)
-        for _s, _e in zip(_starts, _ends):
-            if _e - _s >= _min_silence_frames:
-                _keep_silence[_s:_e] = True
-
-        # 软门控：使用渐变衰减而非硬清零（0.3-1.0 而非 0-1）
-        _energy_gate = np.where(_keep_silence, 0.3, 1.0).astype(np.float32)
-
-        # 特征软门控（50fps）- 保留30%而非完全清零
-        features = features * _energy_gate[:, np.newaxis]
-
-        # F0 软清零（100fps = 特征帧率 × 2）- 保留30%而非完全清零
-        _f0_gate = np.repeat(_energy_gate, 2)
-        if len(_f0_gate) > len(f0):
-            _f0_gate = _f0_gate[:len(f0)]
-        elif len(_f0_gate) < len(f0):
-            _f0_gate = np.pad(_f0_gate, (0, len(f0) - len(_f0_gate)), mode='constant', constant_values=1.0)
-        f0 = f0 * _f0_gate
+        # 静音处理仅由下方 silence_gate 控制；不叠加隐藏的特征/F0 门控。
 
         # 步骤3: 语音合成 (voice_model 推理) - 分块处理
         # 分块参数 - 增加重叠以减少边界伪影
@@ -961,51 +731,13 @@ class VoiceConversionPipeline:
                 protect=protect
             )
 
-        # 应用人声清理后处理（减少齿音和呼吸音）
-        # 注意：为避免过度处理导致音质下降，默认禁用
-        try:
-            from lib.vocal_cleanup import apply_vocal_cleanup
-            audio_out = apply_vocal_cleanup(
-                audio_out,
-                sr=save_sr,
-                reduce_sibilance_enabled=False,  # 禁用齿音处理，避免音质损失
-                reduce_breath_enabled=False,
-                sibilance_reduction_db=2.0,
-                breath_reduction_db=0.0
-            )
-            log.detail("已应用人声清理")
-        except Exception as e:
-            log.warning(f"人声清理失败: {e}")
-
-        # 应用vocoder伪影修复（呼吸音电音和长音撕裂）
-        # 注意：只保留相位修复，禁用其他处理避免音量损失
-        try:
-            from lib.vocoder_fix import apply_vocoder_artifact_fix
-
-            # 将F0重采样到音频帧率
-            if len(f0) > 0:
-                import librosa
-                # F0是100fps，需要对齐到音频帧率
-                f0_resampled = librosa.resample(
-                    f0.astype(np.float32),
-                    orig_sr=100,  # F0帧率
-                    target_sr=save_sr / (save_sr / 16000 * 160)  # 音频帧率
-                )
-            else:
-                f0_resampled = None
-
-            audio_out = apply_vocoder_artifact_fix(
-                audio_out,
-                sr=save_sr,
-                f0=f0_resampled,
-                chunk_boundaries=None,
-                fix_phase=True,        # 保留相位修复（修复长音撕裂）
-                fix_breath=True,       # 启用底噪清理（使用优化后的精准检测）
-                fix_sustained=False    # 禁用长音稳定，避免音质损失
-            )
-            log.detail("已应用vocoder伪影修复（相位+底噪清理）")
-        except Exception as e:
-            log.warning(f"Vocoder伪影修复失败: {e}")
+        # 本地路线保留明确的相位/底噪处理；失败向上抛出，不跳过。
+        from lib.vocoder_fix import apply_vocoder_artifact_fix
+        audio_out = apply_vocoder_artifact_fix(
+            audio_out, sr=save_sr, f0=f0 if self.uses_f0 else None,
+            fix_phase=True, fix_breath=True, fix_sustained=False,
+        )
+        log.detail("已应用vocoder伪影修复（相位+底噪清理）")
 
         # 峰值限幅（不改变整体响度，后续由 cover_pipeline 控制音量）
         audio_out = soft_clip(audio_out, threshold=0.9, ceiling=0.99)
@@ -1158,22 +890,27 @@ def list_voice_models(weights_dir: str = "assets/weights") -> list:
 
     # 递归搜索所有子目录
     for pth_file in weights_path.glob("**/*.pth"):
-        # 查找对应的索引文件（同目录下）
-        index_file = pth_file.with_suffix(".index")
-        if not index_file.exists():
-            # 尝试其他命名方式
-            index_file = pth_file.parent / f"{pth_file.stem}_v2.index"
-        if not index_file.exists():
-            # 尝试不区分大小写匹配
-            for f in pth_file.parent.glob("*.index"):
-                if f.stem.lower() == pth_file.stem.lower():
-                    index_file = f
-                    break
+        from infer.official_adapter import _resolve_index_path
+        # A character directory is an explicit asset bundle; archives often use
+        # different weight/index basenames. Generic weight dirs require a name match.
+        relative = pth_file.relative_to(weights_path)
+        index_error = None
+        try:
+            if len(relative.parts) >= 3 and relative.parts[0] == 'characters':
+                from tools.character_assets import model_files
+                _, index_file = model_files(weights_path / 'characters' / relative.parts[1])
+            else:
+                index_file = _resolve_index_path(pth_file, None)
+        except (ValueError, OSError) as exc:
+            # Keep the invalid entry visible; both the UI table and MCP expose
+            # this error. Conversion with positive retrieval still fails closed.
+            index_file, index_error = None, str(exc)
 
         models.append({
             "name": pth_file.stem,
             "model_path": str(pth_file),
-            "index_path": str(index_file) if index_file.exists() else None
+            "index_path": str(index_file) if index_file else None,
+            "index_error": index_error,
         })
 
     return models

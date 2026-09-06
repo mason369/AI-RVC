@@ -11,6 +11,15 @@ from ui import app as ui_app
 
 
 class UiLanguageTests(unittest.TestCase):
+    def setUp(self):
+        # Tests must not depend on the language saved by another browser session.
+        language = mock.patch.object(ui_app, 'i18n', ui_app.load_i18n('zh_CN'))
+        configuration = mock.patch.object(ui_app, 'config', {**ui_app.config, 'language': 'zh_CN'})
+        language.start()
+        configuration.start()
+        self.addCleanup(language.stop)
+        self.addCleanup(configuration.stop)
+
     def test_load_config_applies_only_explicit_valid_device_override(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = Path(tmp_dir) / "config.json"
@@ -56,7 +65,7 @@ class UiLanguageTests(unittest.TestCase):
 
         self.assertEqual(saved["language"], "en_US")
         self.assertIn("English", status)
-        self.assertIn("restart", status.lower())
+        self.assertIn("changed", status.lower())
 
     def test_language_packs_include_selector_keys(self):
         for lang in ("zh_CN", "en_US"):
@@ -229,10 +238,11 @@ class UiLanguageTests(unittest.TestCase):
         self.assertNotIn("来源仓库", details)
 
     def test_default_route_status_shows_quality_upstream_official_route(self):
-        status = ui_app.get_cover_vc_route_status("auto", "current", True)
+        status = ui_app.get_cover_vc_route_status("current", True)
 
-        self.assertIn("默认质量链路", status)
-        self.assertIn("内置官方 RVC", status)
+        self.assertIn("已选择：标准翻唱流程", status)
+        self.assertNotIn("✅", status)
+        self.assertIn("官方 RVC 运行组件", status)
 
     def test_english_route_status_has_no_chinese_runtime_build_label(self):
         original_i18n = ui_app.i18n
@@ -240,12 +250,13 @@ class UiLanguageTests(unittest.TestCase):
         try:
             ui_app.i18n = ui_app.load_i18n("en_US")
             ui_app.config = {**original_config, "language": "en_US"}
-            status = ui_app.get_cover_vc_route_status("auto", "current", True)
+            status = ui_app.get_cover_vc_route_status("current", True)
         finally:
             ui_app.i18n = original_i18n
             ui_app.config = original_config
 
-        self.assertIn("Runtime build:", status)
+        self.assertIn("Selected: standard cover workflow", status)
+        self.assertNotIn("Runtime build:", status)
         self.assertFalse(any("一" <= char <= "鿿" for char in status))
 
     def test_runtime_build_label_rejects_unsupported_language(self):
@@ -253,18 +264,15 @@ class UiLanguageTests(unittest.TestCase):
             ui_app.get_runtime_build_label("ja_JP")
 
     def test_route_status_accepts_dropdown_labels(self):
-        _, vc_value_to_label = ui_app.get_vc_preprocess_option_maps()
         _, pipeline_value_to_label = ui_app.get_vc_pipeline_mode_option_maps()
 
         official_status = ui_app.get_cover_vc_route_status(
-            vc_value_to_label["auto"],
             pipeline_value_to_label["official"],
             True,
         )
-        self.assertIn("当前使用内置官方 RVC 实现", official_status)
+        self.assertIn("已选择：官方 RVC 路线", official_status)
 
         strict_status = ui_app.get_cover_vc_route_status(
-            vc_value_to_label["uvr_deecho"],
             pipeline_value_to_label["current"],
             False,
         )
@@ -294,7 +302,7 @@ class UiLanguageTests(unittest.TestCase):
         self.assertEqual(settings["pitch_shift"], 0)
         self.assertEqual(settings["index_ratio"], 0.5)
         self.assertEqual(settings["speaker_id"], 0)
-        self.assertEqual(settings["vc_preprocess_mode"], "auto")
+        self.assertNotIn("vc_preprocess_mode", settings)
         self.assertEqual(settings["source_constraint_mode"], "auto")
         self.assertEqual(settings["vc_pipeline_mode"], "current")
         self.assertNotIn("singing_repair", settings)
@@ -334,7 +342,6 @@ class UiLanguageTests(unittest.TestCase):
             "cover_speaker_id",
             "cover_karaoke",
             "cover_karaoke_merge_backing",
-            "cover_vc_preprocess_mode",
             "cover_source_constraint_mode",
             "cover_vc_pipeline_mode",
             "cover_mix_preset",
@@ -346,7 +353,6 @@ class UiLanguageTests(unittest.TestCase):
             "apply_cover_mix_preset",
             "get_cover_mix_defaults",
             "get_cover_mix_presets",
-            "get_vc_preprocess_option_maps",
             "get_source_constraint_option_maps",
             "get_vc_pipeline_mode_option_maps",
         ]
@@ -354,6 +360,8 @@ class UiLanguageTests(unittest.TestCase):
             self.assertIn(token, source)
 
         removed_ui_tokens = [
+            "cover_vc_preprocess_mode",
+            "get_vc_preprocess_option_maps",
             "cover_singing_repair",
             "update_singing_repair_visibility",
             "vc_preprocess_direct",
@@ -372,7 +380,6 @@ class UiLanguageTests(unittest.TestCase):
                 "speaker_id",
                 "karaoke_separation",
                 "karaoke_merge_backing_into_accompaniment",
-                "vc_preprocess_mode",
                 "source_constraint_mode",
                 "vc_pipeline_mode",
                 "vocals_volume",
@@ -385,22 +392,24 @@ class UiLanguageTests(unittest.TestCase):
         )
         zh_cover = ui_app.load_i18n("zh_CN")["cover"]
         self.assertIn("手动调整", zh_cover["manual_cover_settings"])
-        self.assertIn("不会偷偷降级", zh_cover["automatic_cover_settings_info"])
+        self.assertIn("手动调整", zh_cover["automatic_cover_settings_info"])
+        self.assertNotIn("偷偷", zh_cover["automatic_cover_settings_info"])
         self.assertNotIn("singing_repair", zh_cover)
         self.assertNotIn("vc_preprocess_direct", zh_cover)
         self.assertNotIn("vc_preprocess_legacy", zh_cover)
         self.assertNotIn("singing_repair = _read_cover_bool", source)
-        self.assertIn("singing_repair=False", source)
+        self.assertNotIn("singing_repair=False", source)
 
     def test_ui_exposes_language_selector_and_save_handler(self):
         source = Path("ui/app.py").read_text(encoding="utf-8")
 
-        self.assertIn('label=t("language", "settings")', source)
+        self.assertIn('label=ui_text("language", "settings")', source)
         self.assertIn("choices=list(LANGUAGE_LABEL_TO_CODE.keys())", source)
-        self.assertIn("fn=save_language_setting", source)
-        self.assertIn('t("cover_usage", "ui")', source)
-        self.assertIn('t("runtime_settings", "settings")', source)
-        self.assertIn("allow_custom_value=True", source)
+        self.assertIn("fn=change_language", source)
+        self.assertIn("bind_static_translations(app)", source)
+        self.assertIn('ui_text("cover_usage", "ui")', source)
+        self.assertIn('ui_text("runtime_settings", "settings")', source)
+        self.assertIn("allow_custom_value=False", source)
         self.assertIn("custom_model_file = gr.File", source)
         self.assertIn("fn=import_custom_character_model_ui", source)
 

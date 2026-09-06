@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 设备检测模块 - 自动检测并选择最佳计算设备
-支持: CUDA (NVIDIA / AMD ROCm), XPU (Intel Arc via IPEX), DirectML, MPS (Apple), CPU
+支持: CUDA (NVIDIA / AMD ROCm), 原生 PyTorch XPU, DirectML, MPS (Apple), CPU
 """
 import sys
 from pathlib import Path
@@ -16,12 +16,8 @@ from lib.console_i18n import console_print as print
 
 
 def _has_xpu() -> bool:
-    """检测 Intel XPU (需要 intel_extension_for_pytorch)"""
-    try:
-        import intel_extension_for_pytorch  # noqa: F401
-        return hasattr(torch, "xpu") and torch.xpu.is_available()
-    except ImportError:
-        return False
+    """Use native PyTorch XPU detection without requiring the legacy IPEX extension."""
+    return hasattr(torch, "xpu") and torch.xpu.is_available()
 
 
 def _has_directml() -> bool:
@@ -67,7 +63,11 @@ def get_device(preferred: str = "cuda") -> torch.device:
                 f"已选择 CUDA 设备 {preferred!r}，但当前 PyTorch 无法使用 CUDA/ROCm"
             )
         try:
-            return torch.device(p)
+            selected = torch.device(p)
+            count = torch.cuda.device_count()
+            if selected.index is not None and selected.index >= count:
+                raise ValueError(f"Requested device {preferred!r} is unavailable; detected {count} CUDA device(s)")
+            return selected
         except (RuntimeError, ValueError) as exc:
             raise ValueError(f"CUDA 设备名称无效: {preferred!r}") from exc
 
@@ -75,7 +75,11 @@ def get_device(preferred: str = "cuda") -> torch.device:
         if not _has_xpu():
             raise RuntimeError(f"已选择 XPU 设备 {preferred!r}，但当前 XPU 不可用")
         try:
-            return torch.device(p)
+            selected = torch.device(p)
+            count = torch.xpu.device_count()
+            if selected.index is not None and selected.index >= count:
+                raise ValueError(f"Requested device {preferred!r} is unavailable; detected {count} XPU device(s)")
+            return selected
         except (RuntimeError, ValueError) as exc:
             raise ValueError(f"XPU 设备名称无效: {preferred!r}") from exc
 
@@ -83,7 +87,11 @@ def get_device(preferred: str = "cuda") -> torch.device:
         if not _has_directml():
             raise RuntimeError("已选择 DirectML，但当前未安装或无法使用 torch-directml")
         import torch_directml
-        return torch_directml.device(torch_directml.default_device())
+        index = torch.device(p).index if p.startswith('privateuseone') else None
+        index = torch_directml.default_device() if index is None else index
+        if index >= torch_directml.device_count():
+            raise ValueError(f"Requested DirectML device index {index} is unavailable")
+        return torch_directml.device(index)
 
     if p == "mps":
         if not _has_mps():

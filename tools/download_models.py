@@ -18,6 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.console_i18n import console_print as print
+from tools import upstream_runtime
 
 # 模型下载配置
 MODELS = {
@@ -101,6 +102,15 @@ MODELS = {
     }
 }
 
+# Pin base assets to one upstream commit, including exact bytes and LFS SHA-256.
+from tools.base_model_manifest import REVISION as BASE_REVISION, FILES as BASE_FILES
+for _model in MODELS.values():
+    _filename = _model['url'].split('/resolve/main/')[1]
+    _asset = BASE_FILES[_filename]
+    _model.update(sha256=_asset['sha256'], size_bytes=_asset['size'])
+    _model['size_mb'] = round(_asset['size'] / 1024**2, 1)
+    _model['url'] = _model['url'].replace('/resolve/main/', f'/resolve/{BASE_REVISION}/')
+
 # 必需模型列表
 REQUIRED_MODELS = ["hubert_base.pt", "rmvpe.pt", "HP2_all_vocals.pth"]
 
@@ -112,13 +122,10 @@ MATURE_DEECHO_MODELS = [
     "VR-DeEchoAggressive.pth",
 ]
 
-UPSTREAM_RVC_REPO_URL = "https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI.git"
-UPSTREAM_RVC_DIR = "_official_rvc"
-UPSTREAM_RVC_REQUIRED_FILES = [
-    "configs/config.py",
-    "infer/modules/vc/modules.py",
-    "infer/modules/uvr5/modules.py",
-]
+UPSTREAM_RVC_REPO_URL = upstream_runtime.REPOSITORY
+UPSTREAM_RVC_REVISION = upstream_runtime.REVISIONS["vc"]
+UPSTREAM_RVC_DIR = f"_official_rvc_runtime/{UPSTREAM_RVC_REVISION}"
+UPSTREAM_RVC_REQUIRED_FILES = list(upstream_runtime.REQUIRED_FILES["vc"])
 
 
 def get_project_root() -> Path:
@@ -126,117 +133,42 @@ def get_project_root() -> Path:
     return Path(__file__).parent.parent
 
 
-def download_file(url: str, dest_path: Path, desc: str = None) -> bool:
-    """
-    下载文件，支持断点续传和进度显示
-
-    Args:
-        url: 下载链接
-        dest_path: 目标路径
-        desc: 进度条描述
-
-    Returns:
-        bool: 下载是否成功
-    """
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # 检查已下载的部分
-    resume_pos = 0
-    if dest_path.exists():
-        resume_pos = dest_path.stat().st_size
-
-    headers = {}
-    if resume_pos > 0:
-        headers["Range"] = f"bytes={resume_pos}-"
-    if "huggingface.co" in url:
-        hf_token = (
-            os.environ.get("HF_TOKEN")
-            or os.environ.get("HUGGINGFACE_HUB_TOKEN")
-            or os.environ.get("HUGGINGFACE_TOKEN")
-        )
-        if hf_token:
-            headers["Authorization"] = f"Bearer {hf_token}"
-
-    try:
-        response = requests.get(url, headers=headers, stream=True, timeout=30)
-
-        # 检查是否支持断点续传
-        if response.status_code == 416:  # Range not satisfiable
-            print(f"  文件已完整下载: {dest_path.name}")
-            return True
-
-        if response.status_code not in [200, 206]:
-            print(f"  下载失败: HTTP {response.status_code}")
-            return False
-
-        # 获取文件总大小
-        total_size = int(response.headers.get("content-length", 0))
-        if response.status_code == 206:
-            total_size += resume_pos
-
-        # 下载模式
-        mode = "ab" if resume_pos > 0 else "wb"
-
-        with open(dest_path, mode) as f:
-            with tqdm(
-                total=total_size,
-                initial=resume_pos,
-                unit="B",
-                unit_scale=True,
-                desc=desc or dest_path.name
-            ) as pbar:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        pbar.update(len(chunk))
-
-        return True
-
-    except requests.exceptions.RequestException as e:
-        print(f"  下载错误: {e}")
-        return False
+def download_file(url: str, dest_path: Path, desc: str = None, *, expected_sha256: str = None) -> bool:
+    """Download to a partial file; propagate HTTP/integrity failures to callers."""
+    from tools.http_download import download_http
+    download_http(url, dest_path, desc, expected_sha256)
+    return True
 
 
 def check_model(name: str) -> bool:
-    """
-    检查模型是否已下载
-
-    Args:
-        name: 模型名称
-
-    Returns:
-        bool: 模型是否存在
-    """
+    """Check the pinned size and SHA-256; a partial file is never installed."""
     if name not in MODELS:
         return False
-
-    model_path = get_project_root() / MODELS[name]["path"]
-    return model_path.exists()
+    info = MODELS[name]
+    path = get_project_root() / info['path']
+    if not path.is_file():
+        return False
+    stat = path.stat()
+    if stat.st_size != info['size_bytes']:
+        return False
+    # File timestamps can repeat on coarse-resolution filesystems. Re-read the
+    # content so a same-size overwrite cannot inherit an earlier valid result.
+    from tools.model_assets import file_sha256
+    return file_sha256(path) == info['sha256']
 
 
 def download_model(name: str) -> bool:
-    """
-    下载指定模型
-
-    Args:
-        name: 模型名称
-
-    Returns:
-        bool: 下载是否成功
-    """
+    """Prepare one verified asset without overwriting corrupt existing files."""
     if name not in MODELS:
-        print(f"未知模型: {name}")
-        return False
-
-    model_info = MODELS[name]
-    model_path = get_project_root() / model_info["path"]
-
-    if model_path.exists():
-        print(f"模型已存在: {name}")
+        raise ValueError(f"Unknown model: {name}")
+    info = MODELS[name]
+    path = get_project_root() / info['path']
+    if check_model(name):
+        print(f"[OK] {name}")
         return True
-
-    print(f"正在下载: {model_info['description']} ({model_info['size_mb']}MB)")
-    return download_file(model_info["url"], model_path, name)
+    if path.exists():
+        raise RuntimeError(f"Model integrity check failed: {path}; preserve or remove this file before downloading again")
+    return download_file(info['url'], path, name, expected_sha256=info['sha256'])
 
 
 def _download_hf_file(repo_id: str, filename: str, model_dir: Path) -> Path:
@@ -265,10 +197,9 @@ def get_default_separator_asset_paths(
 ) -> Dict[str, List[Path]]:
     """Return required files for the current default separation route."""
     from infer.separator import (
-        BS_POLARFORMER_CONFIG_FILENAME,
-        BS_POLARFORMER_ONNX_FILENAME,
         KARAOKE_SOTA_MODELS,
         LEAP_XE_VOCALS_MODEL,
+        LEAP_INSTRUMENTAL_MODEL,
         ROFORMER_DEREVERB_DEFAULT_MODEL,
         _CUSTOM_AUDIO_SEPARATOR_MODELS,
     )
@@ -286,14 +217,16 @@ def get_default_separator_asset_paths(
                 else []
             ),
         ],
-        "BS PolarFormer public ONNX 62 bands": [
-            model_dir / "bs_polarformer" / BS_POLARFORMER_ONNX_FILENAME,
-            model_dir / "bs_polarformer" / BS_POLARFORMER_CONFIG_FILENAME,
-        ],
-        "RoFormer De-Reverb": [
-            model_dir / ROFORMER_DEREVERB_DEFAULT_MODEL,
-        ],
     }
+    for label, model_name in (
+        ("Leap Instrumental 62 bands", LEAP_INSTRUMENTAL_MODEL),
+        ("RoFormer De-Reverb Stereo", ROFORMER_DEREVERB_DEFAULT_MODEL),
+    ):
+        spec = _CUSTOM_AUDIO_SEPARATOR_MODELS[model_name]
+        asset_dir = model_dir / spec["local_subdir"]
+        assets[label] = [asset_dir / spec[key] for key in (
+            "model_filename", "config_filename", "runtime_config_filename",
+        )]
     for model_name in KARAOKE_SOTA_MODELS:
         spec = _CUSTOM_AUDIO_SEPARATOR_MODELS[model_name]
         assets[f"MVSep 9205 {model_name}"] = [
@@ -337,11 +270,9 @@ def check_default_separator_models(root_dir: Optional[Path] = None) -> Dict[str,
 def download_default_separator_models(root_dir: Optional[Path] = None) -> bool:
     """Download the default hybrid SOTA, MVSep 9205, and De-Reverb assets."""
     from infer.separator import (
-        BS_POLARFORMER_CONFIG_FILENAME,
-        BS_POLARFORMER_HF_REPO,
-        BS_POLARFORMER_ONNX_FILENAME,
         KARAOKE_SOTA_MODELS,
         LEAP_XE_VOCALS_MODEL,
+        LEAP_INSTRUMENTAL_MODEL,
         ROFORMER_DEREVERB_DEFAULT_MODEL,
         _install_custom_audio_separator_models,
     )
@@ -355,16 +286,6 @@ def download_default_separator_models(root_dir: Optional[Path] = None) -> bool:
     print("=" * 50)
 
     success = True
-    polarformer_dir = model_dir / "bs_polarformer"
-    polarformer_dir.mkdir(parents=True, exist_ok=True)
-    for filename in (BS_POLARFORMER_ONNX_FILENAME, BS_POLARFORMER_CONFIG_FILENAME):
-        try:
-            path = _download_hf_file(BS_POLARFORMER_HF_REPO, filename, polarformer_dir)
-            print(f"[OK] BS PolarFormer: {path}")
-        except Exception as exc:
-            print(f"[ERROR] BS PolarFormer 下载失败: {exc}")
-            success = False
-
     try:
         from audio_separator.separator import Separator
     except ImportError as exc:
@@ -373,12 +294,14 @@ def download_default_separator_models(root_dir: Optional[Path] = None) -> bool:
 
     separator = Separator(
         log_level=_logging.WARNING,
+        info_only=True,
         output_dir=str(project_root / "temp" / "separator_download"),
         model_file_dir=str(model_dir),
     )
     _install_custom_audio_separator_models(separator)
     for model_name in [
         LEAP_XE_VOCALS_MODEL,
+        LEAP_INSTRUMENTAL_MODEL,
         *KARAOKE_SOTA_MODELS,
         ROFORMER_DEREVERB_DEFAULT_MODEL,
     ]:
@@ -399,20 +322,17 @@ def download_default_separator_models(root_dir: Optional[Path] = None) -> bool:
     return success
 
 
-def get_upstream_rvc_root(root_dir: Optional[Path] = None) -> Path:
-    """Return the local vendored official RVC directory."""
+def get_upstream_rvc_root(root_dir: Optional[Path] = None, *, capability: str = "vc") -> Path:
+    """Return the isolated pinned source directory for the requested capability."""
     project_root = Path(root_dir) if root_dir is not None else get_project_root()
-    return project_root / UPSTREAM_RVC_DIR
+    return upstream_runtime.runtime_root(project_root, capability)
 
 
 def get_missing_upstream_rvc_files(root_dir: Optional[Path] = None) -> List[str]:
-    """List required official RVC files missing from the local vendored tree."""
-    official_root = get_upstream_rvc_root(root_dir)
-    return [
-        rel_path
-        for rel_path in UPSTREAM_RVC_REQUIRED_FILES
-        if not (official_root / rel_path).exists()
-    ]
+    """Report source/API/version and Transformers HuBERT readiness problems."""
+    project_root = Path(root_dir) if root_dir is not None else get_project_root()
+    official_root = get_upstream_rvc_root(project_root)
+    return upstream_runtime.source_problems(official_root) + upstream_runtime.hubert_problems(project_root)
 
 
 def check_upstream_rvc_tree(root_dir: Optional[Path] = None) -> bool:
@@ -424,6 +344,7 @@ def ensure_upstream_rvc_tree(
     root_dir: Optional[Path] = None,
     *,
     clone_timeout_sec: int = 900,
+    capability: str = "vc",
 ) -> Path:
     """
     Ensure the vendored official RVC source tree exists.
@@ -432,65 +353,10 @@ def ensure_upstream_rvc_tree(
     another VC backend: if the tree cannot be prepared, the caller should stop.
     """
     project_root = Path(root_dir) if root_dir is not None else get_project_root()
-    official_root = get_upstream_rvc_root(project_root)
-    missing = get_missing_upstream_rvc_files(project_root)
-    if not missing:
-        print(f"[OK] 内置官方 RVC 已就绪: {official_root}")
-        return official_root
-
-    if official_root.exists():
-        missing_text = ", ".join(missing)
-        raise FileNotFoundError(
-            "内置官方 RVC 目录不完整，无法运行默认质量链路。"
-            f"目录: {official_root}; 缺失: {missing_text}。"
-            "请删除该不完整目录后重新运行安装，或手动执行: "
-            f"git clone --depth 1 {UPSTREAM_RVC_REPO_URL} {official_root}"
-        )
-
-    git_exe = shutil.which("git")
-    if not git_exe:
-        raise RuntimeError(
-            "默认质量链路需要内置官方 RVC，但当前环境找不到 git。"
-            f"请安装 git，或手动下载 {UPSTREAM_RVC_REPO_URL} 到 {official_root}。"
-        )
-
-    print("=" * 50)
-    print("准备内置官方 RVC 源码...")
-    print("=" * 50)
-    print(f"仓库: {UPSTREAM_RVC_REPO_URL}")
-    print(f"目录: {official_root}")
-
-    try:
-        subprocess.run(
-            [
-                git_exe,
-                "clone",
-                "--depth",
-                "1",
-                UPSTREAM_RVC_REPO_URL,
-                str(official_root),
-            ],
-            cwd=str(project_root),
-            check=True,
-            timeout=clone_timeout_sec,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(
-            f"下载内置官方 RVC 超时: {UPSTREAM_RVC_REPO_URL}"
-        ) from exc
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(
-            f"下载内置官方 RVC 失败，退出码: {exc.returncode}"
-        ) from exc
-
-    missing = get_missing_upstream_rvc_files(project_root)
-    if missing:
-        raise FileNotFoundError(
-            "内置官方 RVC 下载完成但结构不完整，无法运行默认质量链路。"
-            f"缺失: {', '.join(missing)}"
-        )
-
-    print(f"[OK] 内置官方 RVC 已就绪: {official_root}")
+    official_root = upstream_runtime.ensure_source(project_root, capability, clone_timeout_sec)
+    if capability == "vc":
+        upstream_runtime.ensure_transformers_hubert(project_root)
+    print(f"[OK] 固定版本官方 {capability} 已就绪: {official_root}")
     return official_root
 
 
@@ -648,13 +514,15 @@ if __name__ == "__main__":
             print("[MISSING] 内置官方 RVC: " + ", ".join(missing_official))
         else:
             print("[OK] 内置官方 RVC")
+        ready = all(check_model(name) for name in REQUIRED_MODELS) and all(check_default_separator_models().values()) and not missing_official
+        sys.exit(0 if ready else 1)
     elif args.official_rvc:
         ensure_upstream_rvc_tree()
     elif args.separator:
-        download_default_separator_models()
+        sys.exit(0 if download_default_separator_models() else 1)
     elif args.model:
-        download_model(args.model)
+        sys.exit(0 if download_model(args.model) else 1)
     elif args.all:
-        download_all_models()
+        sys.exit(0 if download_all_models() else 1)
     else:
-        download_required_models()
+        sys.exit(0 if download_required_models() else 1)

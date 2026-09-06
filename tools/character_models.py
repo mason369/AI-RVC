@@ -8,6 +8,8 @@ import re
 import zipfile
 import shutil
 import sys
+import tempfile
+import time
 from pathlib import Path
 from typing import Optional, List, Dict, Callable, Any
 from urllib.parse import quote
@@ -248,52 +250,16 @@ def _get_display_name(info: Dict, fallback: str) -> str:
 
 
 def _find_index_file(pth_file: Path) -> Optional[Path]:
-    """尝试找到对应的索引文件"""
-    candidate = pth_file.with_suffix(".index")
-    if candidate.exists():
-        return candidate
-
-    index_files = list(pth_file.parent.glob("*.index"))
+    """Resolve an exact pair or an isolated one-model/one-index directory."""
+    index_files = sorted(pth_file.parent.glob("*.index"))
     if not index_files:
         return None
-
-    for idx in pth_file.parent.glob("*.index"):
-        if idx.stem.lower() == pth_file.stem.lower():
-            return idx
-
-    if len(index_files) == 1:
+    matching = [path for path in index_files if path.stem.casefold() == pth_file.stem.casefold()]
+    if len(matching) == 1:
+        return matching[0]
+    if len(index_files) == 1 and len(list(pth_file.parent.glob('*.pth'))) == 1:
         return index_files[0]
-
-    def _normalize_name(text: str) -> str:
-        return re.sub(r"[^a-z0-9]+", "", text.lower())
-
-    def _tokenize_name(text: str) -> List[str]:
-        return [token for token in re.split(r"[^a-z0-9]+", text.lower()) if len(token) >= 2]
-
-    model_norm = _normalize_name(pth_file.stem)
-    model_tokens = set(_tokenize_name(pth_file.stem))
-
-    best_match = None
-    best_score = -1
-    for idx in index_files:
-        idx_norm = _normalize_name(idx.stem)
-        idx_tokens = set(_tokenize_name(idx.stem))
-        score = 0
-        if idx_norm == model_norm:
-            score += 1000
-        if model_norm and (model_norm in idx_norm or idx_norm in model_norm):
-            score += 300
-        shared_tokens = len(model_tokens & idx_tokens)
-        score += shared_tokens * 40
-        if "added" in idx.stem.lower():
-            score += 10
-        if score > best_score:
-            best_score = score
-            best_match = idx
-
-    if best_match is not None and best_score > 0:
-        return best_match
-    return None
+    raise ValueError(f'模型与索引配对不唯一，请放入独立角色目录：{pth_file}')
 
 
 def _safe_print(message: str):
@@ -389,7 +355,7 @@ def _note_from_pth(path: Path) -> Optional[str]:
         return None
 
     try:
-        obj = torch.load(path, map_location="cpu", weights_only=False)
+        obj = torch.load(path, map_location="cpu", weights_only=True)
     except Exception:
         return None
 
@@ -552,7 +518,7 @@ def _build_character_record(name: str, info: Dict) -> Dict:
         or version_note
         or ""
     )
-    return {
+    record = {
         "name": name,
         "description": info.get("description", display),
         "base_display": base_display,
@@ -577,26 +543,45 @@ def _build_character_record(name: str, info: Dict) -> Dict:
         "zh_name": info.get("zh_name"),
         "en_name": info.get("en_name"),
         "jp_name": info.get("jp_name"),
+        "source_check": info.get("source_check"),
     }
+    record.update(compatibility_status="unverified", compatibility_error="", model_contract=None,
+                  download_supported="mega.nz" not in str(info.get("url", "")))
+    if not record['download_supported']:
+        from tools.mega_download import download_supported
+        record['download_supported'] = download_supported()
+    char_dir = get_character_models_dir() / name
+    if char_dir.is_dir() or (get_character_models_dir() / f'{name}.pth').is_file():
+        from tools.character_assets import inspect_model_assets
+        try:
+            paths = get_character_model_path(name)
+            if paths is None:
+                raise FileNotFoundError(f'角色目录没有 .pth 权重：{char_dir}')
+            contract = inspect_model_assets(paths['model_path'], paths['index_path'], require_index=any(
+                str(path).lower().endswith('.index') for path in info.get('files') or []))
+        except Exception as exc:
+            record.update(compatibility_status="invalid", compatibility_error=str(exc))
+        else:
+            record.update(compatibility_status="validated", model_contract=contract)
+            # Distribution revisions such as "Chika2" are not RVC architecture versions.
+            architecture = f"RVC {contract['version']} · {contract['feature_dim']}D · {contract['sample_rate'] // 1000}k"
+            record['version_label'] = architecture
+            record['display'] = f"{base_display} - {architecture}"
+            record['description'] = record['display']
+    return record
 
 
 def _write_local_model_info(name: str, char_dir: Path, info: Dict):
-    try:
-        payload = _build_character_record(name, info)
-        payload["registry_key"] = name
-        payload["local_files"] = {
-            "pth": sorted(p.name for p in char_dir.glob("*.pth")),
-            "index": sorted(p.name for p in char_dir.glob("*.index")),
-            "metadata": sorted(
-                p.name for p in char_dir.glob("*.json")
-                if p.name != LOCAL_MODEL_INFO_FILENAME
-            ),
-        }
-        info_path = char_dir / LOCAL_MODEL_INFO_FILENAME
-        with open(info_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+    payload = _build_character_record(name, info)
+    payload["registry_key"] = name
+    payload["local_files"] = {
+        "pth": sorted(p.name for p in char_dir.glob("*.pth")),
+        "index": sorted(p.name for p in char_dir.glob("*.index")),
+        "metadata": sorted(p.name for p in char_dir.glob("*.json") if p.name != LOCAL_MODEL_INFO_FILENAME),
+    }
+    info_path = char_dir / LOCAL_MODEL_INFO_FILENAME
+    with open(info_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
 def refresh_version_notes(force: bool = False) -> Dict[str, Optional[str]]:
@@ -629,42 +614,14 @@ def _get_confirm_token(response) -> Optional[str]:
 
 
 def _download_gdrive_file(file_id: str, dest_path: Path) -> bool:
-    """下载 Google Drive 文件（支持大文件确认）"""
-    import requests
+    """使用固定版 gdown 处理公开文件的大文件确认表单；不绕过权限或配额。"""
+    import gdown
 
     dest_path.parent.mkdir(parents=True, exist_ok=True)
-    url = "https://drive.google.com/uc?export=download"
-    session = requests.Session()
-
-    response = session.get(url, params={"id": file_id}, stream=True, timeout=30)
-    token = _get_confirm_token(response)
-    if token:
-        response = session.get(
-            url, params={"id": file_id, "confirm": token}, stream=True, timeout=30
-        )
-
-    if response.status_code != 200:
-        print(f"  下载失败: HTTP {response.status_code}")
-        return False
-    content_type = response.headers.get("content-type", "")
-    if "text/html" in content_type:
-        print("  下载失败: 需要手动确认或无访问权限")
-        return False
-
-    total_size = int(response.headers.get("content-length", 0))
-    downloaded = 0
-    with open(dest_path, "wb") as f:
-        for chunk in response.iter_content(chunk_size=8192):
-            if chunk:
-                f.write(chunk)
-                downloaded += len(chunk)
-                # 简单进度输出
-                if total_size > 0:
-                    percent = downloaded * 100 / total_size
-                    if int(percent) % 10 == 0:
-                        print(f"  下载进度: {percent:.0f}%")
-
-    return dest_path.exists() and dest_path.stat().st_size > 0
+    result = gdown.download(id=file_id, output=str(dest_path), quiet=True, use_cookies=False, resume=True)
+    if result is None or not dest_path.is_file() or dest_path.stat().st_size == 0:
+        raise RuntimeError('Google Drive 未生成有效文件；请检查分享权限或下载配额')
+    return True
 
 
 # 角色模型列表
@@ -751,8 +708,7 @@ CHARACTER_MODELS = {
         "repo": "HarunaKasuga/YoshikoTsushima"
     },
     "nico": {
-        "url": "https://huggingface.co/Zurakichi/RVC/resolve/main/Models/Love%20Live/V2/%C2%B5%27s/NicoYazawa.zip",
-        "filename": "NicoYazawa.zip",
+        "file": "Models/Love Live/V2/µ's/NicoYazawa.zip",
         "zh_name": "矢泽妮可",
         "en_name": "Nico Yazawa",
         "jp_name": "矢澤にこ",
@@ -806,6 +762,8 @@ CHARACTER_MODELS = {
     },
     "shizuku_osaka": {
         "url": "https://mega.nz/file/UbZDEaRY#YnxExpDIJzh-rEDfEo2khTPAH1p6GZ5FzaMCfWdUQ34",
+        "source_check": {"status": "unavailable", "checked_at": "2026-09-06", "reason": "MEGA ENOENT",
+                         "reference": "https://rentry.co/llrvc"},
         "zh_name": "樱坂雫",
         "en_name": "Shizuku Osaka",
         "jp_name": "桜坂しずく",
@@ -2369,6 +2327,9 @@ def import_custom_character_model(
         if len(pth_files) != 1:
             raise ValueError(f"导入后必须只有一个 .pth 权重文件，当前数量: {len(pth_files)}")
 
+        from tools.character_assets import inspect_character_directory
+        inspect_character_directory(char_dir)
+
         info = {
             "zh_name": model_name,
             "source": str(source or "自定义模型").strip() or "自定义模型",
@@ -2447,10 +2408,11 @@ def list_downloaded_characters() -> List[Dict]:
                 if value not in (None, "", [], {})
             })
         record = _build_character_record(char_name, info)
-        index_file = _find_index_file(pth_file)
+        # Invalid entries stay visible, but never expose arbitrarily selected files.
+        contract = record.get('model_contract') or {}
         record.update({
-            "model_path": str(pth_file),
-            "index_path": str(index_file) if index_file else None,
+            "model_path": contract.get('model_path'),
+            "index_path": contract.get('index_path'),
         })
         downloaded.append(record)
 
@@ -2496,14 +2458,16 @@ def get_character_model_path(name: str) -> Optional[Dict]:
     """
     models_dir = get_character_models_dir()
     char_dir = models_dir / name
+    _assert_under_directory(char_dir, models_dir)
 
     # 1) 标准目录结构: characters/<name>/*.pth
     if char_dir.exists():
-        pth_files = list(char_dir.glob("*.pth"))
+        pth_files = list(char_dir.rglob("*.pth"))
         if pth_files:
-            index_file = _find_index_file(pth_files[0])
+            from tools.character_assets import model_files
+            model_file, index_file = model_files(char_dir)
             return {
-                "model_path": str(pth_files[0]),
+                "model_path": str(model_file),
                 "index_path": str(index_file) if index_file else None
             }
 
@@ -2516,14 +2480,14 @@ def get_character_model_path(name: str) -> Optional[Dict]:
             "index_path": str(index_file) if index_file else None
         }
 
-    # 3) 兜底：在 characters 目录递归查找同名模型
-    for pth_file in models_dir.rglob("*.pth"):
-        if pth_file.stem.lower() == name.lower():
-            index_file = _find_index_file(pth_file)
-            return {
-                "model_path": str(pth_file),
-                "index_path": str(index_file) if index_file else None
-            }
+    # Legacy nested layouts are supported only when the exact stem is unique.
+    matches = [path for path in models_dir.rglob('*.pth') if path.stem.casefold() == name.casefold()]
+    if len(matches) > 1:
+        raise ValueError(f'存在多个同名角色权重，必须使用明确的角色目录：{name}')
+    if matches:
+        _assert_under_directory(matches[0], models_dir)
+        index_file = _find_index_file(matches[0])
+        return {'model_path': str(matches[0]), 'index_path': str(index_file) if index_file else None}
 
     return None
 
@@ -2543,8 +2507,7 @@ def download_character_model(
         bool: 是否成功
     """
     if name not in CHARACTER_MODELS:
-        _safe_print(f"未知角色: {name}")
-        return False
+        raise ValueError(f"未知角色: {name}")
 
     char_info = CHARACTER_MODELS[name]
     repo_id = char_info.get("repo", HF_REPO_ID)
@@ -2556,10 +2519,22 @@ def download_character_model(
 
     # 检查是否已下载
     char_dir = get_character_models_dir() / name
-    if char_dir.exists() and list(char_dir.glob("*.pth")):
-        _write_local_model_info(name, char_dir, char_info)
-        _safe_print(f"角色模型已存在: {name}")
-        return True
+    from tools.character_assets import inspect_character_directory
+    require_index = any(str(path).lower().endswith('.index') for path in file_list or [])
+    if char_dir.exists() and list(char_dir.rglob("*.pth")):
+        try:
+            inspect_character_directory(char_dir, require_index=require_index)
+        except Exception as exc:
+            _safe_print(f"已有角色资产校验失败，将重新下载到暂存目录，保留原文件：{name}；{exc}")
+        else:
+            _write_local_model_info(name, char_dir, char_info)
+            _safe_print(f"角色权重及索引校验通过: {name}")
+            return True
+
+    target_dir = char_dir
+    staging_root = get_project_root() / 'temp' / 'downloads' / 'characters'
+    staging_root.mkdir(parents=True, exist_ok=True)
+    char_dir = Path(tempfile.mkdtemp(prefix=f'{name}-', dir=staging_root))
 
     if progress_callback:
         progress_callback(f"正在下载 {name} 模型...", 0.1)
@@ -2570,47 +2545,43 @@ def download_character_model(
         # Google Drive 下载
         if gdrive_id:
             filename = char_info.get("filename") or f"{name}.zip"
-            temp_dir = get_project_root() / "temp" / "downloads"
-            temp_dir.mkdir(parents=True, exist_ok=True)
+            temp_dir = staging_root / f'{char_dir.name}-download'
+            temp_dir.mkdir()
             temp_path = temp_dir / filename
 
             _safe_print(f"正在从 Google Drive 下载: {filename}")
             if not _download_gdrive_file(gdrive_id, temp_path):
-                return False
+                raise RuntimeError(f"Google Drive 未生成有效下载文件：{name}")
 
             char_dir.mkdir(parents=True, exist_ok=True)
             if temp_path.suffix.lower() == ".zip":
                 if progress_callback:
                     progress_callback(f"正在解压 {name} 模型...", 0.6)
-                with zipfile.ZipFile(temp_path, 'r') as zip_ref:
-                    zip_ref.extractall(char_dir)
-                _flatten_extracted_dir(char_dir)
+                _extract_custom_model_zip(temp_path, char_dir)
             else:
                 shutil.copy(str(temp_path), str(char_dir / temp_path.name))
 
         # 直链下载（可用于非 HuggingFace 源）
         elif direct_url:
-            if "mega.nz" in direct_url:
-                _safe_print("Mega 下载暂不支持，请手动下载并放入角色目录")
-                return False
             from tools.download_models import download_file
 
             filename = char_info.get("filename") or Path(direct_url).name
-            temp_dir = get_project_root() / "temp" / "downloads"
-            temp_dir.mkdir(parents=True, exist_ok=True)
+            temp_dir = staging_root / f'{char_dir.name}-download'
+            temp_dir.mkdir()
             temp_path = temp_dir / filename
 
-            _safe_print(f"正在下载: {direct_url}")
-            if not download_file(direct_url, temp_path, name):
-                return False
+            _safe_print(f"正在下载 {name} 模型...")
+            if "mega.nz" in direct_url:
+                from tools.mega_download import download_public_file
+                temp_path = download_public_file(direct_url, staging_root / f'{char_dir.name}-mega', get_project_root())
+            elif not download_file(direct_url, temp_path, name):
+                raise RuntimeError(f"角色下载失败：{name}；未安装暂存文件")
 
             char_dir.mkdir(parents=True, exist_ok=True)
             if temp_path.suffix.lower() == ".zip":
                 if progress_callback:
                     progress_callback(f"正在解压 {name} 模型...", 0.6)
-                with zipfile.ZipFile(temp_path, 'r') as zip_ref:
-                    zip_ref.extractall(char_dir)
-                _flatten_extracted_dir(char_dir)
+                _extract_custom_model_zip(temp_path, char_dir)
             else:
                 shutil.copy(str(temp_path), str(char_dir / temp_path.name))
 
@@ -2657,11 +2628,12 @@ def download_character_model(
                         break
 
             if not candidates:
-                _safe_print(f"未找到匹配文件: {pattern}")
-                return False
+                raise FileNotFoundError(f"未找到匹配文件: {pattern}")
 
             # 优先 zip
             zip_candidates = [c for c in candidates if c.lower().endswith(".zip")]
+            if len(zip_candidates) > 1:
+                raise ValueError(f'角色下载匹配多个压缩包，必须指定唯一文件：{name}')
             selected = zip_candidates[0] if zip_candidates else candidates[0]
 
             if selected.lower().endswith(".zip"):
@@ -2675,9 +2647,7 @@ def download_character_model(
                 if progress_callback:
                     progress_callback(f"正在解压 {name} 模型...", 0.6)
                 char_dir.mkdir(parents=True, exist_ok=True)
-                with zipfile.ZipFile(downloaded_path, 'r') as zip_ref:
-                    zip_ref.extractall(char_dir)
-                _flatten_extracted_dir(char_dir)
+                _extract_custom_model_zip(Path(downloaded_path), char_dir)
             else:
                 # 多文件下载
                 file_list = candidates
@@ -2716,17 +2686,33 @@ def download_character_model(
 
             char_dir.mkdir(parents=True, exist_ok=True)
 
-            with zipfile.ZipFile(downloaded_path, 'r') as zip_ref:
-                zip_ref.extractall(char_dir)
+            _extract_custom_model_zip(Path(downloaded_path), char_dir)
 
-            _flatten_extracted_dir(char_dir)
-
-        if progress_callback:
-            progress_callback(f"{name} 模型下载完成", 1.0)
-
+        inspect_character_directory(char_dir, require_index=require_index)
+        # Publish only the complete validated directory. Replaced user files are
+        # preserved in a named backup, including previously incomplete assets.
+        _assert_under_directory(target_dir, get_character_models_dir())
+        _assert_under_directory(char_dir, staging_root)
+        backup = None
+        if target_dir.exists():
+            backup = staging_root / f'{char_dir.name}-previous'
+            _assert_under_directory(backup, staging_root)
+            target_dir.rename(backup)
+        try:
+            target_dir.parent.mkdir(parents=True, exist_ok=True)
+            char_dir.rename(target_dir)
+        except Exception:
+            if backup is not None:
+                backup.rename(target_dir)
+            raise
+        char_dir = target_dir
         _write_local_model_info(name, char_dir, char_info)
         # 下载完成后更新版本说明缓存
         _get_version_note(name, char_info)
+        if progress_callback:
+            progress_callback(f"{name} 角色权重及索引校验通过", 1.0)
+        if backup is not None:
+            _safe_print(f"原角色文件已保留：{backup}")
         _safe_print(f"角色模型已下载: {name}")
         return True
 
@@ -2734,7 +2720,7 @@ def download_character_model(
         _safe_print(f"下载失败: {e}")
         if progress_callback:
             progress_callback(f"下载失败: {e}", 0)
-        return False
+        raise
 
 
 def _flatten_extracted_dir(char_dir: Path):
@@ -2804,23 +2790,41 @@ def download_all_character_models(
 
     success = []
     failed = []
+    errors = {}
+    not_attempted = []
     total = max(len(targets), 1)
 
     for idx, char in enumerate(targets, start=1):
         if progress_callback:
             progress_callback(
                 f"正在下载 {char['name']} ({idx}/{total})...",
-                idx / total
+                (idx - 1) / total
             )
-        ok = download_character_model(char["name"])
+        try:
+            ok = download_character_model(char["name"])
+        except Exception as exc:
+            ok = False
+            errors[char['name']] = str(exc)
+            response = getattr(exc, 'response', None)
+            # Drive confirmation/quota errors do not expose a requests.Response.
+            if (getattr(response, 'status_code', None) in (401, 403, 429)
+                    or type(exc).__module__.startswith('gdown.')):
+                failed.append(char['name'])
+                not_attempted = [item['name'] for item in targets[idx:]]
+                _safe_print(f"认证或限流失败，停止后续下载：{exc}")
+                break
         if ok:
             success.append(char["name"])
         else:
             failed.append(char["name"])
+        if idx < len(targets):
+            time.sleep(2.5)
 
     return {
         "success": success,
-        "failed": failed
+        "failed": failed,
+        "errors": errors,
+        "not_attempted": not_attempted,
     }
 
 

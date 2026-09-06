@@ -53,7 +53,7 @@ class HuggingFaceEntrypointTests(unittest.TestCase):
         self.assertIn("PyYAML>=6.0", requirements)
         self.assertIn("einops>=0.7.0", requirements)
         self.assertNotIn("onnxruntime>=1.18.0", requirements)
-        self.assertIn("audio-separator[cpu]==0.44.1", requirements)
+        self.assertIn("audio-separator[cpu]==0.47.0", requirements)
         self.assertIn("huggingface_hub>=0.19.0,<1.0", requirements)
 
     def test_space_entrypoint_selects_cpu_explicitly(self):

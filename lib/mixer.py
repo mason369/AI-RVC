@@ -68,9 +68,7 @@ def apply_reverb(
 ) -> np.ndarray:
     """对人声应用混响效果。"""
     if not PEDALBOARD_AVAILABLE:
-        if log:
-            log.warning("Pedalboard 不可用，跳过混响处理")
-        return audio
+        raise RuntimeError("已请求混响，但 Pedalboard 未安装或无法加载；不会跳过混响")
 
     if log:
         log.detail(f"应用混响: room_size={room_size}, wet_level={wet_level}")
@@ -128,10 +126,16 @@ def mix_vocals_and_accompaniment(
     Returns:
         str: 输出文件路径
     """
-    if target_sr is None or target_sr <= 0:
+    from infer.contracts import number, integer
+    vocals_volume = number(vocals_volume, "vocals_volume", 0, 2)
+    accompaniment_volume = number(accompaniment_volume, "accompaniment_volume", 0, 2)
+    reverb_amount = number(reverb_amount, "reverb_amount", 0, 1)
+    if target_sr is None:
         vocals_sr = _probe_sample_rate(vocals_path)
         accompaniment_sr = _probe_sample_rate(accompaniment_path)
         target_sr = max(vocals_sr, accompaniment_sr)
+    else:
+        target_sr = integer(target_sr, "target_sr", 8000, 192000)
 
     if log:
         log.progress("开始混音处理...")
@@ -148,12 +152,10 @@ def mix_vocals_and_accompaniment(
         log.detail("加载伴奏音频...")
     accompaniment, _ = load_audio_for_mix(accompaniment_path, target_sr)
 
-    if reverb_amount > 0 and PEDALBOARD_AVAILABLE:
+    if reverb_amount > 0:
         if log:
             log.progress("应用人声混响...")
         vocals = apply_reverb(vocals, sr, room_size=0.4, wet_level=reverb_amount)
-    elif reverb_amount > 0 and log:
-        log.warning("Pedalboard 不可用，跳过混响")
 
     vocals = soft_clip_array(vocals * vocals_volume, threshold=0.85, ceiling=0.95)
     accompaniment = soft_clip_array(
@@ -199,7 +201,7 @@ def mix_vocals_and_accompaniment(
     if log:
         log.progress(f"保存混音文件: {output_path}")
 
-    sf.write(output_path, mixed, sr)
+    sf.write(output_path, mixed, sr, subtype="FLOAT")
 
     output_size = Path(output_path).stat().st_size
     duration = target_len / sr

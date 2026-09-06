@@ -8,6 +8,9 @@ from unittest import mock
 
 import install
 
+TORCH_VERSIONS = {"torch": "2.11.0", "torchvision": "0.26.0", "torchaudio": "2.11.0"}
+TORCH_PINS = tuple(f"{name}=={version}" for name, version in TORCH_VERSIONS.items())
+
 
 class InstallRequirementTests(unittest.TestCase):
     def test_pip_install_exposes_dependency_resolution_failure(self):
@@ -45,7 +48,7 @@ class InstallRequirementTests(unittest.TestCase):
     def test_audio_separator_at_required_version_is_accepted(self):
         with mock.patch("install.check_package", return_value=True), mock.patch(
             "install.get_installed_version",
-            return_value="0.44.1",
+            return_value="0.47.0",
             create=True,
         ), contextlib.redirect_stdout(io.StringIO()):
             missing = install.check_all("python")
@@ -60,7 +63,7 @@ class InstallRequirementTests(unittest.TestCase):
             if distribution_name == "numpy":
                 return "1.26.4"
             if distribution_name == "audio-separator":
-                return "0.44.1"
+                return "0.47.0"
             if distribution_name == "gradio":
                 return "5.49.1"
             if distribution_name == "huggingface_hub":
@@ -83,7 +86,7 @@ class InstallRequirementTests(unittest.TestCase):
             versions = {
                 "gradio": "3.50.2",
                 "numpy": "2.2.6",
-                "audio-separator": "0.44.1",
+                "audio-separator": "0.47.0",
                 "huggingface_hub": "0.36.0",
                 "fairseq": "0.12.2",
             }
@@ -103,7 +106,7 @@ class InstallRequirementTests(unittest.TestCase):
             versions = {
                 "gradio": "5.49.1",
                 "numpy": "2.2.6",
-                "audio-separator": "0.44.1",
+                "audio-separator": "0.47.0",
                 "huggingface_hub": "1.0.1",
                 "fairseq": "0.12.2",
             }
@@ -125,11 +128,13 @@ class InstallRequirementTests(unittest.TestCase):
         audio_separator_info = install.PACKAGES["audio_separator"]
         calls = []
 
-        def fake_pip_install(_venv_py, package, **kwargs):
-            calls.append((package, kwargs))
+        def fake_pip_install(_venv_py, backend, pins):
+            calls.append((backend, pins))
             return True
 
         def installed_version(_venv_py, distribution_name):
+            if distribution_name in TORCH_VERSIONS:
+                return TORCH_VERSIONS[distribution_name]
             if distribution_name == "onnxruntime-gpu":
                 return None
             if distribution_name == "onnxruntime":
@@ -140,7 +145,7 @@ class InstallRequirementTests(unittest.TestCase):
             "install.detect_cuda_version",
             return_value=None,
         ), mock.patch("install.get_installed_version", side_effect=installed_version), mock.patch(
-            "install.pip_install", side_effect=fake_pip_install
+            "install.install_project_dependencies", side_effect=fake_pip_install
         ), mock.patch(
             "install.check_dependency_consistency", return_value=True
         ), mock.patch(
@@ -153,8 +158,8 @@ class InstallRequirementTests(unittest.TestCase):
             calls,
             [
                 (
-                    "audio-separator",
-                    {"extra": "cpu", "version_spec": "==0.44.1"},
+                    "cpu",
+                    TORCH_PINS,
                 )
             ],
         )
@@ -165,6 +170,8 @@ class InstallRequirementTests(unittest.TestCase):
                 return mock.Mock(returncode=0, stdout="575.51.03\n")
             if cmd == ["nvidia-smi"]:
                 return mock.Mock(returncode=0, stdout="CUDA Version: 13.0\n")
+            if cmd == ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"]:
+                return mock.Mock(returncode=0, stdout="7.5\n")
             raise AssertionError(f"Unexpected command: {cmd}")
 
         with mock.patch("install.subprocess.run", side_effect=fake_run):
@@ -180,11 +187,13 @@ class InstallRequirementTests(unittest.TestCase):
             return_value="https://download.pytorch.org/whl/cu126",
         ), mock.patch(
             "install.get_installed_version",
-            side_effect=lambda _python, dist: "1.23.2" if dist == "onnxruntime-gpu" else None,
+            side_effect=lambda _python, dist: "1.23.2" if dist == "onnxruntime-gpu" else TORCH_VERSIONS.get(dist),
         ), mock.patch(
             "install.pip_install_packages",
             return_value=True,
         ) as install_stack, mock.patch(
+            "install.install_project_dependencies", return_value=True
+        ), mock.patch(
             "install.check_dependency_consistency",
             return_value=True,
         ), mock.patch(
@@ -196,7 +205,7 @@ class InstallRequirementTests(unittest.TestCase):
         self.assertTrue(ok)
         install_stack.assert_called_once_with(
             "python",
-            ("torch", "torchvision", "torchaudio"),
+            install.TORCH_INSTALL_PACKAGES,
             index_url="https://download.pytorch.org/whl/cu126",
         )
 
@@ -243,9 +252,15 @@ class InstallRequirementTests(unittest.TestCase):
             self.assertEqual(direct_runtime_lines, [])
 
     def test_requirements_include_torchvision_for_audio_separator(self):
+        from packaging.requirements import Requirement
         for requirements_path in (Path("requirements.txt"), Path("requirements_hf.txt")):
             source = requirements_path.read_text(encoding="utf-8")
-            self.assertIn("torchvision>=0.15.0", source)
+            requirements = [Requirement(line.split("#")[0].strip()) for line in source.splitlines()
+                            if line.strip() and not line.lstrip().startswith(("#", "-"))]
+            vision = [item for item in requirements if item.name == "torchvision"]
+            self.assertEqual(len(vision), 1)
+            self.assertIn("0.26.0+cpu", vision[0].specifier)
+            self.assertNotIn("0.14.0", vision[0].specifier)
 
     def test_cpu_install_writes_explicit_cpu_device(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -314,9 +329,9 @@ class InstallRequirementTests(unittest.TestCase):
         with mock.patch("install.check_all", return_value=[audio_separator_info]), mock.patch(
             "install.get_installed_version",
             side_effect=lambda _python, dist: (
-                "1.23.2" if dist == "onnxruntime-directml" else None
+                "1.23.2" if dist == "onnxruntime-directml" else TORCH_VERSIONS.get(dist)
             ),
-        ), mock.patch("install.pip_install", return_value=True) as pip_install, mock.patch(
+        ), mock.patch("install.install_project_dependencies", return_value=True) as pip_install, mock.patch(
             "install.pip_install_packages", return_value=True
         ) as install_torch, mock.patch(
             "install.check_backend_available", return_value=True
@@ -329,9 +344,8 @@ class InstallRequirementTests(unittest.TestCase):
         install_torch.assert_not_called()
         pip_install.assert_called_once_with(
             "python",
-            "audio-separator",
-            extra="dml",
-            version_spec="==0.44.1",
+            "directml",
+            TORCH_PINS,
         )
 
     def test_specialized_backend_does_not_replace_missing_torch_stack(self):
@@ -390,9 +404,9 @@ class InstallRequirementTests(unittest.TestCase):
 
     def test_backend_requirement_files_select_explicit_runtime_extra(self):
         expected = {
-            "requirements_cpu.txt": "audio-separator[cpu]==0.44.1",
-            "requirements_cuda.txt": "audio-separator[gpu]==0.44.1",
-            "requirements_dml.txt": "audio-separator[dml]==0.44.1",
+            "requirements_cpu.txt": "audio-separator[cpu]==0.47.0",
+            "requirements_cuda.txt": "audio-separator[gpu]==0.47.0",
+            "requirements_dml.txt": "audio-separator[dml]==0.47.0",
         }
         for filename, requirement in expected.items():
             with self.subTest(filename=filename):
