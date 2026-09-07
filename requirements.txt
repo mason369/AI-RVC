@@ -9,7 +9,7 @@ torchaudio>=2.0.0; sys_platform != "darwin" or platform_machine != "arm64"
 torchaudio>=2.11.0; sys_platform == "darwin" and platform_machine == "arm64"  # stable ABI supports torch>=2.11
 
 # Gradio 界面
-gradio==5.49.1
+gradio==6.7.0
 fastapi>=0.115,<1
 anyio>=3,<5
 pydantic>=2,<3
@@ -52,4 +52,4 @@ imageio-ffmpeg>=0.5.1  # 便携 ffmpeg 运行时
 
 ffmpeg-python>=0.2.0   # FFmpeg 绑定
 fairseq==0.12.2        # 旧版 HuBERT 特征提取
-transformers==4.49.0   # 固定新版官方 RVC 的 HuBERT 转换格式
+transformers==5.10.0   # 固定新版官方 RVC 的 HuBERT 转换格式
