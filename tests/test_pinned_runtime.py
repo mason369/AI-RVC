@@ -13,7 +13,7 @@ import numpy as np
 import soundfile as sf
 import torch
 
-from infer.official_upstream_runner import configure_selected_device, save_vc_result
+from infer.official_upstream_runner import configure_selected_device, save_vc_result, validate_runtime_precision
 from tools import model_assets, upstream_runtime as runtime
 
 
@@ -166,6 +166,17 @@ class PinnedRuntimeTests(unittest.TestCase):
         self.assertEqual(config.device, torch.device("cpu"))
         self.assertEqual(config.dtype, torch.float32)
         self.assertFalse(config.is_half)
+
+    def test_neither_rvc_nor_rmvpe_can_override_upstream_fp32_policy(self):
+        full = SimpleNamespace(is_half=False)
+        half = SimpleNamespace(is_half=True)
+        for rvc, rmvpe in ((half, full), (full, half), (half, half), (half, None)):
+            with self.subTest(rvc=rvc, rmvpe=rmvpe), self.assertRaisesRegex(RuntimeError, "精度配置不一致"):
+                validate_runtime_precision(full, rvc, rmvpe)
+        validate_runtime_precision(full, full, full)
+        validate_runtime_precision(full, full, None)
+        validate_runtime_precision(half, full, half)
+        validate_runtime_precision(half, half, full)
 
     def test_runner_imports_upstream_namespace_and_uses_checkpoint_speaker_count(self):
         from test_rvc_checkpoint_compatibility import _official_checkpoint

@@ -1,5 +1,25 @@
 # Changelog
 
+## 未发布 / Unreleased — 2026-11-10
+
+### 中文
+
+- 修复 GTX 16 系列（包括 GTX 1660 SUPER）因与 RTX 20 系列同报 SM 7.5，被错误选择为 FP16 的问题。RVC 和 RMVPE 共用的精度选择器现在同时检查所选 CUDA 设备的型号与计算能力，按固定官方设备规则将 GTX 16 系列的 FP16 权重无损升为 FP32，仍在 CUDA 上运行；本地兼容入口的 RVC 同步受益。
+- 保留符合条件的 Tensor Core CUDA 设备原生 FP16 路径；FP32、FP64 和混合权重不降精度。ROCm 不套用 NVIDIA SM 的半精度资格判断，未知设备信息不再仅凭 SM 启用 FP16。显式 GPU 索引和当前 CUDA 设备分别读取对应的设备信息。
+- 官方工作进程在网络执行前核对 RVC 与 RMVPE 的精度计划，禁止任一模型覆盖官方 FP32 设备规则。继续拒绝 NaN、Inf 和负 F0，保留真实无声零值；不清零错误频率、不用插值掩盖、不在失败后更换模型、算法或设备。
+- 新增 GTX 1630/1650/1660 各型号、RTX/T4、非 CUDA 后端、多 GPU 索引及当前设备、固定官方规则一致性和全部有限 FP16 值无损升精度回归；补充 RVC/RMVPE 精度冲突与正负无穷 F0 检查。连同检查点兼容性、音高边界、无声保护、索引、相位、拼接及中英控制台文案，共 96 项相关回归通过。
+- 真实 Rin 权重和索引验证：在 RTX 4070 Ti SUPER 上仅模拟 GTX 1660 SUPER 的型号及 SM 信息，45 秒与约 241 秒人声均完成真实 FP32 转换；长音频的 24,299 帧 F0 全部有限非负，40 kHz FLOAT 输出时长误差小于一个采样点，峰值分配显存 3099.86 MiB。本机原生 RTX FP16 的 45 秒转换及 CPU FP32 的 4 秒转换也通过。模拟型号不代表 GTX 实机验收，原报错的 Furina 模型和《断了的弦》音频未在本机复测。
+- 同步更新 README 精度说明、架构图与模型兼容性文档。本次为源码修复，版本号不变，尚未重新构建或替换已发布的 1.6.0 便携包；旧包不会随源码提交自动生效。
+
+### English
+
+- Fix GTX 16-series GPUs, including the GTX 1660 SUPER, being assigned FP16 solely because they share SM 7.5 with RTX 20-series cards. The shared RVC/RMVPE selector now checks both the selected CUDA device's model and compute capability. GTX 16-series FP16 weights are widened losslessly to FP32 under the pinned upstream device rule while execution stays on CUDA. The local compatibility route's RVC loader uses the same fix.
+- Preserve native FP16 on eligible Tensor Core CUDA devices and never narrow FP32, FP64 or mixed checkpoints. Do not apply NVIDIA SM eligibility to ROCm or enable FP16 from SM alone when device identity is unavailable. Resolve the correct device information for both explicit GPU indices and the current CUDA device.
+- Validate both RVC and RMVPE precision plans before network execution so neither can override an upstream FP32 device rule. Continue rejecting NaN, Inf and negative F0 while preserving genuine unvoiced zeros. Do not replace invalid frequencies, interpolate over failures or switch models, algorithms or devices after an error.
+- Add coverage for GTX 1630/1650/1660 variants, RTX/T4, non-CUDA backends, selected/current GPU indices, parity with the actual pinned upstream rule and lossless widening of every finite FP16 value. Extend tests for RVC/RMVPE precision conflicts and positive/negative infinite F0. All 96 related regressions pass, including checkpoint compatibility, pitch boundaries, unvoiced protection, indices, phase, splicing and Chinese/English console messages.
+- Validate real Rin weights and indices on an RTX 4070 Ti SUPER while emulating only GTX 1660 SUPER name/SM metadata: 45-second and approximately 241-second clips complete real FP32 inference. All 24,299 long-clip F0 frames are finite and nonnegative; the 40 kHz FLOAT output differs in duration by less than one sample, with 3099.86 MiB peak allocated CUDA memory. Native RTX FP16 completes the 45-second clip and CPU FP32 completes a 4-second clip. Metadata emulation is not GTX hardware acceptance; the reported Furina model and original input were unavailable locally.
+- Update the README precision policy, architecture diagram and compatibility documentation. This is a source fix with no version change; published 1.6.0 portable packages have not been rebuilt or replaced and are not updated by this commit.
+
 ## 1.6.0 同版本便携包修复 / portable rebuild — 2026-10-26
 
 ### 中文

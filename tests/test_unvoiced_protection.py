@@ -39,7 +39,8 @@ class UnvoicedProtectionTests(unittest.TestCase):
         coarse, after = pipeline.get_f0(np.zeros(800), 5, 12, 'rmvpe')
         np.testing.assert_array_equal(after, raw * 2)
         np.testing.assert_array_equal(coarse[raw == 0], np.ones(3))
-        for raw in (np.zeros(5, dtype=np.float32), np.array([np.nan, 1]), np.array([-1, 100])):
+        for raw in (np.zeros(5, dtype=np.float32), np.array([np.nan, 1]),
+                    np.array([np.inf, 100]), np.array([-np.inf, 100]), np.array([-1, 100])):
             if np.isfinite(raw).all() and np.all(raw >= 0):
                 _, silence = pipeline.get_f0(np.zeros(800), len(raw), 0, 'rmvpe')
                 np.testing.assert_array_equal(silence, raw)

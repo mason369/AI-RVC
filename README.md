@@ -444,7 +444,7 @@ flowchart TD
     B -->|官方整曲路线| U[隔离工作进程：绑定固定源码并失效旧模块路径缓存]
     U --> V[官方 UVR5 分离与去混响]
     V --> F
-    M[角色权重与索引配对] --> N[架构、原生精度与完整向量校验]
+    M[角色权重与索引配对] --> N[架构、权重精度、GPU 型号与完整向量校验]
     N --> F
     F --> G[按原时间线裁剪与拼接]
     G -->|song| H[相位保留后处理与混音]
@@ -670,7 +670,9 @@ RMVPE、FCPE 和 SwiftF0 的论文使用不同数据集、噪声条件和速度�
 
 角色包可同时保留同名配对的 `trained_*.index` 与 `added_*.index`；只有前者经 FAISS 确认为已训练但不含向量的 IVFFlat 模板时，才选择后者并继续完整校验。多个有效索引、损坏模板或无法配对的文件仍明确报错。
 
-默认分离保持 FP32；RVC 与 RMVPE 分别使用各自权重的原生 FP16、FP32 或 FP64 精度，并校验设备支持，固定 HuBERT 使用 FP32。不使用 INT8/INT4/FP8，也不把 FP64 音频经 Float32 或 PCM16 中转；输出、混音和混响保留相应浮点精度。模型要求的 16 kHz HuBERT 输入不等于把成品降为 16 kHz。
+默认分离保持 FP32；RVC 与 RMVPE 分别根据各自权重精度和实际 GPU 型号选择运行精度。GTX 16 系列（含 GTX 1660 SUPER）即使报告 SM 7.5，也按官方设备规则将 FP16 权重无损升为 FP32，避免误用半精度产生无效 F0；符合条件的 Tensor Core CUDA 设备继续使用原生 FP16。FP32、FP64 权重均不降精度，固定 HuBERT 使用 FP32。不使用 INT8/INT4/FP8，也不把 FP64 音频经 Float32 或 PCM16 中转；输出、混音和混响保留相应浮点精度。模型要求的 16 kHz HuBERT 输入不等于把成品降为 16 kHz。
+
+English: RVC and RMVPE select precision from both checkpoint storage and the actual GPU model. GTX 16-series GPUs, including the GTX 1660 SUPER, use FP32 under the upstream device rule even though they report SM 7.5; FP16 weights are widened without loss. Eligible Tensor Core CUDA GPUs retain native FP16. FP32/FP64 weights are never narrowed, HuBERT stays FP32, and invalid F0 values still stop conversion.
 
 2026-09-05 本机已完成 240.98 秒 MP3 的默认全流程验收，7 路浮点音频均有效，总耗时 436.87 秒（含分离、去混响、转换、后处理、复制与校验）。官方与本地 v1/v2、MCP、UVR5、Demucs、PM 和 FCPE 均有真实音频运行记录。离线 RVC 固定采用常规推理，不对每个不同长度片段重复捕获 CUDA Graph；不更换算法或降低模型精度。这些结果不是所有歌曲音质、所有设备或安装包的验收保证。
 

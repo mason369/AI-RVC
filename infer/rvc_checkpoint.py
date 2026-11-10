@@ -12,6 +12,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+import re
 from typing import Any
 
 import torch
@@ -193,12 +194,15 @@ def select_rvc_runtime_precision(
     device: str | torch.device,
     *,
     cuda_capability: tuple[int, int] | None = None,
+    cuda_device_name: str | None = None,
 ) -> RvcRuntimePrecisionPlan:
     """Select the fastest runtime dtype that never narrows uploaded weights.
 
     Official exported RVC checkpoints are commonly stored as FP16. Those can
-    remain FP16 on a native Tensor Core CUDA device. FP32 stays FP32 and FP64
-    stays FP64. CPU/unsupported devices losslessly widen FP16/BF16 to FP32;
+    remain FP16 on an eligible native Tensor Core CUDA device. GTX 16-series
+    cards share SM 7.5 with RTX cards but require FP32 in the pinned runtime.
+    FP32 stays FP32 and FP64 stays FP64. CPU/unsupported devices losslessly
+    widen FP16/BF16 to FP32;
     mixed storage uses FP64 when any FP64 tensor is present and otherwise FP32.
     There is deliberately no narrowing cast in this function.
     """
@@ -210,12 +214,23 @@ def select_rvc_runtime_precision(
         )
 
     resolved_device = torch.device(device)
-    if normalized == ("float16",) and resolved_device.type == "cuda":
+    half_unavailable_reason = "native FP16 execution is unavailable"
+    if (normalized == ("float16",) and resolved_device.type == "cuda"
+            and torch.version.hip is None):
         capability = cuda_capability
-        if capability is None and torch.cuda.is_available():
+        name = cuda_device_name
+        if (capability is None or name is None) and torch.cuda.is_available():
             index = resolved_device.index
-            capability = torch.cuda.get_device_capability(index)
-        if capability is not None and capability >= (7, 0):
+            if capability is None:
+                capability = torch.cuda.get_device_capability(index)
+            if name is None:
+                name = torch.cuda.get_device_name(index)
+        # Match the pinned RVC GPU rule. SM alone cannot distinguish GTX 16xx
+        # from RTX 20xx/T4; forcing half on GTX 16xx can produce NaN RMVPE F0.
+        is_16_series = capability == (7, 5) and bool(re.search(r"16\d{2}", name or ""))
+        if is_16_series:
+            half_unavailable_reason = "the GTX 16-series RVC/RMVPE GPU rule requires FP32"
+        if name and capability is not None and capability >= (7, 0) and not is_16_series:
             return RvcRuntimePrecisionPlan(
                 runtime_dtype="float16",
                 torch_dtype=torch.float16,
@@ -244,7 +259,7 @@ def select_rvc_runtime_precision(
     elif len(normalized) > 1:
         reason = "mixed floating checkpoint widened to its exact common FP32 representation"
     else:
-        reason = "FP16 checkpoint widened losslessly because native FP16 execution is unavailable"
+        reason = f"FP16 checkpoint widened losslessly because {half_unavailable_reason}"
     return RvcRuntimePrecisionPlan(
         runtime_dtype="float32",
         torch_dtype=torch.float32,

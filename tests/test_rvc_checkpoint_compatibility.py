@@ -180,6 +180,7 @@ class TelkNetRvcCheckpointCompatibilityTests(unittest.TestCase):
             checkpoint_weight_dtypes(checkpoint),
             "cuda:0",
             cuda_capability=(7, 5),
+            cuda_device_name="NVIDIA GeForce RTX 2080 Ti",
         )
         loaded, _, report = build_rvc_synthesizer(
             checkpoint,

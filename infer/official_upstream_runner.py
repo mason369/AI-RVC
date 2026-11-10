@@ -70,6 +70,12 @@ def configure_selected_device(config_module, selected_device):
     return config
 
 
+def validate_runtime_precision(config, *plans) -> None:
+    """Never let checkpoint storage override an upstream FP32 device rule."""
+    if not config.is_half and any(plan is not None and plan.is_half for plan in plans):
+        raise RuntimeError("官方 RVC 设备与精度配置不一致")
+
+
 def save_vc_result(result, output_path: Path) -> None:
     if not isinstance(result, (tuple, list)) or len(result) != 2:
         raise RuntimeError(f"官方 VC 返回协议无效: {type(result).__name__}")
@@ -131,6 +137,7 @@ def main() -> int:
     os.environ["RVC_CUDA_GRAPH"] = "0"
     import configs.config as config_module  # type: ignore
     config = configure_selected_device(config_module, selected_device)
+    validate_runtime_precision(config, precision, rmvpe_precision)
     from infer.vc.modules import VC  # type: ignore
     from infer.vc.pipeline import Pipeline  # type: ignore
     from infer.hubert import load_hubert_model  # type: ignore
