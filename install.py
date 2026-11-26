@@ -24,7 +24,7 @@ from lib.console_i18n import console_print as print
 configure_console_encoding()
 
 ROOT_DIR = Path(__file__).parent
-VENV_DIR = ROOT_DIR / "venv310"
+VENV_DIR = Path(os.environ.get("AI_RVC_VENV_DIR") or ROOT_DIR / "venv310").expanduser().resolve()
 
 PYTHON310_CANDIDATES = [
     r"C:\Users\Administrator\AppData\Local\Programs\Python\Python310\python.exe",
@@ -206,6 +206,12 @@ def create_venv():
         if r.returncode == 0 and "3.10" in r.stdout:
             print(f"  [OK] 虚拟环境已存在: {VENV_DIR}")
             return prepare_install_tools(venv_py)
+
+    other_python = VENV_DIR / ("bin/python" if os.name == "nt" else "Scripts/python.exe")
+    if os.path.lexists(other_python):
+        print(f"  [错误] 此目录属于另一操作系统的虚拟环境: {VENV_DIR}")
+        print("  请通过以下变量指定独立环境目录: AI_RVC_VENV_DIR")
+        return False
 
     py310 = find_python310()
     if not py310:
@@ -591,7 +597,7 @@ def install_all(venv_py, gpu=True, backend=None):
         if get_installed_version(venv_py, conflicting_runtime_dist):
             print(
                 f"\n  [错误] 检测到冲突的 {conflicting_runtime_dist}。"
-                f"当前安装模式只允许 {runtime_dist}，请删除 venv310 后重新安装。"
+                f"当前安装模式只允许 {runtime_dist}。请通过以下变量指定独立环境目录: AI_RVC_VENV_DIR"
             )
             return False
 

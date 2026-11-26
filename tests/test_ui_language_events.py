@@ -44,6 +44,8 @@ class LanguageEventTests(unittest.TestCase):
                             self.assertEqual(loaded[change.inputs[0]]['value'], label)
                             self.assertEqual(path.read_bytes(), saved, 'A page load must not rewrite settings')
                             self.assertEqual(loaded[pipeline]['choices'], list(app.get_vc_pipeline_mode_option_maps()[0].items()))
+                            for control in (source, pipeline, preset, change.inputs[11]):
+                                self.assertNotIn("value", loaded[control])
                             values = list(loaded.values())
                             self.assertTrue(any(update.get('headers') == [app.t(key, 'ui') for key in ('model_name', 'model_path', 'index_path')] for update in values))
                             self.assertTrue(any(isinstance(update.get('value'), str) and app.t('status_scope', 'models') in update['value'] for update in values))

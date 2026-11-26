@@ -8,10 +8,15 @@ from tools.package_runtime import validate_upstream_sources
 from tools.package_runtime import validate_cuda_runtime
 from tools.package_runtime import validate_runtime_layout
 from tools.verify_packaged_runtime import verify as verify_packaged_runtime
+from tools.bundle_ffmpeg import bundle_ffmpeg
 
 import torch
 
 validate_upstream_sources(Path(SPEC).resolve().parent)
+staged_ffmpeg = Path(SPECPATH) / 'tools' / 'ffmpeg'
+if (staged_ffmpeg / 'bin').is_dir():
+    staged_ffmpeg = staged_ffmpeg / 'bin'
+ffmpeg_bin = bundle_ffmpeg(Path(workpath) / 'ffmpeg-bin', staged_ffmpeg if staged_ffmpeg.is_dir() else None)
 
 # Retired assets may remain in an existing installation; never redistribute them.
 separator_datas = [
@@ -35,13 +40,14 @@ a = Analysis(
     pathex=[],
     binaries=bundle_binaries,
     datas=[
+        ('VERSION', '.'),
         ('ui/*.py', 'ui'),
         ('ui/multitrack/dist/player.html', 'ui/multitrack/dist'),
         ('infer', 'infer'),
         ('lib', 'lib'),
         ('models', 'models'),
         ('tools', 'tools'),
-        ('tools/ffmpeg', 'tools/ffmpeg'),
+        (str(ffmpeg_bin), 'tools/ffmpeg/bin'),
         ('rvc_mcp', 'rvc_mcp'),
         ('i18n', 'i18n'),
         ('configs', 'configs'),

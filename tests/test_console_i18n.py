@@ -81,6 +81,14 @@ class ConsoleI18nTests(unittest.TestCase):
         with self.assertRaises(ConsoleLocalizationError):
             localize_console_message("龘", "en_US")
 
+    def test_uploaded_names_survive_translation_without_becoming_catalog_entries(self):
+        from lib.console_i18n import console_literals, localize_console_message
+
+        with console_literals("梦的光点"):
+            message = localize_console_message("开始翻唱处理: 梦的光点.wav", "en_US")
+            self.assertIn("梦的光点.wav", message)
+            self.assertNotIn("开始翻唱处理", message)
+
     def test_console_print_switches_languages(self):
         from lib.console_i18n import console_print, set_console_language
 
@@ -192,9 +200,17 @@ class ConsoleI18nTests(unittest.TestCase):
         self.assertEqual(missing, [])
 
     def test_ui_localizes_pipeline_progress_and_error_details(self):
+        from ui import app
+
         source = (ROOT / "ui" / "app.py").read_text(encoding="utf-8")
         self.assertIn("desc=localize_console_message", source)
-        self.assertIn("localized_error = localize_console_message", source)
+        error = {"message": "cover_process_failed", "fields": {"error": "模型未找到: 星光"},
+                 "literals": ["星光"]}
+        for locale in app.SUPPORTED_LANGUAGES:
+            with patch.object(app, "i18n", app.load_i18n(locale)), patch.dict(app.config, language=locale):
+                text = app.cover_status_text(error)
+                self.assertIn("星光", text)
+                self.assertEqual("模型未找到" in text, locale == "zh_CN")
 
 
 if __name__ == "__main__":

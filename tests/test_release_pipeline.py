@@ -17,7 +17,8 @@ class ReleasePipelineTests(unittest.TestCase):
                         status="in_progress", conclusion=None)
         self.names = [f"AI-RVC-{system}-{variant}" for system in ("Windows", "Linux") for variant in ("CPU", "GPU")]
         job_names = [name.replace("AI-RVC-", "packages / Build ") for name in self.names]
-        job_names += [f"contracts / {system} / Python 3.10" for system in ("windows-latest", "ubuntu-latest", "macos-14")]
+        job_names += [f"contracts / {system} / Python 3.10" for system in ("windows-latest", "ubuntu-latest", "macos-15")]
+        job_names += ["browser / Verify Windows portable browser"]
         job_names += ["images / Docker cpu", "images / Docker cuda"]
         self.jobs = [dict(name=name, status="completed", conclusion="success") for name in job_names]
         self.assets = dict(total_count=4, artifacts=[dict(name=name, expired=False) for name in self.names])

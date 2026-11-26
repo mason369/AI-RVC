@@ -17,6 +17,20 @@ _LOCK = threading.Lock()
 _LAST_REQUEST = 0.0
 
 
+def _publish_download(partial: Path, destination: Path, metadata: Path) -> Path:
+    # Windows readers can briefly deny delete/rename sharing after a file closes.
+    for delay in (0.05, 0.1, 0.2, 0.4, 0.8, None):
+        try:
+            os.replace(partial, destination)
+            break
+        except PermissionError as exc:
+            if delay is None or getattr(exc, 'winerror', None) not in {32, 33}:
+                raise
+            time.sleep(delay)
+    metadata.unlink(missing_ok=True)
+    return destination
+
+
 def download_http(url: str, destination: Path, description: str | None = None,
                   expected_sha256: str | None = None) -> Path:
     """Keep incomplete bytes in .part; existing published files survive failures."""
@@ -35,6 +49,13 @@ def download_http(url: str, destination: Path, description: str | None = None,
         validator = previous.get('etag')
         if previous.get('url_hash') != identity or not (expected_sha256 or validator):
             offset = 0
+        recorded_size = previous.get('total')
+        if offset and expected_sha256 and recorded_size in (offset, None):
+            from tools.model_assets import file_sha256
+            if file_sha256(partial) == expected_sha256:
+                return _publish_download(partial, destination, metadata)
+            if recorded_size == offset:
+                offset = 0
         headers = {'Accept-Encoding': 'identity'}
         if offset:
             headers['Range'] = f'bytes={offset}-'
@@ -71,7 +92,7 @@ def download_http(url: str, destination: Path, description: str | None = None,
                 etag = response.headers.get('ETag')
                 if etag and etag.startswith('W/'):
                     etag = None
-                metadata.write_text(json.dumps({'url_hash': identity, 'etag': etag}), encoding='utf-8')
+                metadata.write_text(json.dumps({'url_hash': identity, 'etag': etag, 'total': total}), encoding='utf-8')
                 with partial.open('ab' if offset else 'wb') as stream, tqdm(total=total, initial=offset, unit='B', unit_scale=True, desc=description or destination.name) as progress:
                     for chunk in response.iter_content(chunk_size=1024 * 1024):
                         if chunk:
@@ -83,8 +104,6 @@ def download_http(url: str, destination: Path, description: str | None = None,
                 if expected_sha256:
                     from tools.model_assets import verify_asset
                     verify_asset(partial, expected_sha256)
-                os.replace(partial, destination)
-                metadata.unlink()
-                return destination
+                return _publish_download(partial, destination, metadata)
         finally:
             _LAST_REQUEST = time.monotonic()

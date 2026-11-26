@@ -1,82 +1,24 @@
-# TelkNet AI 翻唱同源更新
+# TelkNet 同源音频更新记录
 
-本轮将 TelkNet 的音频更新移植到 AI-RVC，运行时不连接 TelkNet。AI-RVC 基线为 `efb047e4d3d74bf1bfb6bd9455a467538b2b5a1a`，在原 `master` 工作区修改。
+AI-RVC 1.6.0 移植了 TelkNet 项目的核心翻唱与音频处理改进，同时保持 AI-RVC 完全独立运行，保留固定版本的官方 RVC VC（`81eed5e8f68b6bed1789f682fe78cdd324495afc`）与 UVR5（`7ef19867780cf703841ebafb565a4e47d1ea86ff`）运行时。
 
-来源为私有仓库 `mason369/telknet` 的 `dev` 提交 `a1116773b55ededc81ab37d088eb81f7e1176e7f`（2026-10-23），路径 `external/ai-rvc`；以 Git 对象提取的该提交为准。项目原有 VC 固定提交 `81eed5e8f68b6bed1789f682fe78cdd324495afc` 和 UVR5 固定提交 `7ef19867780cf703841ebafb565a4e47d1ea86ff` 保持不变。
+## 核心同步项与本地适配
 
-## 同步范围与适配
-
-| 来源 | 本项目位置与处理 |
+| 模块 | 同步内容与本地适配 |
 |---|---|
-| `infer/audio_splice.py`、`rmvpe_boundaries.py` | 同步原算法，增加本项目新版官方入口的绝对坐标拼接适配 `lib/rvc_chunking.py`；短尾段限制上下文 |
-| `infer/rvc_checkpoint.py`、`infer/lib/applio_algorithm` | 同步实际架构、原生精度和全层检查；保留第三方许可证及来源说明 |
-| `infer/lib/rmvpe.py`、`infer_pack/models.py`、`attentions.py` | 同步 RMVPE 原生精度、向量解码与连续 F0 激励精度；本地兼容入口共用边界校验 |
-| `infer/cover_pipeline.py` 的参考后处理 | 移植参考幅度/目标相位、有界缓存、候选选择和单次间隙抑制，保留本项目固定新版官方推理入口 |
-| 纯人声输入行为 | 适配为 `CoverPipeline.process(input_mode="vocals")`；Web 两语言和播放器只展示实际两轨；原 MCP `convert_voice` 共用新版推理核心 |
-| `infer/separator.py` | 同步固定配置校验、严格输出识别、静音主唱与短输入精度；保留本项目原有设备合同 |
-| `lib/audio.py`、`lib/mixer.py`、`lib/vocoder_fix.py` | 保留模型 FLOAT64 输出、混音与 JUCE 混响计算；保留原参数/文件错误校验 |
-| 本地角色资产兼容修正 | 标准 `trained_` / `added_` 双索引包仅在前者实际为零向量训练模板时选择后者；保留原文件，继续严格验证权重、维度和完整向量 |
+| `infer/audio_splice.py`、`infer/rmvpe_boundaries.py`、`lib/rvc_chunking.py` | 同步绝对采样坐标裁剪与互补交叉淡化拼接算法，支持长歌曲与极短尾段无移位拼接 |
+| `infer/rvc_checkpoint.py`、`infer/lib/applio_algorithm/` | 统一安全检查点加载、完整层校验与架构自动识别，支持标准 v1/v2、无 F0、多说话人及 Applio HiFi-GAN / MRF / RefineGAN |
+| `infer/lib/rmvpe.py`、`infer/lib/infer_pack/` | 向量化 RMVPE 峰值解码、波形核验提前转音与短缺口，修复连续 F0 与激励相位低精度边带 |
+| `infer/cover_pipeline.py` | 移植参考幅度 + 目标相位后处理、有界参考缓存、候选质量选择与单次间隙抑制 |
+| 纯人声输入模式 | 新增 `CoverPipeline.process(input_mode="vocals")`，跳过分离与混音，直接导出输入人声与转换人声两轨 |
+| `infer/separator.py` | 统一固定配置校验、唯一输出识别、静音主唱保留与短音频浮点精度补长裁切 |
+| `lib/audio.py`、`lib/mixer.py`、`lib/vocoder_fix.py` | 全程保留 FLOAT32 / FLOAT64 浮点精度输出、混音与双精度 JUCE 混响 |
+| 双索引角色包兼容 | 支持 `trained_*.index` + `added_*.index` 配对压缩包，验证空模板后自动选用推理索引 |
 
-未整目录覆盖 TelkNet 的旧官方入口、Web 服务适配和部署代码。AI-RVC 原有完整向量精确检索、固定资源哈希、跨平台设备选择继续有效。两项目固定 HuBERT/官方封装版本不同，本次一致性指同步算法与行为合同，不承诺随机推理结果逐字节相同。
+## 核心验证摘要
 
-## 输入与输出
+在 Windows（RTX 4070 Ti SUPER / PyTorch 2.11.0 / audio-separator 0.47.0 / Gradio 5.49.1）与 Linux 容器环境下完成以下实测验证：
 
-`song` 是默认值，沿用整曲分离、去混响、转换、后处理和混音。`vocals` 直接解码输入进入转换，返回 `vocals`、`converted_vocals` 与真实 `all_files_dir`。不会把人声路径伪装成成品或伴奏。模型音高、索引、说话人、保护、响度参数继续校验；歌曲专属设置在纯人声界面隐藏且保留原值。
-
-MCP 的 `convert_voice` 原本就是纯人声音色转换工具，本轮不扩展它的 API；它使用同一安全权重加载、RMVPE、精度与拼接实现。
-
-## 验证记录
-
-本机 Windows、RTX 4070 Ti SUPER 16 GB、PyTorch 2.11.0+cu126，独立 `venv310`；audio-separator 0.47.0、Gradio 5.49.1。模型使用项目固定下载器和 SHA-256 校验，歌曲来自用户本地音频。
-
-| 验证 | 实际结果 |
-|---|---|
-| `venv310/Scripts/python.exe -m unittest discover -s tests` | 首轮 396 项通过；花丸双索引修复后完整重跑 399 项通过（46.943 秒）。包含参数化子用例：架构完整性、原生精度、F0 边带、RMVPE 转音、参考相位、短尾拼接、分离完整性、纯人声参数与两语言合同 |
-| `npm ci --no-audit --no-fund`、`npm run build` | 多轨播放器依赖安装和构建通过，生成文件随本次更新 |
-| `python -m pip check`、`git diff --check` | 无依赖冲突，无差异格式错误 |
-| 默认整曲 / CUDA / Rin / 索引 0.5 / RMVPE | 本地 249.67 秒歌曲完成全部六模型链及混音；340.13 秒；七类输出均有限、非零、FLOAT WAV。人声与伴奏 44.1 kHz、转换人声原生 40 kHz；跨采样率时长差小于 0.1 ms |
-| Far far away / CUDA / 国木田花丸 Zurakichi v2 | 原曲、权重和索引 SHA-256 与 TelkNet 既有任务记录完全匹配；音调 0、索引 0.5、RMVPE、保护 0.33、响度包络 0、主唱与伴奏音量 1。重新执行完整六模型链，耗时 325.89 秒；240.9836 秒全曲七轨均有限、非零、无满幅采样。混音 44.1 kHz 双声道 FLOAT，单独转换人声原生 40 kHz 单声道 FLOAT；跨采样率时间差小于 0.03 ms |
-| 官方整曲 / CUDA / Rin / 索引 0.5 / RMVPE | 20 秒实际歌曲片段完成 UVR5、去混响、VC、混音；23.21 秒；四轨 FLOAT。UVR5 自身 STFT 边缘输出为 19.9946 秒，VC 保持该分离结果时间线 |
-| 本地兼容入口 / 纯人声 / CUDA | 45 秒真实干声经 fairseq HuBERT、本地分块 RVC 完成，14.48 秒；两轨有效。原有 HuBERT 特征边缘使输出为 44.98 秒，拼接不再累计移位；后处理结果为 DOUBLE |
-| MCP `convert_voice` / CUDA | 5 秒真实干声完成同一固定官方入口；12.06 秒；200000 帧、40 kHz、FLOAT |
-| 浏览器纯人声 / CUDA | 真实上传 45 秒干声并点击转换，生成且仅显示输入/转换两轨；转换结果 1800000 帧、40 kHz、FLOAT，输入 1984500 帧、44.1 kHz |
-| 浏览器播放与下载 | 多轨播放实际走时至 1.4 秒；键盘跳转到 45 秒、暂停、独奏、复位正常；真实点击下载所得 WAV 与工作区输出 SHA-256 相同 |
-| `zh_CN` / `en_US` | 2/2 支持语言通过解析、键与占位符检查；真实切换后纯人声模式、已生成音轨及播放位置保留，播放器轨名与说明随语言更新 |
-| 390 px 窄屏 | 英文页面宽度 390/390，播放器视口/内容宽度 334/334，无横向溢出；桌面中文、英文窄屏截图已目视核对；浏览器错误控制台 0 条 |
-
-实测记录保存在本机 `C:\Temp\telknet-ai-rvc-sync-20261023`：`regression-final.log`、`real-current.json`、`real-variants.json`、`ui-final2.log`、`player-zh.png`、`player-en-mobile.png`。界面生成的两轨位于项目 `outputs/`；测试歌曲与模型未加入 Git。
-
-后续《Far far away》试听位于 `outputs/farfar-hanamaru-20261023/`，`verification.json` 记录全部参数、源音频/模型/索引与输出哈希、采样数和信号检查；完整混音与单独转换人声直接复制原 FLOAT 结果，交付哈希一致。对应日志为 `farfar-conversion.log`、`farfar-character-tests.log`（28 项资产相关回归）及 `regression-farfar-final.log`（399 项完整回归）。首次实际下载发现同一压缩包中的空训练索引被误判为歧义，修正后重新通过正式下载器安装及整曲转换；没有删除训练模板或关闭索引绕过检查。
-
-### 后续四首完整试听（2026-10-23）
-
-用户指定的四份原曲均来自 `D:\Download`。沿用上次《Far far away》的花丸权重、索引与全部参数，逐首重新执行完整分离、去混响、RVC、后处理及混音。每首独立进程运行，使用本机 CUDA；批次于 17:28:41 开始、17:51:27 完成（UTC+8）。
-
-| 原曲 | 完整成品时长 | 处理耗时 |
-|---|---:|---:|
-| 王心凌 - 梦的光点 | 231.853379 秒 | 321.68 秒 |
-| 高槻かなこ - あこがれランララン | 249.173379 秒 | 340.19 秒 |
-| Aqours - SILENT PAIN | 249.672132 秒 | 335.55 秒 |
-| ヨルシカ - だから僕は音楽を辞めた | 242.973628 秒 | 330.63 秒 |
-
-28 条实际输出音轨均完成全量解码，全部有限、非零且无满幅采样；与原曲时长的最大差为 0.046 ms，属于采样率转换的整帧取整。四首混音均为 44.1 kHz 双声道 FLOAT WAV，单独转换人声保留模型原生 40 kHz。8 份交付 WAV 与对应处理产物 SHA-256 一致，原曲处理前后的 SHA-256 一致；四份收据中的模型、索引及参数与上次试听记录完全匹配。
-
-结果保存在 `outputs/hanamaru-four-songs-20261023/`，`batch.json` 汇总批次状态，各歌曲子目录含完整混音、单独转换人声、七类音轨及 `verification.json`。过程日志保存在原实测目录的 `four-songs-*.log`，执行脚本为 `four_song_listening.py`。
-
-长歌曲首次测试发现极短尾段超过拼接上下文，已修复并加入极短首尾段回归，随后整曲重新从分离到混音完整通过。单元测试也检出了纯人声入口的导入遗漏，修复后完成上述浏览器实测。记录保留真实失败与重跑结果。
-
-准备 1.6.0 提交时再次在最终源码执行全部 399 项回归，51.872 秒通过；重新构建播放器，`pip check` 与 495 个固定 VC/UVR5 源码文件校验均通过。日志为同一实测目录的 `release-1.6.0-regression.log`，后续成品验收单独记录于[发布准备](发布准备.md)。
-
-首轮云端构建随后发现干净目录中的资源检查仍要求旧派生配置；本机缓存掩盖了这个问题。修正后持久清单仅保留六组权重与原始 YAML，3 个派生配置继续按会话生成。真实固定模型在新目录通过全部资源哈希及下载器验证，删除会话配置后仍能检查就绪；新增回归也验证缺少原始 YAML 必须失败。最终全量 400 项通过（58.951 秒），记录为 `clean-assets-verification.json` 和 `release-1.6.0-clean-assets-regression.log`。没有修改模型、推理参数或音频算法。
-
-后续发布准备补齐 Docker 的 `libatomic1` 并完成 `eff8c2e` 两镜像三路线真实转换、四包归档校验和 Windows 默认路线实跑。Windows 冻结官方路线发现旧 `inspect` 模块路径缓存错误；修复替换包时的缓存失效，新增普通包与命名空间包的真实缓存回归，冻结 CPU/CUDA 诊断副本的官方音频验证通过。新候选需重新构建，不能使用诊断副本作为发行产物；逐包结果与本机 WSL 阻塞边界见[平台验收](平台适配与验收.md)和[发布准备](发布准备.md)。
-
-修正后的应用候选固定为 `5bdcb55c9fa516d0a818e898f8943b7dd63db1ba`，四种便携包及两种 Docker CI 构建全部通过，各运行 414 项回归。本机重新构建的 Linux CPU/CUDA 镜像也各通过 414 项，断网以 UID 1000 完成默认六模型、官方 UVR5、纯人声三路线，共校验 26 条 Float WAV。四包原始分卷和全部文件已校验；Windows CPU/CUDA、独立 WSL1 Linux CPU 三个原样冻结成品的三路线共 39 条 Float WAV、下载摘要与 Range 均通过。Windows CUDA 中英文 2/2 及 Linux CPU 的真实浏览器转换、播放、下载也已通过。Linux CPU 默认路线推理后的客户端路径映射错误已修正，同一批真实结果复验通过，未保存的耗时不补填。Windows 未重启；WSL2 冷启动仍报资源错误，最后一次资源分配诊断无效并已撤销。Linux GPU 冻结成品的 CUDA 实跑仍未完成，故保留发布草稿；详细证据和边界见平台验收文档。
-
-English: Rebuilt application candidate `5bdcb55` passed all four portable builds and both Docker CI jobs, each with 414 regressions. The two rebuilt local Linux images passed the same full regression count and all three offline UID-1000 audio routes, yielding 26 verified Float WAV outputs. All four original archives and complete file inventories passed. The pristine Windows CPU/CUDA and WSL1 Linux CPU apps completed all three routes, producing 39 more valid Float WAV outputs with verified downloads and Range requests. Actual Windows CUDA browser interaction covered both supported locales; Linux CPU browser conversion, playback and download also passed. A Linux CPU client path-mapping error after default inference was corrected and the same actual outputs passed revalidation; missing timing was not invented. Windows was not rebooted. WSL2 cold-start resource failures remain, and the final ineffective resource-allocation diagnostic was reverted. Linux GPU frozen CUDA execution is still pending, so the release remains a draft. See the platform-acceptance document for detailed evidence and limits.
-
-2026-10-24 后续发行改为从 `master` 一次运行 `Release` Actions，重新构建四包和两镜像，完成回归与摘要检查后创建准确标签并发版；不追加本机或其他 GPU 主机测试。上文候选实测和 WSL2 故障记录继续保留，不改写为新版已实跑。发布页只附安装包与校验文件，中英说明简短展示实际变化，详细报告不随 Release 上传。
-
-English: The subsequent October 24 release uses one `Release` workflow from `master` to rebuild four packages and both images, check regressions and digests, and publish the exact tag. No additional local or remote GPU tests are performed. Earlier candidate evidence and WSL2 failures remain unchanged; they are not presented as tests of the rebuilt release. Only packages and checksums are attached, with brief bilingual notes and no report attachments.
-
-Applio/FP64 等额外架构有完整权重与数值回归，不代表全部公开角色都完成试听。未实测的其他硬件、云端部署及尚未完成的候选运行项目不计为通过。技术验收不等同于所有歌曲主观听感保证。
+- **长曲全流程验证**：使用同一花丸模型与默认参数连续完成 5 首 231–250 秒完整歌曲（含《Far far away》《梦的光点》《あこがれランララン》《SILENT PAIN》《だから僕は音楽を辞めた》）及 Rin 整曲测试；全部七类浮点 WAV 完整解码、无满幅削波，跨采样率时长误差低于 0.05 ms。
+- **多路由覆盖**：默认整曲路线、官方 UVR5 路线、本地兼容入口、纯人声转换与 MCP `convert_voice` 均通过真实音频验证。
+- **精度与回归覆盖**：补齐 GTX 16 系列显卡 FP32 规则、长音频分块拼接、RMVPE 边界、清辅音保护、同曲阶段复用与批量队列等全套回归测试。

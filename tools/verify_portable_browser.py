@@ -85,17 +85,18 @@ BROWSER_CODE = r'''async (page) => {
   async function inspect(code, phase = '') {
     const catalog = CATALOGS[code];
     await page.getByRole('button', {name: catalog.settings.save_language, exact: true}).waitFor({timeout: 60000});
-    await page.waitForFunction(text => Array.from(document.querySelectorAll('textarea')).some(el => el.value.includes(text)), catalog.models.status_scope);
-    const snapshot = await page.locator('body').ariaSnapshot();
-    if (!snapshot.includes('listbox') || !snapshot.includes(catalog.settings.save_language))
-      throw new Error('Language controls are missing from the current rendered snapshot');
     for (const label of Object.values(catalog.tabs)) {
       if (!await page.getByRole('tab', {name: label, exact: true}).isVisible())
         throw new Error('Missing visible localized tab: ' + label);
     }
+    await page.getByRole('tab', {name: catalog.tabs.models, exact: true}).click();
+    await page.waitForFunction(text => Array.from(document.querySelectorAll('textarea')).some(el => el.value.includes(text)), catalog.models.status_scope);
+    const snapshot = await page.locator('body').ariaSnapshot();
+    if (!snapshot.includes('listbox') || !snapshot.includes(catalog.settings.save_language))
+      throw new Error('Language controls are missing from the current rendered snapshot');
     for (const key of ['model_name', 'model_path', 'index_path']) {
-      if (!snapshot.includes('columnheader "' + catalog.ui[key] + '"'))
-        throw new Error('Model table did not restore the current language: ' + key);
+      await page.getByRole('columnheader').getByText(catalog.ui[key], {exact: true})
+        .first().waitFor({state: 'visible'});
     }
     await page.screenshot({path: OUTPUT + '/' + code + phase + '-models.png', fullPage: true});
     await page.getByRole('tab', {name: catalog.tabs.cover, exact: true}).click();
@@ -103,11 +104,24 @@ BROWSER_CODE = r'''async (page) => {
     if (!coverSnapshot.includes(catalog.tabs.cover)) throw new Error('Cover tab did not render');
     const frame = page.frameLocator('iframe#rvc-multitrack-frame');
     await frame.getByText(catalog.multitrack.empty, {exact: true}).waitFor({timeout: 30000});
+    const batch = page.getByRole('tab', {name: catalog.cover.batch, exact: true});
+    await batch.click();
+    await page.getByRole('button', {name: catalog.cover.batch_start, exact: true}).waitFor();
+    await page.getByRole('tab', {name: catalog.cover.single_mode, exact: true}).click();
+    const theme = await page.locator('html').getAttribute('data-rvc-theme');
+    if (!['light', 'dark'].includes(theme)) throw new Error('The workspace theme did not initialize');
+    const switchedTheme = theme === 'light' ? 'dark' : 'light';
+    async function setTheme(value) {
+      await page.getByRole('button', {name: catalog.settings['theme_switch_to_' + value], exact: true}).click();
+      await page.waitForFunction(value => document.documentElement.dataset.rvcTheme === value, value);
+      await frame.locator('html[data-theme="' + value + '"]').waitFor();
+    }
+    await setTheme(switchedTheme);
+    await setTheme(theme);
     const playerText = await frame.locator('body').innerText();
     if (!playerText.trim()) throw new Error('The bundled player rendered an empty document');
     await page.screenshot({path: OUTPUT + '/' + code + phase + '-cover.png', fullPage: true});
     observations.push({language: code, phase, snapshot, coverSnapshot, playerText});
-    await page.getByRole('tab', {name: catalog.tabs.models, exact: true}).click();
   }
   await inspect('zh_CN');
   // Read each changed UI before interacting; option references are never hard-coded.

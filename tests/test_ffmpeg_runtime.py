@@ -107,10 +107,34 @@ class FfmpegRuntimeTests(unittest.TestCase):
 
     def test_workflow_resolves_real_chocolatey_ffprobe_and_validates_bundle(self):
         workflow = (REPO_ROOT / ".github" / "workflows" / "build-executables.yml").read_text(encoding="utf-8")
+        spec = (REPO_ROOT / "AI-RVC.spec").read_text(encoding="utf-8")
+        self.assertIn("python -m tools.bundle_ffmpeg tools/ffmpeg/bin", workflow)
+        self.assertIn("from tools.bundle_ffmpeg import bundle_ffmpeg", spec)
+        from tools import bundle_ffmpeg
 
-        self.assertIn("ChocolateyInstall", workflow)
-        self.assertIn("ffprobe_dest", workflow)
-        self.assertIn("subprocess.run([str(ffprobe_dest), \"-version\"]", workflow)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            suffix = ".exe" if os.name == "nt" else ""
+            ffmpeg = root / ("encoder" + suffix)
+            ffmpeg.write_bytes(b"encoder")
+            probe = root / "bin" / ("ffprobe" + suffix)
+            probe.parent.mkdir()
+            probe.write_bytes(b"shim" if os.name == "nt" else b"probe")
+            if os.name == "nt":
+                real = root / "lib/ffmpeg/tools/ffmpeg/bin/ffprobe.exe"
+                real.parent.mkdir(parents=True)
+                real.write_bytes(b"probe")
+            imageio = mock.Mock()
+            imageio.get_ffmpeg_exe.return_value = str(ffmpeg)
+            with mock.patch.dict(os.environ, ChocolateyInstall=str(root)), \
+                    mock.patch.dict(sys.modules, imageio_ffmpeg=imageio), \
+                    mock.patch.object(bundle_ffmpeg.shutil, "which", return_value=str(probe)), \
+                    mock.patch.object(bundle_ffmpeg, "_check_executable_runs") as check:
+                dest = bundle_ffmpeg.bundle_ffmpeg(root / "bundle")
+                self.assertEqual((dest / ("ffprobe" + suffix)).read_bytes(), b"probe")
+                self.assertEqual((dest / ("ffmpeg" + suffix)).read_bytes(), b"encoder")
+                self.assertEqual(check.call_args_list, [mock.call(dest / (tool + suffix), tool)
+                                                        for tool in ("ffmpeg", "ffprobe")])
 
     def test_release_upload_uses_timeout_and_retry(self):
         workflow = (REPO_ROOT / ".github" / "workflows" / "build-executables.yml").read_text(encoding="utf-8")

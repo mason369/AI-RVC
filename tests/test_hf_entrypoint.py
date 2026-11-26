@@ -20,8 +20,8 @@ class HuggingFaceEntrypointTests(unittest.TestCase):
 
         self.assertEqual(len(launch_calls), 1)
         self.assertEqual(
-            {keyword.arg for keyword in launch_calls[0].keywords},
-            {"host", "port", "share"},
+            {keyword.arg: ast.literal_eval(keyword.value) for keyword in launch_calls[0].keywords},
+            {"host": "0.0.0.0", "port": 7860, "share": False, "open_browser": False},
         )
 
     def test_entrypoint_prepares_required_models_before_launch(self):

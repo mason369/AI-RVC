@@ -38,8 +38,14 @@ jobs:
     with:
       source_sha: ${{ github.sha }}
 
+  browser:
+    needs: packages
+    uses: ./.github/workflows/verify-portable-browser.yml
+    with:
+      source_sha: ${{ github.sha }}
+
   stage:
-    needs: [contracts, packages]
+    needs: [contracts, packages, browser]
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     outputs:

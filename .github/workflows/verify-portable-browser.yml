@@ -1,6 +1,12 @@
 name: Verify portable browser
 
 on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Exact source commit from the calling Release workflow
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       build_run_id:
@@ -18,11 +24,15 @@ env:
 
 jobs:
   browser:
+    name: Verify Windows portable browser
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
       - name: Validate original build provenance
+        if: inputs.source_sha == ''
         env:
           GH_TOKEN: ${{ github.token }}
           BUILD_RUN_ID: ${{ inputs.build_run_id }}
@@ -37,11 +47,17 @@ jobs:
           output.mkdir()
           (output / 'source.json').write_text(json.dumps(run, indent=2), encoding='utf-8')
           PY
+      - name: Validate checkout for the calling release
+        if: inputs.source_sha != ''
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
       - name: Download original Windows CPU package
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         timeout-minutes: 25
         with:
-          run-id: ${{ inputs.build_run_id }}
+          run-id: ${{ inputs.build_run_id || github.run_id }}
           github-token: ${{ github.token }}
           name: AI-RVC-Windows-CPU
           path: ${{ runner.temp }}/original-windows-cpu

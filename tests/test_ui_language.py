@@ -389,6 +389,8 @@ class UiLanguageTests(unittest.TestCase):
                 "backing_mix",
                 "input_mode",
                 "progress",
+                "reuse_state",
+                "run_directory",
             ],
         )
         zh_cover = ui_app.load_i18n("zh_CN")["cover"]

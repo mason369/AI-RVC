@@ -6,7 +6,7 @@ import os
 import gc
 import re
 import json
-import uuid
+import tempfile
 import shutil
 import torch
 import numpy as np
@@ -35,6 +35,7 @@ from infer.official_adapter import (
     convert_vocals_official_upstream,
 )
 from infer.advanced_dereverb import advanced_dereverb
+from infer.cover_reuse import CoverReuse, asset_version, separator_versions
 from infer.quality_policy import (
     compute_active_source_replace,
     compute_source_cleanup_budget,
@@ -260,7 +261,8 @@ class CoverPipeline:
     def _get_session_dir(self, session_id: str = None) -> Path:
         """获取会话临时目录"""
         if session_id is None:
-            session_id = str(uuid.uuid4())[:8]
+            self.temp_dir.mkdir(parents=True, exist_ok=True)
+            return Path(tempfile.mkdtemp(dir=self.temp_dir, prefix=""))
         session_dir = self.temp_dir / session_id
         session_dir.mkdir(parents=True, exist_ok=True)
         return session_dir
@@ -4390,6 +4392,7 @@ class CoverPipeline:
         output_name_suffixes: Optional[Dict[str, str]] = None,
         progress_callback: Optional[Callable[[str, int, int], None]] = None,
         input_mode: str = "song",
+        reuse_state: Optional[dict] = None,
     ) -> Dict[str, str]:
         """
         执行完整的翻唱流程
@@ -4502,6 +4505,7 @@ class CoverPipeline:
         session_dir = self._get_session_dir()
 
         # 记录输入信息
+        reuse = CoverReuse(reuse_state, input_audio, session_dir)
         input_path = Path(input_audio)
         input_size = input_path.stat().st_size if input_path.exists() else 0
         input_duration = _get_audio_duration(input_audio)
@@ -4574,14 +4578,28 @@ class CoverPipeline:
                 effective_separator == "roformer"
                 and _is_hybrid_leap_instrumental_model_spec(roformer_model)
             )
+            def primary_key():
+                if effective_separator == "uvr5":
+                    settings = (uvr5_model, uvr5_agg, uvr5_format)
+                elif effective_separator == "roformer":
+                    settings = (roformer_model,)
+                else:
+                    settings = (demucs_model, demucs_shifts, demucs_overlap, demucs_split)
+                return (self.device, effective_separator, settings,
+                        separator_versions(effective_separator, settings[0]))
+
+            primary = reuse.restore("primary", primary_key)
             report_progress(
+                "复用人声和伴奏分轨" if primary else
                 "正在分离人声和纯伴奏..."
                 if default_pure_accompaniment_route
                 else "正在分离人声和伴奏...",
                 1,
             )
 
-            if effective_official_mode:
+            if primary:
+                vocals_path, accompaniment_path = primary
+            elif effective_official_mode:
                 log.model("官方模式：使用内置官方UVR5进行人声分离")
                 uvr_temp = session_dir / "official_uvr5"
                 log.detail(f"官方UVR5临时目录: {uvr_temp}")
@@ -4638,8 +4656,10 @@ class CoverPipeline:
                     str(session_dir)
                 )
                 log.success("Demucs分离完成")
-            self._release_primary_separator()
-            log.detail("已清理设备缓存")
+            if not primary:
+                self._release_primary_separator()
+                reuse.save("primary", primary_key, (vocals_path, accompaniment_path))
+                log.detail("已清理设备缓存")
 
             # ===== 步骤 1.5: Karaoke 分离（默认：主唱 / 带和声伴奏）=====
             original_vocals_path = vocals_path
@@ -4648,17 +4668,25 @@ class CoverPipeline:
             accompaniment_with_harmony_path = None
 
             if effective_karaoke_separation:
-                report_progress("正在从原曲分离主唱和带和声伴奏...", step_karaoke)
-                lead_vocals_path, accompaniment_with_harmony_path = self._separate_karaoke(
-                    source_audio_path=input_audio,
-                    session_dir=session_dir,
-                    karaoke_model=karaoke_model,
-                )
-                backing_vocals_path = self._derive_backing_vocals(
-                    vocals_with_harmony_path=original_vocals_path,
-                    lead_vocals_path=lead_vocals_path,
-                    output_path=str(session_dir / "backing_vocals.wav"),
-                )
+                def karaoke_key():
+                    return (reuse.origin("primary"), karaoke_model,
+                            separator_versions("roformer", karaoke_model))
+
+                karaoke = reuse.restore("karaoke", karaoke_key)
+                if karaoke:
+                    report_progress("复用主唱与和声分轨", step_karaoke)
+                    lead_vocals_path, accompaniment_with_harmony_path, backing_vocals_path = karaoke
+                else:
+                    report_progress("正在从原曲分离主唱和带和声伴奏...", step_karaoke)
+                    lead_vocals_path, accompaniment_with_harmony_path = self._separate_karaoke(
+                        source_audio_path=input_audio, session_dir=session_dir, karaoke_model=karaoke_model,
+                    )
+                    backing_vocals_path = self._derive_backing_vocals(
+                        vocals_with_harmony_path=original_vocals_path, lead_vocals_path=lead_vocals_path,
+                        output_path=str(session_dir / "backing_vocals.wav"),
+                    )
+                    reuse.save("karaoke", karaoke_key,
+                               (lead_vocals_path, accompaniment_with_harmony_path, backing_vocals_path))
                 lead_size = Path(lead_vocals_path).stat().st_size if Path(lead_vocals_path).exists() else 0
                 backing_size = Path(backing_vocals_path).stat().st_size if Path(backing_vocals_path).exists() else 0
                 log.audio(f"主唱文件: {Path(lead_vocals_path).name} ({_format_size(lead_size)})")
@@ -4709,18 +4737,39 @@ class CoverPipeline:
             # 官方模式也必须经过去混响预处理，确保输入RVC的是纯净干声
             effective_preprocess_mode = normalized_vc_preprocess_mode
 
-            vc_input_path = vocals_path
-            vc_preprocessed = False
-            prepared_path = self._prepare_vocals_for_vc(
-                vocals_path,
-                session_dir,
-                preprocess_mode=effective_preprocess_mode,
-            )
-            vc_input_path = prepared_path
+            def prepared_key():
+                parent = "karaoke" if effective_karaoke_separation else "primary"
+                return (parent, reuse.origin(parent), effective_preprocess_mode, available_deecho_model,
+                        separator_versions("roformer", ROFORMER_DEREVERB_DEFAULT_MODEL))
+
+            prepared = reuse.restore("prepared", prepared_key)
+            if prepared:
+                report_progress("复用去混响人声", step_convert)
+                vc_input_path, = prepared
+                self._last_vc_preprocess_mode = reuse.stages["prepared"].preprocess_mode
+            else:
+                vc_input_path = self._prepare_vocals_for_vc(
+                    vocals_path, session_dir, preprocess_mode=effective_preprocess_mode,
+                )
+                reuse.save("prepared", prepared_key, (vc_input_path,), self._last_vc_preprocess_mode)
             vc_preprocessed = True
             log.audio(f"VC预处理输入: {Path(vc_input_path).name}")
 
-            report_progress("正在转换人声...", step_convert)
+            def converted_key():
+                assets = Path(__file__).resolve().parents[1] / "assets"
+                if effective_use_official:
+                    from tools.upstream_runtime import HUBERT_FILES
+                    encoder = tuple(asset_version(assets / "hubert_base" / name) for name in HUBERT_FILES)
+                else:
+                    encoder = asset_version(assets / "hubert/hubert_base.pt")
+                return (reuse.origin("prepared"), asset_version(model_path), asset_version(index_path),
+                        encoder, asset_version(assets / "rmvpe/rmvpe.pt"),
+                        normalized_vc_pipeline_mode, effective_use_official, pitch_shift, index_ratio,
+                        rms_mix_rate, protect, speaker_id, f0_method, normalized_source_constraint_mode,
+                        silence_gate, silence_threshold_db, silence_smoothing_ms, silence_min_duration_ms)
+
+            converted = reuse.restore("converted", converted_key)
+            report_progress("复用转换后的人声" if converted else "正在转换人声...", step_convert)
             self._record_quality_debug(
                 session_dir=session_dir,
                 stage="vc_input",
@@ -4734,10 +4783,11 @@ class CoverPipeline:
             )
             converted_vocals_path = str(session_dir / "converted_vocals.wav")
 
-            log.model(f"加载RVC模型: {Path(model_path).name}")
             log.detail(f"输入人声: {vc_input_path}")
             log.detail(f"输出路径: {converted_vocals_path}")
-            if normalized_vc_pipeline_mode == "official":
+            if converted:
+                converted_vocals_path, = converted
+            elif normalized_vc_pipeline_mode == "official":
                 log.detail("使用内置官方VC实现进行转换")
                 log.config(f"F0方法: {f0_method}, 音调: {pitch_shift}, 索引率: {index_ratio}")
                 log.config(f"RMS混合: {rms_mix_rate}, 保护: {protect}")
@@ -4891,7 +4941,7 @@ class CoverPipeline:
                     log.warning("VC preprocess unavailable, skipping source-guided reconstruction")
                 log.success("官方VC转换完成")
 
-            if not effective_official_mode and not effective_use_official:
+            else:
                 # 使用自定义VC管道进行转换
                 log.detail("使用自定义VC管道进行转换")
                 self._init_rvc_pipeline()
@@ -5043,6 +5093,12 @@ class CoverPipeline:
                 log.detail("已清理设备缓存")
 
             # 记录转换结果
+            if not converted:
+                reuse.save("converted", converted_key, (converted_vocals_path,))
+            if reuse.hits:
+                (session_dir / "reused_stages.json").write_text(json.dumps(
+                    {stage: str(reuse.origin(stage)) for stage in reuse.hits}, indent=2
+                ), encoding="utf-8")
             self._record_quality_debug(
                 session_dir=session_dir,
                 stage="vc_final_state",
@@ -5198,17 +5254,30 @@ class CoverPipeline:
             report_progress("翻唱完成!", step_finalize)
             log.success(f"最终输出: {result['cover']}")
             log.separator()
+            if reuse.hits:
+                result["reused_stages"] = ",".join(reuse.hits)
             return result
 
         except Exception as e:
             import traceback
             error_detail = traceback.format_exc()
+            if self.separator is not None:
+                self._release_primary_separator()
+            if self.karaoke_separator is not None:
+                self.karaoke_separator.unload_model()
+                self.karaoke_separator = None
+            if self.rvc_pipeline is not None:
+                self.rvc_pipeline.unload_all()
             log.separator()
             log.error(f"处理失败: {e}")
             log.error(f"详细错误:\n{error_detail}")
             log.separator()
             report_progress(f"处理失败: {e}", 0)
             raise
+        finally:
+            self._cleanup_reference_cache = {}
+            self._cleanup_reference_spectra = {}
+            self._cleanup_reference_features = {}
 
     def cleanup_session(self, session_dir: str):
         """清理会话临时文件"""

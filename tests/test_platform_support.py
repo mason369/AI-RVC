@@ -80,7 +80,7 @@ class PlatformSupportContractTests(unittest.TestCase):
         source = (
             REPO_ROOT / ".github" / "workflows" / "platform-contracts.yml"
         ).read_text(encoding="utf-8")
-        for runner in ("windows-latest", "ubuntu-latest", "macos-14"):
+        for runner in ("windows-latest", "ubuntu-latest", "macos-15"):
             self.assertIn(runner, source)
 
     def test_colab_notebook_is_valid_json_and_checks_cuda_provider(self):

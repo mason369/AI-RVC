@@ -123,7 +123,8 @@ def verify_workflow(release, include_images=False):
     if response["total_count"] > 100:
         raise RuntimeError("Unexpected release job count")
     required = [f"Build {platform}-{variant}" for platform in ("Windows", "Linux") for variant in ("CPU", "GPU")]
-    required += [f"{platform} / Python 3.10" for platform in ("windows-latest", "ubuntu-latest", "macos-14")]
+    required += [f"{platform} / Python 3.10" for platform in ("windows-latest", "ubuntu-latest", "macos-15")]
+    required += ["Verify Windows portable browser"]
     if include_images:
         required += ["Docker cpu", "Docker cuda"]
     for name in required:

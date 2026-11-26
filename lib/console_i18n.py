@@ -7,6 +7,8 @@ import builtins
 import json
 import os
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, TextIO
@@ -33,6 +35,22 @@ _ENGLISH_PUNCTUATION = str.maketrans(
     }
 )
 _language_override: str | None = None
+_literal_pattern = ContextVar("console_literal_pattern", default=None)
+
+
+@contextmanager
+def console_literals(*values):
+    """Preserve dynamic names and paths verbatim inside translated log messages."""
+    literals = sorted({str(v) for v in values if v and _HAN_RE.search(str(v))}, key=len, reverse=True)
+    if not literals:
+        yield
+        return
+    pattern = re.compile("(" + "|".join(map(re.escape, literals)) + ")")
+    token = _literal_pattern.set(pattern)
+    try:
+        yield
+    finally:
+        _literal_pattern.reset(token)
 
 
 class ConsoleLocalizationError(RuntimeError):
@@ -112,6 +130,14 @@ def localize_console_message(message: Any, language: str | None = None) -> str:
     if selected_language == "zh_CN" or not _HAN_RE.search(text):
         return text
 
+    pattern = _literal_pattern.get()
+    if pattern is not None:
+        return "".join(part if i % 2 else _translate_english(part)
+                       for i, part in enumerate(pattern.split(text)))
+    return _translate_english(text)
+
+
+def _translate_english(text):
     catalog = _load_english_catalog()
     translated: list[str] = []
     position = 0

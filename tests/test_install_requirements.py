@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,17 @@ TORCH_PINS = tuple(f"{name}=={version}" for name, version in TORCH_VERSIONS.item
 
 
 class InstallRequirementTests(unittest.TestCase):
+    def test_installer_preserves_the_other_operating_systems_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            other = root / ("bin/python" if os.name == "nt" else "Scripts/python.exe")
+            other.parent.mkdir()
+            other.write_bytes(b"other interpreter")
+            with mock.patch.object(install, "VENV_DIR", root), mock.patch("install.subprocess.run") as run:
+                self.assertFalse(install.create_venv())
+            run.assert_not_called()
+            self.assertEqual(other.read_bytes(), b"other interpreter")
+
     def test_pip_install_exposes_dependency_resolution_failure(self):
         failure = mock.Mock(
             returncode=1,

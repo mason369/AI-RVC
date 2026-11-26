@@ -1,6 +1,8 @@
 import json
+import sys
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 
 class ColabNotebookTests(unittest.TestCase):
@@ -61,7 +63,31 @@ class ColabNotebookTests(unittest.TestCase):
 
     def test_colab_launch_does_not_skip_checks(self):
         self.assertIn("$PY run.py --host 0.0.0.0 --port 7860 --share", self.source)
+        self.assertIn("START_PUBLIC_WEB_UI=false", self.source)
         self.assertNotIn("--skip-check", self.source)
+
+    def test_batch_cells_reuse_worker_and_uploads_across_parameter_changes(self):
+        cells = ["".join(cell["source"]) for cell in self.notebook["cells"] if cell["cell_type"] == "code"]
+        upload = next(source for source in cells if "files.upload(" in source)
+        convert = next(source for source in cells if "tools.notebook_batch" in source)
+        expected = ["/content/声音 1.wav", "/content/two.wav"]
+        files = Mock()
+        files.upload.return_value = dict.fromkeys(expected)
+        session = {}
+        with patch.dict(sys.modules, {"google.colab": Mock(files=files)}), \
+                patch("tools.notebook_batch.NotebookBatch") as worker, patch.object(sys, "path", sys.path.copy()):
+            worker.return_value.worker.poll.return_value = None
+            worker.return_value.convert.side_effect = ["first.zip", "remix.zip"]
+            exec(upload, session)
+            exec(convert, session)
+            exec(convert.replace("PITCH = 0", "PITCH = 2"), session)
+            worker.assert_called_once()
+            worker.return_value.convert.assert_called_with(expected, "hanamaru_zurakichi", "song", 2, None)
+            files.upload.assert_called_once()
+            files.download.assert_called_with("remix.zip")
+            session["batch_inputs"] = []
+            exec(convert, session)
+            self.assertEqual(files.download.call_count, 2)
 
     def test_colab_includes_full_processing_mode_matrix(self):
         self.assertIn("'/content/AI-RVC/tools/run_mode_matrix.py'", self.source)

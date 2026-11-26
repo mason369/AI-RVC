@@ -24,6 +24,7 @@ ACCESSIBILITY_JS = r"""
         'undo': 'undo',
         'Empty value': 'empty',
         'Uploading': 'uploading',
+        'Remove this file': 'removeFile',
     };
     if (!window.rvcAccessibleNames) {
         const originals = new WeakMap();

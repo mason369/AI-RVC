@@ -95,3 +95,25 @@ class HttpDownloadTests(unittest.TestCase):
         download_http(self.url, self.dest, expected_sha256=hashlib.sha256(self.body).hexdigest())
         self.assertEqual(self.dest.read_bytes(), self.body)
         self.assertEqual(sorted(p.name for p in self.dest.parent.iterdir()), ['model.bin'])
+
+    def test_completed_download_survives_rename_lock_and_retries_offline(self):
+        digest = hashlib.sha256(self.body).hexdigest()
+        locked = PermissionError("sharing violation")
+        locked.winerror = 32
+        with patch("tools.http_download.os.replace", side_effect=locked):
+            with self.assertRaises(PermissionError):
+                download_http(self.url, self.dest, expected_sha256=digest)
+        self.assertFalse(self.dest.exists())
+        with patch("tools.http_download.requests.get", side_effect=AssertionError("unexpected HTTP request")):
+            download_http(self.url, self.dest, expected_sha256=digest)
+        self.assertEqual(sorted(p.name for p in self.dest.parent.iterdir()), ["model.bin"])
+        self.assertEqual(self.dest.read_bytes(), self.body)
+
+    def test_complete_but_corrupt_partial_restarts_with_full_request(self):
+        self.partial()
+        partial = self.dest.with_name("model.bin.part")
+        partial.write_bytes(b"x" * len(self.body))
+        meta = self.dest.with_name("model.bin.part.json")
+        meta.write_text(json.dumps({**json.loads(meta.read_text()), "total": len(self.body)}))
+        download_http(self.url, self.dest, expected_sha256=hashlib.sha256(self.body).hexdigest())
+        self.assertEqual(self.dest.read_bytes(), self.body)

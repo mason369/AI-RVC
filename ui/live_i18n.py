@@ -10,6 +10,32 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCALES = {'zh_CN': 'zh-CN', 'en_US': 'en'}
 
 
+def _read_version() -> str:
+    for candidate in (ROOT / 'VERSION', ROOT.parent / 'VERSION'):
+        if candidate.is_file():
+            return candidate.read_text(encoding='utf-8').strip()
+    return ''
+
+
+_VERSION = _read_version()
+
+
+def _theme_labels() -> dict[str, dict[str, str]]:
+    labels = {}
+    for code in LOCALES:
+        settings = json.loads((ROOT / 'i18n' / f'{code}.json').read_text(encoding='utf-8'))['settings']
+        labels[code] = {
+            'light': settings['theme_light'],
+            'dark': settings['theme_dark'],
+            'toLight': settings['theme_switch_to_light'],
+            'toDark': settings['theme_switch_to_dark'],
+        }
+    return labels
+
+
+THEME_LABELS_JSON = json.dumps(_theme_labels(), ensure_ascii=False)
+
+
 def catalog() -> gr.I18n:
     def flatten(data, prefix=''):
         result = {}
@@ -21,11 +47,19 @@ def catalog() -> gr.I18n:
                 result[key] = value
         return result
 
+    version_badge = f'<span class="top-brand-ver">v{_VERSION}</span>' if _VERSION else ''
     translations = {}
     for code, locale in LOCALES.items():
         data = flatten(json.loads((ROOT / 'i18n' / f'{code}.json').read_text(encoding='utf-8')))
-        data['brand'] = ('<div class="top-brand-title">' + data['app_title'] + '</div>'
-                         '<div class="top-brand-subtitle">' + data['app_description'] + '</div>')
+        data['brand'] = (
+            '<div class="top-brand-wrap">'
+            + '<div class="top-brand-row">'
+            + '<span class="top-brand-title">' + data['app_title'] + '</span>'
+            + version_badge
+            + '</div>'
+            + '<div class="top-brand-subtitle">' + data['app_description'] + '</div>'
+            + '</div>'
+        )
         translations[locale] = data
     return gr.I18n(**translations)
 
@@ -47,7 +81,7 @@ def bind_static_translations(blocks):
             specifications.append((component, properties))
 
     def refresh(choice):
-        code = {'中文':'zh_CN', 'English':'en_US', 'zh_CN':'zh_CN', 'en_US':'en_US'}[choice]
+        code = {'中文': 'zh_CN', 'English': 'en_US', 'zh_CN': 'zh_CN', 'en_US': 'en_US'}[choice]
         translations = catalog().translations_dict[LOCALES[code]]
 
         def resolve(value):
@@ -66,7 +100,7 @@ def bind_static_translations(blocks):
     return [component for component, _ in specifications], refresh
 
 
-LANGUAGE_CHANGE_JS = """async (choice) => {
+LANGUAGE_CHANGE_JS = r"""async (choice) => {
     const code = {'中文':'zh_CN','English':'en_US',zh_CN:'zh_CN',en_US:'en_US'}[choice];
     if (!code) throw new Error('Unsupported interface language');
     const base = new URL((window.gradio_config.root || location.origin).replace(/\/$/, '') + '/');
@@ -76,8 +110,20 @@ LANGUAGE_CHANGE_JS = """async (choice) => {
     document.documentElement.lang = code === 'en_US' ? 'en' : 'zh-CN';
     __RVC_ACCESSIBILITY__
     window.rvcPlayerLanguage = code;
-    const payload = {...(window.rvcPlayerPayload || {files:[]}), language:code};
+    if (window.rvcSyncThemeToggle) window.rvcSyncThemeToggle(code);
+    const theme = window.rvcCurrentTheme || document.documentElement.dataset.rvcTheme || 'dark';
+    const payload = {...(window.rvcPlayerPayload || {files:[]}), language:code, theme};
     window.rvcPlayerPayload = payload;
-    document.getElementById('rvc-multitrack-frame')?.contentWindow?.postMessage({type:'rvc-language',payload}, location.origin);
+    const playerFrame = document.getElementById('rvc-multitrack-frame');
+    if (playerFrame) {
+        playerFrame.title = __RVC_PLAYER_TITLES__[code];
+        playerFrame.contentWindow?.postMessage({type:'rvc-language',payload}, location.origin);
+    }
     return [];
-}""".replace('__RVC_TITLES__', json.dumps({code: catalog().translations_dict[locale]['app_title'] for code, locale in LOCALES.items()}, ensure_ascii=False)).replace('__RVC_ACCESSIBILITY__', ACCESSIBILITY_JS)
+}""".replace(
+    '__RVC_TITLES__',
+    json.dumps({code: catalog().translations_dict[locale]['app_title'] for code, locale in LOCALES.items()}, ensure_ascii=False),
+).replace(
+    '__RVC_PLAYER_TITLES__',
+    json.dumps({code: catalog().translations_dict[locale]['multitrack.audioMixerTitle'] for code, locale in LOCALES.items()}, ensure_ascii=False),
+).replace('__RVC_ACCESSIBILITY__', ACCESSIBILITY_JS)

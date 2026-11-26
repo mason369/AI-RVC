@@ -12,6 +12,7 @@ def check_audio(output: Path) -> dict:
     import librosa
     import numpy as np
     import soundfile as sf
+    from infer.cover_reuse import CoverReuse
     from lib.mixer import _juce_reverb_kernel_float64, apply_reverb, mix_vocals_and_accompaniment
 
     kernel = _juce_reverb_kernel_float64
@@ -42,6 +43,15 @@ def check_audio(output: Path) -> dict:
     audio, rate = sf.read(mixed, dtype="float64", always_2d=True)
     if sf.info(mixed).subtype != "DOUBLE" or rate != 48000 or audio.shape != (48000, 2) or not np.isfinite(audio).all():
         raise RuntimeError("Bundled mixer failed the DOUBLE WAV round trip")
+    session = {}
+    next_run = output / "remix"
+    next_run.mkdir(exist_ok=True)
+    key = lambda: ("packaged-smoke",)
+    tracks = [vocals, accompaniment]
+    CoverReuse(session, mixed, output).save("primary", key, tracks)
+    restored = CoverReuse(session, mixed, next_run).restore("primary", key)
+    if not restored or [Path(path).read_bytes() for path in restored] != [path.read_bytes() for path in tracks]:
+        raise RuntimeError("Bundled stage reuse changed the DOUBLE WAV tracks")
     return {"source": str(source), "cache": kernel._cache.cache_path,
             "cache_hits": sum(kernel.stats.cache_hits.values()), "samples": len(audio)}
 
@@ -69,8 +79,13 @@ def check_ui() -> list[str]:
                     raise RuntimeError("Bundled UI HTML is unavailable")
             with opener.open(blocks.local_url + "config", timeout=30) as response:
                 configuration = json.load(response)
-                if not configuration.get("components") or not configuration.get("dependencies"):
-                    raise RuntimeError("Bundled UI config is incomplete")
+                handlers = {dep.get("api_name") for dep in configuration["dependencies"]}
+                has_multi_upload = any(component["type"] == "file" and
+                                       component["props"].get("file_count") == "multiple"
+                                       for component in configuration["components"])
+                if not has_multi_upload or not {"process_cover_batch", "select_batch_result",
+                                                "process_cover_with_downloads"} <= handlers:
+                    raise RuntimeError("Bundled UI is missing a cover workflow")
             checked.append(language)
         finally:
             blocks.close()
