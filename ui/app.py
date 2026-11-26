@@ -981,7 +981,6 @@ def process_cover(
     literals = [Path(audio_path).stem, ROOT_DIR, character_name]
     try:
         from tools.character_models import get_character_model_path, get_character_info
-        from infer.cover_pipeline import get_cover_pipeline
 
         # 获取角色模型路径
         resolved_name = resolve_character_name(character_name)
@@ -989,6 +988,8 @@ def process_cover(
         model_info = get_character_model_path(resolved_name)
         if model_info is None:
             return finish("character_model_missing", fields={"name": resolved_name})
+
+        from infer.cover_pipeline import get_cover_pipeline
 
         # 进度回调
         def progress_callback(msg: str, step: int, total: int):

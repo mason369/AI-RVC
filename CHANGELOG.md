@@ -25,6 +25,7 @@
 - **精简运行时资源与冻结程序修复**：便携包仅收集界面 Python 与内联 `player.html`，排除前端 `node_modules`；修复冻结程序官方 UVR5 路由的模块路径缓存失效问题；Docker 镜像补齐 `libatomic1` 依赖。
 - **跨语言事件稳定化**：翻唱模式、原曲结构贴合与混音预设统一使用固定内部值配本地化标签，解决语言切换与页面刷新后的状态残留问题。
 - **续传与批量状态修复**：Windows 文件暂时锁定时重试已验证模型的安装，重启下载后可重新校验并安装完整的本地文件。单首结果更新播放器时清空批量选中项，保留批次内的试听与下载。
+- **错误提示与发布检查**：先检查角色选择及模型文件，再加载推理后端。发布流程会从原始构建分卷启动便携包，用 Chrome 检查批量入口、中英文切换及播放器主题同步。
 
 ### English
 
@@ -49,6 +50,7 @@
 - **Clean Runtime Packaging**: Ships only runtime UI files and the self-contained `player.html` (excluding `node_modules`), fixes frozen official UVR5 `inspect` module cache invalidation, and adds `libatomic1` to Docker images.
 - **Cross-Locale Event Stability**: Uses stable internal values with localized labels for conversion routes, source alignment, and mix presets across language switches and page reloads.
 - **Download Recovery and Batch State**: Retries publishing verified model files after temporary Windows file locks. Rerunning the downloader can verify and install a completed local file. Generating a single result clears the previous batch selection while keeping the batch available for preview and download.
+- **Validation and Release Checks**: Validates voice selection and model files before loading the inference backend. The release workflow opens the original portable build in Chrome to check the batch entry point, both languages and player theme synchronization.
 
 ## 1.6.0 — 2026-10-23
 
