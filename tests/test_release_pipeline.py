@@ -21,7 +21,8 @@ class ReleasePipelineTests(unittest.TestCase):
         job_names += ["browser / Verify Windows portable browser"]
         job_names += ["images / Docker cpu", "images / Docker cuda"]
         self.jobs = [dict(name=name, status="completed", conclusion="success") for name in job_names]
-        self.assets = dict(total_count=4, artifacts=[dict(name=name, expired=False) for name in self.names])
+        run_artifacts = [*self.names, "portable-browser-evidence"]
+        self.assets = dict(total_count=len(run_artifacts), artifacts=[dict(name=name, expired=False) for name in run_artifacts])
         self.current = dict(id=42, draft=True, target_commitish="b" * 40, tag_name="v1.6.0", assets=[],
                             upload_url="https://uploads.github.com/repos/owner/repo/releases/42/assets{?name,label}",
                             html_url="https://github.com/owner/repo/releases/tag/v1.6.0")
@@ -88,6 +89,7 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertTrue(self.current["draft"])
         self.assertEqual(self.current["target_commitish"], self.release.source)
         self.assertTrue(set(receipt["assets"]).isdisjoint(pipeline.REPORT_ASSETS))
+        self.assertNotIn("portable-browser-evidence", self.data)
         self.assertEqual(sum(method == "DELETE" for _, method, _ in self.writes), 4)
 
     def test_failed_portable_job_prevents_any_draft_mutation(self):
@@ -120,6 +122,12 @@ class ReleasePipelineTests(unittest.TestCase):
     def test_missing_or_expired_artifact_is_rejected(self):
         self.assets["artifacts"][0]["expired"] = True
         with self.assertRaisesRegex(RuntimeError, "four original"):
+            self.stage()
+        self.assertEqual(self.writes, [])
+
+    def test_unexpected_run_artifact_cannot_replace_browser_evidence(self):
+        self.assets["artifacts"][-1]["name"] = "unrelated-evidence"
+        with self.assertRaisesRegex(RuntimeError, "browser evidence"):
             self.stage()
         self.assertEqual(self.writes, [])
 

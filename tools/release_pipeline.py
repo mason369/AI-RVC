@@ -190,9 +190,14 @@ def stage(release, root):
     verify_workflow(release)
     check_tag(release)
     artifacts = api(f"{release.prefix}/actions/runs/{release.run_id}/artifacts?per_page=100")
-    expected_names = {f"AI-RVC-{platform}-{variant}" for platform in ("Windows", "Linux") for variant in ("CPU", "GPU")}
-    if artifacts["total_count"] != 4 or {item["name"] for item in artifacts["artifacts"]} != expected_names or any(item["expired"] for item in artifacts["artifacts"]):
-        raise RuntimeError("All four original build artifacts are required")
+    package_names = {f"AI-RVC-{platform}-{variant}" for platform in ("Windows", "Linux") for variant in ("CPU", "GPU")}
+    expected_artifacts = package_names | {"portable-browser-evidence"}
+    records = artifacts["artifacts"]
+    if (artifacts["total_count"] != len(expected_artifacts) or len(records) != len(expected_artifacts)
+            or {record["name"] for record in records} != expected_artifacts
+            or any(record["expired"] for record in records)):
+        raise RuntimeError("All four original build artifacts and the browser evidence are required")
+    # The downloaded directory contains package artifacts only.
     verified, paths = verified_package_files(root)
     expected = {name: item for entries in verified.values() for name, item in entries.items()}
     current = find_release(release)
